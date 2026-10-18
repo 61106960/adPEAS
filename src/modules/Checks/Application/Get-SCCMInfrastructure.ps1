@@ -398,6 +398,9 @@ function Get-SCCMInfrastructure {
                     foreach ($ace in $sccmACEs) {
                         if ($ace.AccessControlType -ne 'Allow') { continue }
 
+                        # An inherit-only ACE grants nothing on the container itself.
+                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+
                         # ConvertTo-ExpandedADRightsName, not the string form: the SDDL
                         # generic bits have no named value in the enum, so an ACE written
                         # as "(A;;GA;;;<sid>)" came out as the bare number 268435456 and
@@ -406,6 +409,26 @@ function Get-SCCMInfrastructure {
                         # "Only the site servers and the expected administrators can write
                         # to the System Management container".
                         $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+
+                        # An object ACE grants its mask on the class or attribute its GUID
+                        # names (MS-ADTS 5.1.3.3.3): never GenericAll, WriteDacl or
+                        # WriteOwner on the container, and the write of one of the
+                        # container's own attributes publishes no management point. What it
+                        # can do is create children of its class - a management point when
+                        # the class is one of the mSSMS schema extensions, which the GUID
+                        # table does not know, so a class it cannot name counts. A class it
+                        # can name publishes nothing a client reads: those are the users,
+                        # computers, groups, OUs and contacts Exchange setup lets Exchange
+                        # Windows Permissions create in every container of the domain, which
+                        # this container inherits like any other.
+                        $sccmScope = $ace.ObjectType
+                        if ($null -ne $sccmScope -and $sccmScope -ne [Guid]::Empty) {
+                            if ($aceRights -notmatch 'GenericAll|CreateChild') { continue }
+                            $sccmScopeResolved = Resolve-ObjectTypeGUID -GUID $sccmScope
+                            if ($sccmScopeResolved -and $sccmScopeResolved.Name -notlike 'mSSMS*') { continue }
+                            $sccmScopeName = if ($sccmScopeResolved) { $sccmScopeResolved.Name } else { [string]$sccmScope }
+                            $aceRights = "CreateChild ($sccmScopeName)"
+                        }
 
                         # Write access is the whole question: CreateChild publishes a
                         # management point, the others get there in one more step.

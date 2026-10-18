@@ -78400,7 +78400,16 @@ function Get-SCCMInfrastructure {
 	                $containerFindings = @{}
 	                foreach ($ace in $sccmACEs) {
 	                    if ($ace.AccessControlType -ne 'Allow') { continue }
+	                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
 	                    $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+	                    $sccmScope = $ace.ObjectType
+	                    if ($null -ne $sccmScope -and $sccmScope -ne [Guid]::Empty) {
+	                        if ($aceRights -notmatch 'GenericAll|CreateChild') { continue }
+	                        $sccmScopeResolved = Resolve-ObjectTypeGUID -GUID $sccmScope
+	                        if ($sccmScopeResolved -and $sccmScopeResolved.Name -notlike 'mSSMS*') { continue }
+	                        $sccmScopeName = if ($sccmScopeResolved) { $sccmScopeResolved.Name } else { [string]$sccmScope }
+	                        $aceRights = "CreateChild ($sccmScopeName)"
+	                    }
 	                    if ($aceRights -notmatch 'GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|CreateChild') { continue }
 	                    $aceSID = $ace.IdentityReference.Value
 	                    if ($sccmServerSIDs.ContainsKey($aceSID)) { continue }
@@ -91406,7 +91415,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1540"
+$Script:adPEASVersion = "2.7.0+20261018-1545"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

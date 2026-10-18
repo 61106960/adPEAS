@@ -801,6 +801,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   access check evaluates every explicit ACE first, so that delegation is access, and it is
   reported again.
 
+- **`Get-SCCMInfrastructure` reports only a write that reaches the management points.** Any
+  ACE on the System Management container whose mask held a write right counted, whatever
+  it was scoped to and whether it applied to the container at all. The container inherits
+  what Exchange setup grants on every container of the domain - measured on CN=System:
+  Exchange Windows Permissions may create users, computers, groups, OUs and contacts, and
+  Exchange Trusted Subsystem may write single attributes - so every domain running both
+  products listed those groups as able to publish a management point. Inherit-only ACEs no
+  longer count, and an ACE scoped to a class counts only when the class is not one adPEAS
+  can name; the SCCM schema classes are not in its tables, so a management point stays
+  reported, with the class named.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report
