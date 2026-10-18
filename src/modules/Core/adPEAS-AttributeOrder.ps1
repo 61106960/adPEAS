@@ -387,6 +387,16 @@ $Script:PrimaryAttributes = @{
         'ms-DS-MachineAccountQuota', 'whoCanAddComputers', 'privilegeGrantedBy'
     )
 
+    # The coverage summary of Get-LAPSConfiguration, in the order the figures depend on
+    # each other: what was measured, how much of it is protected, whether that protection
+    # works, what is left, and the domain controllers last.
+    LAPSCoverage = @(
+        'activeComputers', 'excludedFromCount', 'domainControllerLookup',
+        'lapsProtected', 'lapsRotation', 'lapsExpiryNotADate',
+        'lapsUnprotected', 'lapsBackupOutsideAD',
+        'dsrmPassword'
+    )
+
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
@@ -692,7 +702,8 @@ $Script:StrictAttributeTypes = @(
     'DomainPasswordPolicy',
     'FineGrainedPasswordPolicy',
     'BitLockerRecoveryKey',
-    'GPOUserRights'
+    'GPOUserRights',
+    'LAPSCoverage'
 )
 
 # Per-ObjectType row labels: what a row is called, where the property it comes from is

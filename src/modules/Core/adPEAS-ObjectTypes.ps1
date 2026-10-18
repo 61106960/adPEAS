@@ -1614,6 +1614,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "LAPS is properly deployed with high coverage across the domain. Local administrator passwords are unique per computer, preventing lateral movement through password reuse."
     }
 
+    'LAPSCoverage' = @{
+        TitleFormat = "LAPS Deployment Coverage"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "LAPS Deployment Coverage"
+        Summary = "How many active computers have their local administrator password managed by LAPS, whether those passwords rotate, and whether Windows LAPS manages the DSRM password of the domain controllers."
+        WhyItMatters = "Computers without LAPS likely share local admin passwords, and a LAPS password that stopped rotating is as old as the day it stopped. Compromising one such system enables lateral movement to every system with the same password."
+        WhatWeCheck = @(
+            "The active computers the figures are measured against, and what was left out - inactive computers and domain controllers"
+            "How many of them carry a LAPS attribute, by generation"
+            "Whether the LAPS passwords rotate on schedule"
+            "How many carry no LAPS attribute at all"
+            "Whether Windows LAPS manages the DSRM password of each domain controller"
+        )
+    }
+
     # ============================================================================
     # GPO
     # ============================================================================

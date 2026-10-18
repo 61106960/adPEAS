@@ -1208,6 +1208,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   start. It keeps the note that alternate credentials replace the Kerberos tickets of a
   domain-joined session, because nothing else says so before it happens.
 
+- **LAPS coverage is one summary object.** `Get-LAPSConfiguration` reported its figures
+  as loose lines: the active computers and what was left out, the protected ones by
+  generation, whether their passwords rotate, the unprotected ones and the DSRM line. None
+  of them had a card in the report, the DSRM line came after every object of the
+  section, and one line read "1 computers". The section now opens with *LAPS deployment
+  coverage*: `activeComputers`, `excludedFromCount`, `lapsProtected`, `lapsRotation`,
+  `lapsUnprotected` and `dsrmPassword`, each row with the card of its finding. The
+  machines whose password stopped rotating and the computers without LAPS per OU still
+  follow, each announced in a line of its own. A domain without a LAPS schema gets the
+  same summary.
+
 ---
 
 ## [2.7.0] - 2026-10-08

@@ -10223,6 +10223,9 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
         MITRE = "T1078.003"
         Triggers = @(
             @{ Attribute = 'lapsPasswordStale'; Severity = 'Finding' }
+            # The rotation row of the coverage summary.
+            @{ Attribute = 'lapsRotation'; Pattern = '^Stopped on '; Severity = 'Finding' }
+            @{ Attribute = 'lapsRotation'; Pattern = '^Every computer '; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
@@ -10258,6 +10261,12 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
         )
         Tools = @("Mimikatz")
         MITRE = "T1078.003"
+        # The dsrmPassword row of the LAPS coverage summary. It was a line of its own that
+        # named this card by FindingId.
+        Triggers = @(
+            @{ Attribute = 'dsrmPassword'; Pattern = '^(Not managed|No longer rotated) by Windows LAPS'; Severity = 'Note' }
+            @{ Attribute = 'dsrmPassword'; Pattern = '^Managed by Windows LAPS on all'; Severity = 'Secure'; SeverityOnly = $true }
+        )
     }
 
     'NON_DEFAULT_COMPUTER_OWNERS' = @{
@@ -12850,6 +12859,13 @@ $acl.Access | Where-Object {
             # so the absence of one is not evidence of anything. LAPS_COVERAGE_NOT_IN_AD
             # then carries the row instead.
             @{ Attribute = 'lapsUnprotectedComputers'; Custom = 'laps_backup_in_ad'; Severity = 'Finding' }
+            # The count on the coverage summary. Anchored at the end: where a policy
+            # escrows outside Active Directory the row goes on "carry no LAPS attribute
+            # in Active Directory" and belongs to LAPS_COVERAGE_NOT_IN_AD - and the card
+            # metadata of the report asks without the row's object, so the text has to
+            # decide it, not a predicate.
+            @{ Attribute = 'lapsUnprotected'; Pattern = '^\d+ of \d+ computers? \([\d.]+%\)$'; Severity = 'Finding' }
+            @{ Attribute = 'lapsUnprotected'; Pattern = '^None - '; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
@@ -12880,6 +12896,7 @@ $acl.Access | Where-Object {
         MITRE = "T1078.003"
         Triggers = @(
             @{ Attribute = 'lapsBackupOutsideAD'; Severity = 'Hint' }
+            @{ Attribute = 'lapsUnprotected'; Pattern = 'carry no LAPS attribute in Active Directory$'; Severity = 'Hint' }
         )
     }
 

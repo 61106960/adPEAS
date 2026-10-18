@@ -3591,6 +3591,12 @@ $Script:PrimaryAttributes = @{
 	MachineAccountQuota = @(
 	    'ms-DS-MachineAccountQuota', 'whoCanAddComputers', 'privilegeGrantedBy'
 	)
+	LAPSCoverage = @(
+	    'activeComputers', 'excludedFromCount', 'domainControllerLookup',
+	    'lapsProtected', 'lapsRotation', 'lapsExpiryNotADate',
+	    'lapsUnprotected', 'lapsBackupOutsideAD',
+	    'dsrmPassword'
+	)
 	GPOScheduledTask = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
 	    'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
@@ -3770,7 +3776,8 @@ $Script:StrictAttributeTypes = @(
 	'DomainPasswordPolicy',
 	'FineGrainedPasswordPolicy',
 	'BitLockerRecoveryKey',
-	'GPOUserRights'
+	'GPOUserRights',
+	'LAPSCoverage'
 )
 $Script:AttributeLabels = @{
 	GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
@@ -13649,6 +13656,8 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
 	    MITRE = "T1078.003"
 	    Triggers = @(
 	        @{ Attribute = 'lapsPasswordStale'; Severity = 'Finding' }
+	        @{ Attribute = 'lapsRotation'; Pattern = '^Stopped on '; Severity = 'Finding' }
+	        @{ Attribute = 'lapsRotation'; Pattern = '^Every computer '; Severity = 'Secure'; SeverityOnly = $true }
 	    )
 	}
 	'DSRM_PASSWORD_UNMANAGED' = @{
@@ -13683,6 +13692,10 @@ if (($template.'msPKI-Enrollment-Flag' -band 0x80000) -eq 0x80000) {
 	    )
 	    Tools = @("Mimikatz")
 	    MITRE = "T1078.003"
+	    Triggers = @(
+	        @{ Attribute = 'dsrmPassword'; Pattern = '^(Not managed|No longer rotated) by Windows LAPS'; Severity = 'Note' }
+	        @{ Attribute = 'dsrmPassword'; Pattern = '^Managed by Windows LAPS on all'; Severity = 'Secure'; SeverityOnly = $true }
+	    )
 	}
 	'NON_DEFAULT_COMPUTER_OWNERS' = @{
 	    Title = "Computer with Non-Default Owner"
@@ -15996,6 +16009,8 @@ $acl.Access | Where-Object {
 	    MITRE = "T1078.003"
 	    Triggers = @(
 	        @{ Attribute = 'lapsUnprotectedComputers'; Custom = 'laps_backup_in_ad'; Severity = 'Finding' }
+	        @{ Attribute = 'lapsUnprotected'; Pattern = '^\d+ of \d+ computers? \([\d.]+%\)$'; Severity = 'Finding' }
+	        @{ Attribute = 'lapsUnprotected'; Pattern = '^None - '; Severity = 'Secure'; SeverityOnly = $true }
 	    )
 	}
 	'LAPS_COVERAGE_NOT_IN_AD' = @{
@@ -16025,6 +16040,7 @@ $acl.Access | Where-Object {
 	    MITRE = "T1078.003"
 	    Triggers = @(
 	        @{ Attribute = 'lapsBackupOutsideAD'; Severity = 'Hint' }
+	        @{ Attribute = 'lapsUnprotected'; Pattern = 'carry no LAPS attribute in Active Directory$'; Severity = 'Hint' }
 	    )
 	}
 	'GPO_WIDE_IMPACT' = @{
@@ -21999,6 +22015,21 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "OUs with low LAPS adoption"
 	    )
 	    SecureMessage = "LAPS is properly deployed with high coverage across the domain. Local administrator passwords are unique per computer, preventing lateral movement through password reuse."
+	}
+	'LAPSCoverage' = @{
+	    TitleFormat = "LAPS Deployment Coverage"
+	    Module = "Computer"
+	    Category = "Computers"
+	    SectionTitle = "LAPS Deployment Coverage"
+	    Summary = "How many active computers have their local administrator password managed by LAPS, whether those passwords rotate, and whether Windows LAPS manages the DSRM password of the domain controllers."
+	    WhyItMatters = "Computers without LAPS likely share local admin passwords, and a LAPS password that stopped rotating is as old as the day it stopped. Compromising one such system enables lateral movement to every system with the same password."
+	    WhatWeCheck = @(
+	        "The active computers the figures are measured against, and what was left out - inactive computers and domain controllers"
+	        "How many of them carry a LAPS attribute, by generation"
+	        "Whether the LAPS passwords rotate on schedule"
+	        "How many carry no LAPS attribute at all"
+	        "Whether Windows LAPS manages the DSRM password of each domain controller"
+	    )
 	}
 	'GPOPermission' = @{
 	    TitleFormat = "GPO Permission: {Name}"
@@ -71611,7 +71642,7 @@ function Format-LAPSComputerList {
 	$shown = $names[0..($Limit - 1)] -join ', '
 	return ($shown + ', ... and ' + ($names.Count - $Limit) + ' more')
 }
-function Show-DSRMPasswordManagement {
+function Get-DSRMPasswordManagement {
 	[CmdletBinding()]
 	param(
 	    [Parameter(Mandatory=$true)]
@@ -71640,14 +71671,134 @@ function Show-DSRMPasswordManagement {
 	        $notRotated += $name
 	    }
 	}
+	$rows = @()
 	if (@($unmanaged).Count -gt 0) {
-	    Show-Line "DSRM password not managed by Windows LAPS on $(@($unmanaged).Count) of $total domain controller(s): $(Format-LAPSComputerList -Name $unmanaged)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+	    $rows += "Not managed by Windows LAPS on $(@($unmanaged).Count) of $total domain controller(s): $(Format-LAPSComputerList -Name $unmanaged)"
 	}
 	if (@($notRotated).Count -gt 0) {
-	    Show-Line "DSRM password no longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - expired more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)" -Class "Note" -FindingId 'DSRM_PASSWORD_UNMANAGED'
+	    $rows += "No longer rotated by Windows LAPS on $(@($notRotated).Count) of $total domain controller(s) - expired more than $GraceDays days ago: $(Format-LAPSComputerList -Name $notRotated)"
 	}
-	if (@($unmanaged).Count -eq 0 -and @($notRotated).Count -eq 0) {
-	    Show-Line "DSRM password managed by Windows LAPS on all $total domain controller(s)" -Class "Note"
+	if ($rows.Count -eq 0) {
+	    $rows += "Managed by Windows LAPS on all $total domain controller(s)"
+	}
+	return $rows
+}
+function New-LAPSCoverageSummary {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [int]$ActiveCount,
+	    [Parameter(Mandatory=$false)]
+	    [AllowEmptyCollection()]
+	    [string[]]$Excluded = @(),
+	    [switch]$DomainControllerLookupFailed,
+	    [switch]$NoSchema,
+	    [int]$ProtectedCount = 0,
+	    [string]$Breakdown,
+	    [int]$StaleCount = 0,
+	    [Parameter(Mandatory=$false)]
+	    [AllowEmptyCollection()]
+	    [string[]]$UndatedExpiry = @(),
+	    [int]$UnprotectedCount = 0,
+	    [string]$CoverageCaveat,
+	    [Parameter(Mandatory=$false)]
+	    [AllowEmptyCollection()]
+	    [string[]]$DsrmRow = @()
+	)
+	$noun = if ($ActiveCount -eq 1) { 'computer' } else { 'computers' }
+	$share = {
+	    param([int]$Part)
+	    [math]::Round(($Part / $ActiveCount) * 100, 1)
+	}
+	$summary = [PSCustomObject]@{
+	    activeComputers = $ActiveCount
+	}
+	if (@($Excluded).Count -gt 0) {
+	    $summary | Add-Member -NotePropertyName 'excludedFromCount' -NotePropertyValue (@($Excluded) -join ', ') -Force
+	}
+	if ($DomainControllerLookupFailed) {
+	    $summary | Add-Member -NotePropertyName 'domainControllerLookup' -NotePropertyValue 'Domain Controllers could not be enumerated - counted as ordinary computers, so LAPS coverage is understated' -Force
+	}
+	if ($ActiveCount -eq 0) {
+	    $summary | Add-Member -NotePropertyName 'lapsProtected' -NotePropertyValue 'Not evaluated - no active computer to measure' -Force
+	}
+	elseif ($NoSchema) {
+	    $summary | Add-Member -NotePropertyName 'lapsProtected' -NotePropertyValue "0 of $ActiveCount $noun (0%) - the LAPS schema is not present in Active Directory" -Force
+	}
+	else {
+	    $protectedText = "$ProtectedCount of $ActiveCount $noun ($(& $share $ProtectedCount)%)"
+	    if ($Breakdown) { $protectedText += ": $Breakdown" }
+	    $summary | Add-Member -NotePropertyName 'lapsProtected' -NotePropertyValue $protectedText -Force
+	}
+	if ($ProtectedCount -gt 0) {
+	    $rotation = if ($StaleCount -gt 0) {
+	        "Stopped on $StaleCount of the $ProtectedCount - counted as protected above, and they are not"
+	    } elseif (@($UndatedExpiry).Count -gt 0) {
+	        'Every computer whose LAPS expiration time is a date rotated its password on schedule'
+	    } else {
+	        'Every computer with LAPS rotated its password on schedule'
+	    }
+	    $summary | Add-Member -NotePropertyName 'lapsRotation' -NotePropertyValue $rotation -Force
+	}
+	if (@($UndatedExpiry).Count -gt 0) {
+	    $summary | Add-Member -NotePropertyName 'lapsExpiryNotADate' -NotePropertyValue "$(Format-LAPSComputerList -Name $UndatedExpiry -Limit 10) - the expiration time is not a rotation date (0 = rotation requested)" -Force
+	}
+	if ($ActiveCount -gt 0) {
+	    if ($UnprotectedCount -gt 0) {
+	        $unprotectedText = "$UnprotectedCount of $ActiveCount $noun ($(& $share $UnprotectedCount)%)"
+	        if ($CoverageCaveat) { $unprotectedText += ' carry no LAPS attribute in Active Directory' }
+	        $summary | Add-Member -NotePropertyName 'lapsUnprotected' -NotePropertyValue $unprotectedText -Force
+	        if ($CoverageCaveat) {
+	            $summary | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $CoverageCaveat -Force
+	        }
+	    }
+	    else {
+	        $summary | Add-Member -NotePropertyName 'lapsUnprotected' -NotePropertyValue 'None - every active computer has LAPS' -Force
+	    }
+	}
+	if (@($DsrmRow).Count -gt 0) {
+	    $summary | Add-Member -NotePropertyName 'dsrmPassword' -NotePropertyValue @($DsrmRow) -Force
+	}
+	$summary | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSCoverage' -Force
+	return $summary
+}
+function Show-LAPSUnprotectedByOU {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [AllowEmptyCollection()]
+	    [object[]]$Computer,
+	    [Parameter(Mandatory=$false)]
+	    [string]$CoverageCaveat
+	)
+	$byOU = @{}
+	$total = @($Computer).Count
+	$currentIndex = 0
+	foreach ($machine in $Computer) {
+	    $currentIndex++
+	    if ($total -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS configuration" -Current $currentIndex -Total $total -ObjectName $machine.name }
+	    if ("$($machine.distinguishedName)" -match '^CN=[^,]+,(.+)$') {
+	        $ouDN = $Matches[1]
+	        if (-not $byOU.ContainsKey($ouDN)) { $byOU[$ouDN] = @() }
+	        $byOU[$ouDN] += ($machine.sAMAccountName -replace '\$$', '')
+	    }
+	}
+	if ($total -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS configuration" -Completed }
+	if ($byOU.Count -eq 0) { return }
+	$class = if ($CoverageCaveat) { 'Hint' } else { 'Finding' }
+	$what = if ($CoverageCaveat) { 'without a LAPS attribute in Active Directory' } else { 'without LAPS protection' }
+	Show-Line "Found $total computer(s) $what, by OU:" -Class $class
+	foreach ($ouEntry in ($byOU.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending)) {
+	    $lapsFinding = [PSCustomObject]@{
+	        ouName = $ouEntry.Key
+	        computerCount = $ouEntry.Value.Count
+	        lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
+	    }
+	    if ($CoverageCaveat) {
+	        $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $CoverageCaveat -Force
+	    }
+	    $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
+	    Show-Object $lapsFinding -Class $class
 	}
 }
 function Get-LAPSConfiguration {
@@ -71745,36 +71896,13 @@ function Get-LAPSConfiguration {
 	            $allComputers = @(Get-DomainComputer -Enabled -Properties $ComputerProperties @connectionParams |
 	                Test-AccountActivity -IsActive |
 	                Where-Object { -not $domainControllerDNs.ContainsKey("$($_.distinguishedName)".ToLowerInvariant()) })
-	            $computersByOU = @{}
-	            foreach ($computer in $allComputers) {
-	                $dn = $computer.distinguishedName
-	                if ($dn -match '^CN=[^,]+,(.+)$') {
-	                    $ouDN = $Matches[1]
-	                    if (-not $computersByOU.ContainsKey($ouDN)) {
-	                        $computersByOU[$ouDN] = @()
-	                    }
-	                    $computerName = $computer.sAMAccountName -replace '\$$', ''
-	                    $computersByOU[$ouDN] += $computerName
-	                }
-	            }
-	            if ($coverageCaveat) {
-	                Show-Line "$($allComputers.Count) computers carry no LAPS attribute in Active Directory, and the schema here cannot hold one" -Class "Hint"
-	                Show-Line $coverageCaveat -Class "Note"
-	            } else {
-	                Show-Line "$($allComputers.Count) computers (100%) without LAPS protection" -Class "Finding"
-	            }
-	            foreach ($ouEntry in ($computersByOU.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending)) {
-	                $lapsFinding = [PSCustomObject]@{
-	                    ouName = $ouEntry.Key
-	                    computerCount = $ouEntry.Value.Count
-	                    lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
-	                }
-	                if ($coverageCaveat) {
-	                    $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
-	                }
-	                $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
-	                Show-Object $lapsFinding -Class $(if ($coverageCaveat) { 'Hint' } else { 'Finding' })
-	            }
+	            $noSchemaSummary = New-LAPSCoverageSummary -ActiveCount $allComputers.Count -NoSchema `
+	                -UnprotectedCount $allComputers.Count -CoverageCaveat $coverageCaveat `
+	                -DomainControllerLookupFailed:$domainControllerLookupFailed
+	            $noSchemaClass = if ($allComputers.Count -eq 0) { 'Note' } elseif ($coverageCaveat) { 'Hint' } else { 'Finding' }
+	            Show-Line "Found LAPS deployment coverage:" -Class $noSchemaClass
+	            Show-Object $noSchemaSummary -Class $noSchemaClass
+	            Show-LAPSUnprotectedByOU -Computer $allComputers -CoverageCaveat $coverageCaveat
 	            return
 	        }
 	        if ($lapsLegacySchemaPresent -and $windowsLAPSSchemaPresent) {
@@ -71833,27 +71961,16 @@ function Get-LAPSConfiguration {
 	        $withBothLAPS = $computersWithBothLAPS.Count
 	        $withoutLAPS = $computersWithoutLAPS.Count
 	        $withAnyLAPS = $withLegacyLAPS + $withWindowsLAPS + $withBothLAPS
-	        $lapsCoverage = if ($activeCount -gt 0) { [math]::Round(($withAnyLAPS / $activeCount) * 100, 1) } else { 0 }
-	        $withoutLAPSPercent = if ($activeCount -gt 0) { [math]::Round(($withoutLAPS / $activeCount) * 100, 1) } else { 0 }
 	        $excluded = @()
-	        if ($inactiveCount -gt 0) { $excluded += "$inactiveCount inactive excluded" }
+	        if ($inactiveCount -gt 0) { $excluded += "$inactiveCount inactive" }
 	        if (-not $domainControllerLookupFailed -and $domainControllerCount -gt 0) {
 	            $dcNoun = if ($domainControllerCount -eq 1) { 'domain controller' } else { 'domain controllers' }
-	            $excluded += "$domainControllerCount $dcNoun excluded"
+	            $excluded += "$domainControllerCount $dcNoun"
 	        }
-	        $excludedInfo = if ($excluded.Count -gt 0) { " (" + ($excluded -join ', ') + ")" } else { "" }
-	        Show-Line "Found $activeCount active computers$excludedInfo" -Class "Hint"
-	        if ($domainControllerLookupFailed) {
-	            Show-Line "Domain Controllers could not be enumerated - counted as ordinary computers, so LAPS coverage is understated" -Class "Note"
-	        }
-	        if ($withAnyLAPS -gt 0) {
-	            $lapsBreakdown = @()
-	            if ($withLegacyLAPS -gt 0) { $lapsBreakdown += "$withLegacyLAPS Legacy" }
-	            if ($withWindowsLAPS -gt 0) { $lapsBreakdown += "$withWindowsLAPS Native" }
-	            if ($withBothLAPS -gt 0) { $lapsBreakdown += "$withBothLAPS both" }
-	            $breakdownText = if ($lapsBreakdown.Count -gt 0) { " (" + ($lapsBreakdown -join ", ") + ")" } else { "" }
-	            Show-Line "$withAnyLAPS computers ($lapsCoverage%) with LAPS protection$breakdownText" -Class "Note"
-	        }
+	        $lapsBreakdown = @()
+	        if ($withLegacyLAPS -gt 0) { $lapsBreakdown += "$withLegacyLAPS Legacy" }
+	        if ($withWindowsLAPS -gt 0) { $lapsBreakdown += "$withWindowsLAPS Native" }
+	        if ($withBothLAPS -gt 0) { $lapsBreakdown += "$withBothLAPS both" }
 	        $staleGraceDays = 30
 	        $staleCutoff = (Get-Date).AddDays(-$staleGraceDays)
 	        $staleLAPSComputers = @()
@@ -71894,62 +72011,41 @@ function Get-LAPSConfiguration {
 	            $staleObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSStalePassword' -Force
 	            $staleLAPSComputers += $staleObject
 	        }
+	        $dsrmRows = @(Get-DSRMPasswordManagement -DomainController $domainControllers `
+	            -GraceDays $staleGraceDays -EraStart $lapsEraStart)
+	        $summaryParams = @{
+	            ActiveCount                  = $activeCount
+	            Excluded                     = $excluded
+	            DomainControllerLookupFailed = $domainControllerLookupFailed
+	            ProtectedCount               = $withAnyLAPS
+	            Breakdown                    = ($lapsBreakdown -join ', ')
+	            StaleCount                   = $staleLAPSComputers.Count
+	            UndatedExpiry                = $undatedExpiry
+	            UnprotectedCount             = $withoutLAPS
+	            CoverageCaveat               = $coverageCaveat
+	            DsrmRow                      = $dsrmRows
+	        }
+	        $coverageSummary = New-LAPSCoverageSummary @summaryParams
+	        $coverageClass = if ($staleLAPSComputers.Count -gt 0 -or ($withoutLAPS -gt 0 -and -not $coverageCaveat)) {
+	            'Finding'
+	        } elseif ($withoutLAPS -gt 0) {
+	            'Hint'
+	        } elseif ($activeCount -eq 0) {
+	            'Note'
+	        } else {
+	            'Secure'
+	        }
+	        Show-Line "Found LAPS deployment coverage:" -Class $coverageClass
+	        Show-Object $coverageSummary -Class $coverageClass
 	        if ($staleLAPSComputers.Count -gt 0) {
-	            Show-Line "$($staleLAPSComputers.Count) computer(s) have LAPS but their password stopped rotating - counted as protected above, and they are not" -Class "Finding"
+	            Show-Line "Found $($staleLAPSComputers.Count) computer(s) whose LAPS password stopped rotating:" -Class "Finding"
 	            foreach ($staleObject in ($staleLAPSComputers | Sort-Object daysOverdue -Descending)) {
 	                Show-Object $staleObject -Class Finding
 	            }
-	        } elseif ($withAnyLAPS -gt 0 -and @($undatedExpiry).Count -eq 0) {
-	            Show-Line "Every computer with LAPS rotated its password on schedule" -Class "Secure"
-	        } elseif ($withAnyLAPS -gt 0) {
-	            Show-Line "Every computer whose LAPS expiration time is a date rotated on schedule" -Class "Secure"
-	        }
-	        if (@($undatedExpiry).Count -gt 0) {
-	            Show-Line "LAPS expiration time is not a rotation date (0 = rotation requested) on: $(Format-LAPSComputerList -Name $undatedExpiry -Limit 10)" -Class "Note"
 	        }
 	        if ($withoutLAPS -gt 0) {
-	            if ($coverageCaveat) {
-	                Show-Line "$withoutLAPS of $activeCount computers ($withoutLAPSPercent%) carry no LAPS attribute in Active Directory" -Class "Hint"
-	                Show-Line $coverageCaveat -Class "Note"
-	            } else {
-	                Show-Line "$withoutLAPS computers ($withoutLAPSPercent%) without LAPS protection" -Class "Finding"
-	            }
-	            $computersWithoutLAPSByOU = @{}
-	            $totalComputers = @($computersWithoutLAPS).Count
-	            $currentIndex = 0
-	            foreach ($computer in $computersWithoutLAPS) {
-	                $currentIndex++
-	                if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS configuration" -Current $currentIndex -Total $totalComputers -ObjectName $computer.name }
-	                $dn = $computer.distinguishedName
-	                if ($dn -match '^CN=[^,]+,(.+)$') {
-	                    $ouDN = $Matches[1]
-	                    if (-not $computersWithoutLAPSByOU.ContainsKey($ouDN)) {
-	                        $computersWithoutLAPSByOU[$ouDN] = @()
-	                    }
-	                    $computerName = $computer.sAMAccountName -replace '\$$', ''
-	                    $computersWithoutLAPSByOU[$ouDN] += $computerName
-	                }
-	            }
-	            if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS configuration" -Completed }
-	            foreach ($ouEntry in ($computersWithoutLAPSByOU.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending)) {
-	                $lapsFinding = [PSCustomObject]@{
-	                    ouName = $ouEntry.Key
-	                    computerCount = $ouEntry.Value.Count
-	                    lapsUnprotectedComputers = (Format-LAPSComputerList -Name $ouEntry.Value)
-	                }
-	                if ($coverageCaveat) {
-	                    $lapsFinding | Add-Member -NotePropertyName 'lapsBackupOutsideAD' -NotePropertyValue $coverageCaveat -Force
-	                }
-	                $lapsFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSConfiguration' -Force
-	                Show-Object $lapsFinding -Class $(if ($coverageCaveat) { 'Hint' } else { 'Finding' })
-	            }
-	        } elseif ($activeCount -eq 0) {
-	            Show-Line "No active computer to measure - LAPS coverage was not evaluated" -Class "Note"
-	        } else {
-	            Show-Line "All computers (100%) have LAPS protection" -Class "Secure"
+	            Show-LAPSUnprotectedByOU -Computer $computersWithoutLAPS -CoverageCaveat $coverageCaveat
 	        }
-	        Show-DSRMPasswordManagement -DomainController $domainControllers `
-	            -GraceDays $staleGraceDays -EraStart $lapsEraStart
 	    } catch {
 	        Show-Line "Error during check - the LAPS configuration could not be evaluated: $_" -Class Finding
 	    }
@@ -91504,7 +91600,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1827"
+$Script:adPEASVersion = "2.7.0+20261018-1847"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
