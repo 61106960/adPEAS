@@ -262,14 +262,20 @@ function Get-ExchangeInfrastructure {
                     if ($addrStr -match 'ncacn_ip_tcp:([^\s]+)') { $fqdn = $Matches[1] }
                 }
 
-                # Extract Exchange version from serialNumber (e.g., "Version 15.2 (Build 32562.17)")
-                # Note: The build number from Config partition reflects the schema version, not the actual installed CU/patch level
+                # The version from serialNumber: "Version 15.2 (Build 32562.17)" is build
+                # 15.2.2562.17, see ConvertFrom-ExchangeSerialNumber. The card showed the
+                # value as written, a build no Microsoft list carries. Setup writes it, so it
+                # names the release or cumulative update last installed and not the security
+                # updates since - measured 15.2.2562.17 on a server whose OWA answers with
+                # 15.2.2562.56.
                 $sn = $srv.serialNumber
-                $exchVersion = if ($sn) { [string]$sn } else { "Unknown" }
-                # Extract build number for EOL lifecycle check (e.g., "15.2.32562.17")
-                $exchBuildNumber = $null
-                if ($sn -match 'Version (\d+)\.(\d+).*Build (\d+)\.(\d+)') {
-                    $exchBuildNumber = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$($Matches[4])"
+                $exchBuildNumber = ConvertFrom-ExchangeSerialNumber -SerialNumber ([string]$sn)
+                $exchVersion = if ($exchBuildNumber) {
+                    Convert-ExchangeBuildToVersion -BuildNumber $exchBuildNumber
+                } elseif ($sn) {
+                    [string]$sn
+                } else {
+                    "Unknown"
                 }
 
                 if ($srvName -and $exchBuildNumber) {

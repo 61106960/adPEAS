@@ -385,9 +385,13 @@ function Get-InfrastructureServers {
                         -SearchBase "CN=Services,$configNC" @PSBoundParameters)) {
                     $exchName = "$($exchObject.cn)"
                     if ([string]::IsNullOrWhiteSpace($exchName)) { continue }
-                    # serialNumber carries the build, e.g. "Version 15.2 (Build 1544.4)" -
-                    # the part that decides whether the server is still getting patches
-                    $exchangeVersionByName[$exchName.ToLowerInvariant()] = "$($exchObject.serialNumber)"
+                    # serialNumber carries the build - the part that decides whether the
+                    # server is still getting patches - with an offset: "Version 15.2
+                    # (Build 31544.4)" is 15.2.1544.4, Exchange 2019. Shown as the build
+                    # Microsoft publishes; a value in another form is shown as written.
+                    $serialValue = "$($exchObject.serialNumber)"
+                    $serialBuild = ConvertFrom-ExchangeSerialNumber -SerialNumber $serialValue
+                    $exchangeVersionByName[$exchName.ToLowerInvariant()] = $(if ($serialBuild) { $serialBuild } else { $serialValue })
                 }
             } else {
                 Write-Log "[Get-InfrastructureServers] No Configuration naming context - falling back to SPN detection for Exchange"

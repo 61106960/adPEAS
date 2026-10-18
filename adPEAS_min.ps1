@@ -22414,6 +22414,25 @@ function Get-NormalizedOSName {
         default                     { return $OSName }
     }
 }
+function ConvertFrom-ExchangeSerialNumber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$SerialNumber
+    )
+    if ($SerialNumber -notmatch 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)(?:\.(\d+))?') {
+        return $null
+    }
+    $build = [int]$Matches[3]
+    if ($build -ge 30000) {
+        $build -= 30000
+    }
+    $decoded = "$($Matches[1]).$($Matches[2]).$build"
+    if ($Matches[4]) { $decoded += ".$($Matches[4])" }
+    return $decoded
+}
 function Get-NormalizedExchangeVersion {
     [CmdletBinding()]
     param(
@@ -22445,8 +22464,9 @@ function Get-NormalizedExchangeVersion {
         }
     }
     if (-not [string]::IsNullOrEmpty($ProductName)) {
-        if ($ProductName -match 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)') {
-            return (Get-NormalizedExchangeVersion -BuildNumber "$($Matches[1]).$($Matches[2]).$($Matches[3])")
+        $serialBuild = ConvertFrom-ExchangeSerialNumber -SerialNumber $ProductName
+        if ($serialBuild) {
+            return (Get-NormalizedExchangeVersion -BuildNumber $serialBuild)
         }
         if ($ProductName -match '^\d+\.\d+\.\d+') {
             return (Get-NormalizedExchangeVersion -BuildNumber $ProductName)
@@ -74631,7 +74651,9 @@ function Get-InfrastructureServers {
                         -SearchBase "CN=Services,$configNC" @PSBoundParameters)) {
                     $exchName = "$($exchObject.cn)"
                     if ([string]::IsNullOrWhiteSpace($exchName)) { continue }
-                    $exchangeVersionByName[$exchName.ToLowerInvariant()] = "$($exchObject.serialNumber)"
+                    $serialValue = "$($exchObject.serialNumber)"
+                    $serialBuild = ConvertFrom-ExchangeSerialNumber -SerialNumber $serialValue
+                    $exchangeVersionByName[$exchName.ToLowerInvariant()] = $(if ($serialBuild) { $serialBuild } else { $serialValue })
                 }
             } else {
                 Write-Log "[Get-InfrastructureServers] No Configuration naming context - falling back to SPN detection for Exchange"
@@ -79816,10 +79838,13 @@ function Get-ExchangeInfrastructure {
                     if ($addrStr -match 'ncacn_ip_tcp:([^\s]+)') { $fqdn = $Matches[1] }
                 }
                 $sn = $srv.serialNumber
-                $exchVersion = if ($sn) { [string]$sn } else { "Unknown" }
-                $exchBuildNumber = $null
-                if ($sn -match 'Version (\d+)\.(\d+).*Build (\d+)\.(\d+)') {
-                    $exchBuildNumber = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$($Matches[4])"
+                $exchBuildNumber = ConvertFrom-ExchangeSerialNumber -SerialNumber ([string]$sn)
+                $exchVersion = if ($exchBuildNumber) {
+                    Convert-ExchangeBuildToVersion -BuildNumber $exchBuildNumber
+                } elseif ($sn) {
+                    [string]$sn
+                } else {
+                    "Unknown"
                 }
                 if ($srvName -and $exchBuildNumber) {
                     $configVersionByName[([string]$srvName).Split('.')[0].ToLower()] = $exchBuildNumber
@@ -94184,7 +94209,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1206"
+$Script:adPEASVersion = "2.7.0+20261018-1217"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

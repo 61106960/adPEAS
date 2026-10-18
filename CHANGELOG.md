@@ -595,6 +595,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   unknown. The organization card carries a new `ConfigurationVisibility` row when no
   accepted domain is readable.
 
+- **An Exchange 2019 known only from the directory is reported as out of support.**
+  Exchange writes its version into the `serialNumber` of its server object as
+  "Version 15.2 (Build 31544.4)", and from Exchange 2013 on the build carries an offset
+  of 30000 - that value is build 15.2.1544.4, Exchange 2019 CU14. Read as written, every
+  Exchange 2019 build lay above the Exchange SE boundary of 2562, so the server inventory
+  and the Exchange check classified it as Exchange SE, supported, wherever no HTTP probe
+  supplied the build. The offset is removed now; the Exchange organization's server card
+  names the product instead of printing the raw value, and the inventory shows the build
+  Microsoft publishes.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

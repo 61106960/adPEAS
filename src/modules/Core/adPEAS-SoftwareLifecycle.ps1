@@ -313,6 +313,57 @@ function Get-NormalizedOSName {
 # =============================================================================
 <#
 .SYNOPSIS
+    Reads the build number out of the serialNumber of an Exchange server object.
+
+.DESCRIPTION
+    Exchange writes its version into serialNumber of its msExchExchangeServer object in the
+    Configuration partition, as "Version 15.2 (Build 32562.17)". From Exchange 2013 on the
+    build part carries an offset of 30000: that value is build 15.2.2562.17, the release
+    of Exchange SE - measured on an Exchange SE server, and the same holds for 15.0 and
+    15.1. Read as written, every Exchange 2019 build (31544 for CU14) lies above the SE
+    boundary of 2562 and was classified as Exchange SE, supported, while Exchange 2019 is
+    out of support. Exchange 2010 writes its build without an offset
+    ("Version 14.3 (Build 123.4)").
+
+    The value is written by setup, so it names the release or cumulative update last
+    installed; security updates do not change it.
+
+.PARAMETER SerialNumber
+    The serialNumber value.
+
+.OUTPUTS
+    String - the build as major.minor.build[.revision], or $null for a value in another form.
+
+.EXAMPLE
+    ConvertFrom-ExchangeSerialNumber -SerialNumber 'Version 15.2 (Build 32562.17)'
+    # Returns: "15.2.2562.17"
+#>
+function ConvertFrom-ExchangeSerialNumber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$SerialNumber
+    )
+
+    if ($SerialNumber -notmatch 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)(?:\.(\d+))?') {
+        return $null
+    }
+
+    # No Exchange 2010 build comes near 30000, so the offset needs no version test.
+    $build = [int]$Matches[3]
+    if ($build -ge 30000) {
+        $build -= 30000
+    }
+
+    $decoded = "$($Matches[1]).$($Matches[2]).$build"
+    if ($Matches[4]) { $decoded += ".$($Matches[4])" }
+    return $decoded
+}
+
+<#
+.SYNOPSIS
     Normalizes an Exchange version/build to a lifecycle lookup key.
 
 .DESCRIPTION
@@ -379,14 +430,14 @@ function Get-NormalizedExchangeVersion {
 
     # Fallback to product name
     if (-not [string]::IsNullOrEmpty($ProductName)) {
-        # "Version 15.2 (Build 1544.4)" is what Exchange writes into serialNumber on its
-        # own object in the Configuration partition - and that is the only version string
-        # the inventory in Get-InfrastructureServers has. None of the patterns below
-        # matched it, so Get-ExchangeSeverity answered Standard, the is_exchange_eol
-        # trigger stayed false, and the row rendered uncoloured with no card while the
-        # dedicated Exchange check assessed the same server correctly from its build.
-        if ($ProductName -match 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)') {
-            return (Get-NormalizedExchangeVersion -BuildNumber "$($Matches[1]).$($Matches[2]).$($Matches[3])")
+        # "Version 15.2 (Build 32562.17)" is what Exchange writes into serialNumber on its
+        # own object in the Configuration partition. None of the patterns below matched
+        # it, so Get-ExchangeSeverity answered Standard and the is_exchange_eol trigger
+        # stayed false; then the build was read without removing its offset, and every
+        # Exchange 2019 came out as Exchange SE.
+        $serialBuild = ConvertFrom-ExchangeSerialNumber -SerialNumber $ProductName
+        if ($serialBuild) {
+            return (Get-NormalizedExchangeVersion -BuildNumber $serialBuild)
         }
         # A build number handed to the wrong parameter. The trigger does exactly that: it
         # has a version string and does not know which shape it is in.

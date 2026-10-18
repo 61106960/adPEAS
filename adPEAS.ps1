@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 12:06:22
-    Version: 2.7.0+20261018-1206
+    Build: 2026-10-18 12:17:24
+    Version: 2.7.0+20261018-1217
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -29851,6 +29851,57 @@ function Get-NormalizedOSName {
 # =============================================================================
 <#
 .SYNOPSIS
+    Reads the build number out of the serialNumber of an Exchange server object.
+
+.DESCRIPTION
+    Exchange writes its version into serialNumber of its msExchExchangeServer object in the
+    Configuration partition, as "Version 15.2 (Build 32562.17)". From Exchange 2013 on the
+    build part carries an offset of 30000: that value is build 15.2.2562.17, the release
+    of Exchange SE - measured on an Exchange SE server, and the same holds for 15.0 and
+    15.1. Read as written, every Exchange 2019 build (31544 for CU14) lies above the SE
+    boundary of 2562 and was classified as Exchange SE, supported, while Exchange 2019 is
+    out of support. Exchange 2010 writes its build without an offset
+    ("Version 14.3 (Build 123.4)").
+
+    The value is written by setup, so it names the release or cumulative update last
+    installed; security updates do not change it.
+
+.PARAMETER SerialNumber
+    The serialNumber value.
+
+.OUTPUTS
+    String - the build as major.minor.build[.revision], or $null for a value in another form.
+
+.EXAMPLE
+    ConvertFrom-ExchangeSerialNumber -SerialNumber 'Version 15.2 (Build 32562.17)'
+    # Returns: "15.2.2562.17"
+#>
+function ConvertFrom-ExchangeSerialNumber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$SerialNumber
+    )
+
+    if ($SerialNumber -notmatch 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)(?:\.(\d+))?') {
+        return $null
+    }
+
+    # No Exchange 2010 build comes near 30000, so the offset needs no version test.
+    $build = [int]$Matches[3]
+    if ($build -ge 30000) {
+        $build -= 30000
+    }
+
+    $decoded = "$($Matches[1]).$($Matches[2]).$build"
+    if ($Matches[4]) { $decoded += ".$($Matches[4])" }
+    return $decoded
+}
+
+<#
+.SYNOPSIS
     Normalizes an Exchange version/build to a lifecycle lookup key.
 
 .DESCRIPTION
@@ -29917,14 +29968,14 @@ function Get-NormalizedExchangeVersion {
 
     # Fallback to product name
     if (-not [string]::IsNullOrEmpty($ProductName)) {
-        # "Version 15.2 (Build 1544.4)" is what Exchange writes into serialNumber on its
-        # own object in the Configuration partition - and that is the only version string
-        # the inventory in Get-InfrastructureServers has. None of the patterns below
-        # matched it, so Get-ExchangeSeverity answered Standard, the is_exchange_eol
-        # trigger stayed false, and the row rendered uncoloured with no card while the
-        # dedicated Exchange check assessed the same server correctly from its build.
-        if ($ProductName -match 'Version\s+(\d+)\.(\d+)\s*\(Build\s+(\d+)') {
-            return (Get-NormalizedExchangeVersion -BuildNumber "$($Matches[1]).$($Matches[2]).$($Matches[3])")
+        # "Version 15.2 (Build 32562.17)" is what Exchange writes into serialNumber on its
+        # own object in the Configuration partition. None of the patterns below matched
+        # it, so Get-ExchangeSeverity answered Standard and the is_exchange_eol trigger
+        # stayed false; then the build was read without removing its offset, and every
+        # Exchange 2019 came out as Exchange SE.
+        $serialBuild = ConvertFrom-ExchangeSerialNumber -SerialNumber $ProductName
+        if ($serialBuild) {
+            return (Get-NormalizedExchangeVersion -BuildNumber $serialBuild)
         }
         # A build number handed to the wrong parameter. The trigger does exactly that: it
         # has a version string and does not know which shape it is in.
@@ -117944,9 +117995,13 @@ function Get-InfrastructureServers {
                         -SearchBase "CN=Services,$configNC" @PSBoundParameters)) {
                     $exchName = "$($exchObject.cn)"
                     if ([string]::IsNullOrWhiteSpace($exchName)) { continue }
-                    # serialNumber carries the build, e.g. "Version 15.2 (Build 1544.4)" -
-                    # the part that decides whether the server is still getting patches
-                    $exchangeVersionByName[$exchName.ToLowerInvariant()] = "$($exchObject.serialNumber)"
+                    # serialNumber carries the build - the part that decides whether the
+                    # server is still getting patches - with an offset: "Version 15.2
+                    # (Build 31544.4)" is 15.2.1544.4, Exchange 2019. Shown as the build
+                    # Microsoft publishes; a value in another form is shown as written.
+                    $serialValue = "$($exchObject.serialNumber)"
+                    $serialBuild = ConvertFrom-ExchangeSerialNumber -SerialNumber $serialValue
+                    $exchangeVersionByName[$exchName.ToLowerInvariant()] = $(if ($serialBuild) { $serialBuild } else { $serialValue })
                 }
             } else {
                 Write-Log "[Get-InfrastructureServers] No Configuration naming context - falling back to SPN detection for Exchange"
@@ -127188,14 +127243,20 @@ function Get-ExchangeInfrastructure {
                     if ($addrStr -match 'ncacn_ip_tcp:([^\s]+)') { $fqdn = $Matches[1] }
                 }
 
-                # Extract Exchange version from serialNumber (e.g., "Version 15.2 (Build 32562.17)")
-                # Note: The build number from Config partition reflects the schema version, not the actual installed CU/patch level
+                # The version from serialNumber: "Version 15.2 (Build 32562.17)" is build
+                # 15.2.2562.17, see ConvertFrom-ExchangeSerialNumber. The card showed the
+                # value as written, a build no Microsoft list carries. Setup writes it, so it
+                # names the release or cumulative update last installed and not the security
+                # updates since - measured 15.2.2562.17 on a server whose OWA answers with
+                # 15.2.2562.56.
                 $sn = $srv.serialNumber
-                $exchVersion = if ($sn) { [string]$sn } else { "Unknown" }
-                # Extract build number for EOL lifecycle check (e.g., "15.2.32562.17")
-                $exchBuildNumber = $null
-                if ($sn -match 'Version (\d+)\.(\d+).*Build (\d+)\.(\d+)') {
-                    $exchBuildNumber = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$($Matches[4])"
+                $exchBuildNumber = ConvertFrom-ExchangeSerialNumber -SerialNumber ([string]$sn)
+                $exchVersion = if ($exchBuildNumber) {
+                    Convert-ExchangeBuildToVersion -BuildNumber $exchBuildNumber
+                } elseif ($sn) {
+                    [string]$sn
+                } else {
+                    "Unknown"
                 }
 
                 if ($srvName -and $exchBuildNumber) {
@@ -146272,7 +146333,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1206"
+$Script:adPEASVersion = "2.7.0+20261018-1217"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
