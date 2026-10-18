@@ -4070,9 +4070,10 @@ function Convert-DefaultToRenderValues {
 	    if ($Value.Count -eq 0) { return $null }
 	    $renderValues = @()
 	    foreach ($item in $Value) {
-	        $itemStr = [string]$item
+	        $itemIsDate = $item -is [datetime]
+	        $itemStr = if ($itemIsDate) { Format-adPEASDate -Date $item } else { [string]$item }
 	        if ([string]::IsNullOrEmpty($itemStr)) { continue }
-	        $itemMatch = Get-TriggerMatch -Name $Name -Value $itemStr -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+	        $itemMatch = Get-TriggerMatch -Name $Name -Value $(if ($itemIsDate) { $item } else { $itemStr }) -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
 	        $renderValues += New-RenderValue -Display $itemStr -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
 	    }
 	    if ($renderValues.Count -eq 0) { return $null }
@@ -4084,7 +4085,7 @@ function Convert-DefaultToRenderValues {
 	        Values          = $renderValues
 	    }
 	}
-	$displayValue = [string]$Value
+	$displayValue = if ($Value -is [datetime]) { Format-adPEASDate -Date $Value } else { [string]$Value }
 	if ([string]::IsNullOrEmpty($displayValue)) { return $null }
 	$scalarMatch = Get-TriggerMatch -Name $Name -Value $Value -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
 	return @{
@@ -91186,7 +91187,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1307"
+$Script:adPEASVersion = "2.7.0+20261018-1311"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

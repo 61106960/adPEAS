@@ -662,6 +662,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `Get-NonDefaultComputerOwners` still announced and filed the objects as findings - a red
   heading and object over a yellow row, in front of a card rated a hint.
 
+- **Dates in object rows are written as yyyy-MM-dd HH:mm:ss.** A date without a
+  transformer of its own was turned into text by PowerShell's invariant culture, so
+  `pwdLastSet` and `lastLogonTimestamp` of every object read "07/04/2025 10:20:55" in the
+  console, the text report and the HTML report - the 7th of April to most readers, for the
+  4th of July. They go through the same formatter as every other date in adPEAS now.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

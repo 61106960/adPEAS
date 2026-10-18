@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 13:07:19
-    Version: 2.7.0+20261018-1307
+    Build: 2026-10-18 13:11:59
+    Version: 2.7.0+20261018-1311
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7940,9 +7940,11 @@ function Convert-DefaultToRenderValues {
         if ($Value.Count -eq 0) { return $null }
         $renderValues = @()
         foreach ($item in $Value) {
-            $itemStr = [string]$item
+            # A DateTime through Format-adPEASDate, as for a single value below.
+            $itemIsDate = $item -is [datetime]
+            $itemStr = if ($itemIsDate) { Format-adPEASDate -Date $item } else { [string]$item }
             if ([string]::IsNullOrEmpty($itemStr)) { continue }
-            $itemMatch = Get-TriggerMatch -Name $Name -Value $itemStr -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+            $itemMatch = Get-TriggerMatch -Name $Name -Value $(if ($itemIsDate) { $item } else { $itemStr }) -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
             $renderValues += New-RenderValue -Display $itemStr -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
         }
         if ($renderValues.Count -eq 0) { return $null }
@@ -7955,8 +7957,11 @@ function Convert-DefaultToRenderValues {
         }
     }
 
-    # Simple scalar value
-    $displayValue = [string]$Value
+    # Simple scalar value. A DateTime goes through Format-adPEASDate: cast to [string] it
+    # takes the invariant culture's MM/dd/yyyy, and "07/04/2025" reads as the 7th of April
+    # to most readers of a report that means the 4th of July - pwdLastSet and
+    # lastLogonTimestamp of every object came out that way.
+    $displayValue = if ($Value -is [datetime]) { Format-adPEASDate -Date $Value } else { [string]$Value }
     # Skip empty scalar values that slipped through the filter
     if ([string]::IsNullOrEmpty($displayValue)) { return $null }
     # Pass original $Value (not $displayValue) so typed objects (DateTime, Int64) are preserved
@@ -146429,7 +146434,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1307"
+$Script:adPEASVersion = "2.7.0+20261018-1311"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
