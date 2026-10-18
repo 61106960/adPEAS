@@ -426,8 +426,10 @@ function Get-ObjectACL {
                             $hasDangerous = $true
                             break
                         }
-                        # Also check for dangerous extended rights
-                        if ($right -match 'DS-Replication|Force-Change-Password|All-Extended-Rights') {
+                        # An extended right arrives under its resolved name, not as
+                        # "ExtendedRight" - see $Script:DangerousExtendedRightNames.
+                        if ($right -match 'DS-Replication|Force-Change-Password|All-Extended-Rights' -or
+                            $Script:DangerousExtendedRightNames -contains $right) {
                             $hasDangerous = $true
                             break
                         }

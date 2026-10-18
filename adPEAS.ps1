@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 13:50:05
-    Version: 2.7.0+20261018-1350
+    Build: 2026-10-18 14:01:55
+    Version: 2.7.0+20261018-1401
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -952,6 +952,30 @@ $Script:DangerousRights = @(
     'DeleteTree',       # Can delete object and all children
     'CreateChild',      # Can create child objects (e.g., new computer)
     'DeleteChild'       # Can delete child objects
+)
+
+<#
+.SYNOPSIS
+    Extended rights Get-ObjectACL -DangerousOnly keeps under their resolved names.
+.DESCRIPTION
+    ConvertTo-ADRightsList replaces the generic "ExtendedRight" label with the name of the
+    right an ACE's ObjectType resolves to, so a filter on $Script:DangerousRights alone drops
+    every ACE that grants one specific extended right. The filter also matches the
+    replication rights, User-Force-Change-Password and All-Extended-Rights by pattern; these
+    are the rest a check looks for - the five role transfers (Get-CriticalObjectACLs on the
+    role objects, Get-DangerousACLs for Change-PDC on the domain object) and the three
+    domain takeover rights Get-DangerousACLs names. Without them both checks could never
+    see one. Apply-Group-Policy and the like stay out: every GPO grants it.
+#>
+$Script:DangerousExtendedRightNames = @(
+    'Change-PDC'
+    'Change-Rid-Master'
+    'Change-Schema-Master'
+    'Change-Infrastructure-Master'
+    'Change-Domain-Master'
+    'Migrate-SID-History'
+    'Reanimate-Tombstones'
+    'DS-Install-Replica'
 )
 
 <#
@@ -40185,8 +40209,10 @@ function Get-ObjectACL {
                             $hasDangerous = $true
                             break
                         }
-                        # Also check for dangerous extended rights
-                        if ($right -match 'DS-Replication|Force-Change-Password|All-Extended-Rights') {
+                        # An extended right arrives under its resolved name, not as
+                        # "ExtendedRight" - see $Script:DangerousExtendedRightNames.
+                        if ($right -match 'DS-Replication|Force-Change-Password|All-Extended-Rights' -or
+                            $Script:DangerousExtendedRightNames -contains $right) {
                             $hasDangerous = $true
                             break
                         }
@@ -146570,7 +146596,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1350"
+$Script:adPEASVersion = "2.7.0+20261018-1401"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

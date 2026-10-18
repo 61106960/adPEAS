@@ -700,6 +700,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `[DateTime]::UnixEpoch`, which the timestamp conversion subtracted, exists in PowerShell
   7 only. The flags are read from their names now and the epoch is built.
 
+- **Role transfer and takeover rights reach the checks that look for them.**
+  `Get-ObjectACL -DangerousOnly` kept an extended right only as "ExtendedRight" or by the
+  pattern DS-Replication, Force-Change-Password or All-Extended-Rights - but the right
+  arrives under its resolved name, so an ACE granting Change-PDC, a role transfer,
+  Migrate-SID-History, Reanimate-Tombstones or DS-Install-Replica was dropped before
+  `Get-DangerousACLs` and `Get-CriticalObjectACLs` saw it. Both checks look for exactly
+  these names, and neither could report one. They pass the filter now.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

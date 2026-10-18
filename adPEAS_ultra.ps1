@@ -385,6 +385,16 @@ $Script:DangerousRights = @(
 	'CreateChild',
 	'DeleteChild'
 )
+$Script:DangerousExtendedRightNames = @(
+	'Change-PDC'
+	'Change-Rid-Master'
+	'Change-Schema-Master'
+	'Change-Infrastructure-Master'
+	'Change-Domain-Master'
+	'Migrate-SID-History'
+	'Reanimate-Tombstones'
+	'DS-Install-Replica'
+)
 $Script:WriteRights = @(
 	'GenericAll',
 	'GenericWrite',
@@ -28179,7 +28189,8 @@ function Get-ObjectACL {
 	                        $hasDangerous = $true
 	                        break
 	                    }
-	                    if ($right -match 'DS-Replication|Force-Change-Password|All-Extended-Rights') {
+	                    if ($right -match 'DS-Replication|Force-Change-Password|All-Extended-Rights' -or
+	                        $Script:DangerousExtendedRightNames -contains $right) {
 	                        $hasDangerous = $true
 	                        break
 	                    }
@@ -91248,7 +91259,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1350"
+$Script:adPEASVersion = "2.7.0+20261018-1401"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

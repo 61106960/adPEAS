@@ -603,6 +603,30 @@ $Script:DangerousRights = @(
 
 <#
 .SYNOPSIS
+    Extended rights Get-ObjectACL -DangerousOnly keeps under their resolved names.
+.DESCRIPTION
+    ConvertTo-ADRightsList replaces the generic "ExtendedRight" label with the name of the
+    right an ACE's ObjectType resolves to, so a filter on $Script:DangerousRights alone drops
+    every ACE that grants one specific extended right. The filter also matches the
+    replication rights, User-Force-Change-Password and All-Extended-Rights by pattern; these
+    are the rest a check looks for - the five role transfers (Get-CriticalObjectACLs on the
+    role objects, Get-DangerousACLs for Change-PDC on the domain object) and the three
+    domain takeover rights Get-DangerousACLs names. Without them both checks could never
+    see one. Apply-Group-Policy and the like stay out: every GPO grants it.
+#>
+$Script:DangerousExtendedRightNames = @(
+    'Change-PDC'
+    'Change-Rid-Master'
+    'Change-Schema-Master'
+    'Change-Infrastructure-Master'
+    'Change-Domain-Master'
+    'Migrate-SID-History'
+    'Reanimate-Tombstones'
+    'DS-Install-Replica'
+)
+
+<#
+.SYNOPSIS
     List of AD rights that grant write access.
 .DESCRIPTION
     Subset of DangerousRights focused specifically on write permissions.
