@@ -80668,23 +80668,47 @@ function Get-ExchangeInfrastructure {
                     $descriptorBytes = $connectorDescriptors[$connectorDN]
                     if ($descriptorBytes) {
                         try {
-                            $connectorACL = Get-ObjectACL -DistinguishedName $connectorDN -SecurityDescriptor $descriptorBytes -AllowOnly @PSBoundParameters
+                            $connectorACL = Get-ObjectACL -DistinguishedName $connectorDN -SecurityDescriptor $descriptorBytes @PSBoundParameters
                             if ($connectorACL) {
                                 $descriptorRead = $true
-                                foreach ($ace in @($connectorACL.ACEs)) {
-                                    $grantedRights = @()
-                                    if ([string]::IsNullOrEmpty([string]$ace.ObjectType)) {
-                                        if ((@($ace.RightsRaw) -contains 'GenericAll') -or
-                                            (@($ace.RightsRaw) -contains 'ExtendedRight')) {
-                                            $grantedRights = @($smtpRightMeaning.Keys)
-                                        }
+                                $smtpRightsOfACE = {
+                                    param($ConnectorACE)
+                                    if (-not (Test-ACEAppliesToSelf -ACE $ConnectorACE)) { return }
+                                    $aceRightsRaw = @($ConnectorACE.RightsRaw)
+                                    $controlAccess = ($aceRightsRaw -contains 'GenericAll') -or ($aceRightsRaw -contains 'ExtendedRight')
+                                    if ([string]::IsNullOrEmpty([string]$ConnectorACE.ObjectType)) {
+                                        if ($controlAccess) { $smtpRightMeaning.Keys }
+                                        return
                                     }
-                                    else {
-                                        $scopedRight = $smtpRightsByGuid[([string]$ace.ObjectType).ToLower()]
-                                        if ($scopedRight) { $grantedRights = @($scopedRight) }
+                                    $scopedRight = $smtpRightsByGuid[([string]$ConnectorACE.ObjectType).ToLower()]
+                                    if (-not $scopedRight) { return }
+                                    if ($controlAccess -or ($ConnectorACE.ObjectTypeName -and $aceRightsRaw -contains [string]$ConnectorACE.ObjectTypeName)) {
+                                        $scopedRight
+                                    }
+                                }
+                                $deniedSMTPRights = @{}
+                                foreach ($ace in @($connectorACL.ACEs)) {
+                                    if ([string]$ace.AccessControlType -ne 'Deny') { continue }
+                                    $deniedNow = @(& $smtpRightsOfACE $ace)
+                                    if ($deniedNow.Count -eq 0) { continue }
+                                    $denySID = [string]$ace.TrusteeSID
+                                    if (-not $deniedSMTPRights.ContainsKey($denySID)) { $deniedSMTPRights[$denySID] = @() }
+                                    $deniedSMTPRights[$denySID] += [PSCustomObject]@{ Rights = $deniedNow; IsInherited = [bool]$ace.IsInherited }
+                                }
+                                foreach ($ace in @($connectorACL.ACEs)) {
+                                    if ([string]$ace.AccessControlType -eq 'Deny') { continue }
+                                    $grantedRights = @(& $smtpRightsOfACE $ace)
+                                    $allowSID = [string]$ace.TrusteeSID
+                                    if ($grantedRights.Count -gt 0 -and $deniedSMTPRights.ContainsKey($allowSID)) {
+                                        $takenAway = @()
+                                        foreach ($deny in $deniedSMTPRights[$allowSID]) {
+                                            if ($deny.IsInherited -and -not $ace.IsInherited) { continue }
+                                            $takenAway += @($deny.Rights)
+                                        }
+                                        $grantedRights = @($grantedRights | Where-Object { $takenAway -notcontains $_ })
                                     }
                                     if (@($grantedRights).Count -eq 0) { continue }
-                                    $allRights = (@($grantedRights).Count -gt 1)
+                                    $allRights = [string]::IsNullOrEmpty([string]$ace.ObjectType)
                                     foreach ($rightName in $grantedRights) {
                                         $meaning = $smtpRightMeaning[$rightName]
                                         $grant = if ($allRights) {
@@ -94696,7 +94720,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1912"
+$Script:adPEASVersion = "2.7.0+20261018-1920"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -1250,6 +1250,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   attribute as binary, so all its values are read as bytes. The four measured attributes
   are on the list as well, because a value that decodes as text gives nothing else away.
 
+- **Receive connector rights are read the way the access check reads them.** The
+  connector's DACL was read without its Deny entries. A Deny of relay for ANONYMOUS
+  LOGON therefore never reached the verdict, and the connector it hardens was reported
+  as an open relay. An inherit-only ACE counted although it grants nothing on the
+  connector, and an ACE scoped to an SMTP right counted by its GUID alone, whatever its
+  mask held. A Deny now takes the right from an Allow of the same principal; an
+  inherited Deny only does so from an inherited Allow. Inherit-only ACEs are skipped,
+  and a scoped ACE needs the control access right.
+
 ---
 
 ## [2.7.0] - 2026-10-08
