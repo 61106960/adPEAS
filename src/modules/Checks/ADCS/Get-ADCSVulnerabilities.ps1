@@ -451,6 +451,14 @@ function Get-ADCSVulnerabilities {
                         foreach ($ace in $dacl) {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
+                            # The two readings of the ESC4 block: an inherit-only ACE does
+                            # not apply to the CA object, and an object ACE grants its mask
+                            # on the node its GUID names only, so a scoped GenericAll is no
+                            # WriteDacl or WriteOwner here.
+                            if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+                            $caObjectTypeGuid = $ace.ObjectType
+                            $caAceIsScoped = ($null -ne $caObjectTypeGuid -and $caObjectTypeGuid -ne [Guid]::Empty)
+
                             $aceSID = $ace.IdentityReference.Value
 
                             # See the ESC4 block: ToString() cannot render the SDDL
@@ -462,11 +470,13 @@ function Get-ADCSVulnerabilities {
                             $matchedRight = ""
 
                             # Check generic dangerous rights on the AD object
-                            foreach ($right in $Script:GenericDangerousRights) {
-                                if ($aceRights -match $right) {
-                                    $hasDangerousRight = $true
-                                    $matchedRight = $right
-                                    break
+                            if (-not $caAceIsScoped) {
+                                foreach ($right in $Script:GenericDangerousRights) {
+                                    if ($aceRights -match $right) {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = $right
+                                        break
+                                    }
                                 }
                             }
 
@@ -477,18 +487,24 @@ function Get-ADCSVulnerabilities {
                             # they built themselves - on this CA, which is the direct
                             # continuation of ESC4 and ESC5. The attribute is named on the
                             # row, so a reader can judge a delegation that names a harmless
-                            # one.
-                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
-                                $hasDangerousRight = $true
-                                $caObjectTypeGuid = $ace.ObjectType
-                                if ($null -eq $caObjectTypeGuid -or $caObjectTypeGuid -eq [Guid]::Empty) {
+                            # one. A scoped GenericAll or GenericWrite writes the attribute
+                            # it names as well. Scoped to a child class it writes no
+                            # attribute at all - the class is the one kind of GUID that
+                            # can never also name a property, which a GUID resolved as an
+                            # extended right can (DNS-Host-Name-Attributes is both).
+                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty|GenericAll|GenericWrite') {
+                                if (-not $caAceIsScoped) {
+                                    $hasDangerousRight = $true
                                     $matchedRight = 'WriteProperty (All)'
                                 } else {
                                     $caResolved = Resolve-ObjectTypeGUID -GUID $caObjectTypeGuid
-                                    $matchedRight = if ($caResolved -and $caResolved.Name) {
-                                        "WriteProperty ($($caResolved.Name))"
-                                    } else {
-                                        "WriteProperty ($caObjectTypeGuid)"
+                                    if (-not $caResolved -or $caResolved.Type -ne 'SchemaClass') {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = if ($caResolved -and $caResolved.Name) {
+                                            "WriteProperty ($($caResolved.Name))"
+                                        } else {
+                                            "WriteProperty ($caObjectTypeGuid)"
+                                        }
                                     }
                                 }
                             }
@@ -947,6 +963,34 @@ function Get-ADCSVulnerabilities {
 
                             # Convert to PSCustomObject format
                             foreach ($ace in $dacl) {
+                                $containerRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+
+                                # What the ACE grants on the container itself. An
+                                # inherit-only ACE grants nothing here - it exists for the
+                                # objects below, which ESC4 reads on every template. An
+                                # object ACE grants its mask on the node its GUID names
+                                # only (MS-DTYP 2.5.3.2): scoped to a child class it creates
+                                # objects of that class, scoped to an attribute it writes
+                                # that attribute, and in neither case is it GenericAll,
+                                # WriteDacl or WriteOwner on the container - which is what
+                                # the bare right name said. The scope is named, so the row
+                                # says which class or attribute it is.
+                                if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                                    $containerRights = ''
+                                } elseif ($null -ne $ace.ObjectType -and $ace.ObjectType -ne [Guid]::Empty) {
+                                    $scopeResolved = Resolve-ObjectTypeGUID -GUID $ace.ObjectType
+                                    $scopeName = if ($scopeResolved -and $scopeResolved.Name) { $scopeResolved.Name } else { [string]$ace.ObjectType }
+                                    $scopeIsClass = ($scopeResolved -and $scopeResolved.Type -eq 'SchemaClass')
+                                    $scopedRights = @()
+                                    if ($containerRights -match 'GenericAll|CreateChild' -and ($scopeIsClass -or -not $scopeResolved)) {
+                                        $scopedRights += "CreateChild ($scopeName)"
+                                    }
+                                    if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and -not $scopeIsClass) {
+                                        $scopedRights += "WriteProperty ($scopeName)"
+                                    }
+                                    $containerRights = $scopedRights -join ', '
+                                }
+
                                 $containerACL += [PSCustomObject]@{
                                     AccessControlType = $ace.AccessControlType
                                     IdentityReference = $ace.IdentityReference
@@ -960,7 +1004,7 @@ function Get-ADCSVulnerabilities {
                                     # by the filter and the check went on to report "PKI
                                     # container permissions are properly restricted" -
                                     # ESC5, green, on a domain compromise path.
-                                    ExpandedRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+                                    ExpandedRights = $containerRights
                                 }
                             }
                         }
@@ -1414,6 +1458,10 @@ function Get-ADCSVulnerabilities {
                         foreach ($ace in $dacl) {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
+                            # An inherit-only ACE does not apply to the template - it
+                            # exists to be passed down, and a template has no children.
+                            if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+
                             $aceSID = $ace.IdentityReference.Value
 
                             # ConvertTo-ExpandedADRightsName, not ToString(): the SDDL
@@ -1424,16 +1472,27 @@ function Get-ADCSVulnerabilities {
                             # had already taken over looked untouched here.
                             $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 
+                            # An object ACE grants its mask on the node its GUID names and
+                            # nowhere else (MS-DTYP 2.5.3.2). GenericAll scoped to an
+                            # attribute writes that attribute; scoped to a child class it
+                            # creates and deletes children of that class. Neither is
+                            # WriteDacl or WriteOwner on the template, and both used to be
+                            # reported as GenericAll.
+                            $objectTypeGuid = $ace.ObjectType
+                            $aceIsScoped = ($null -ne $objectTypeGuid -and $objectTypeGuid -ne [Guid]::Empty)
+
                             # Check if ACE has dangerous rights
                             $hasDangerousRight = $false
                             $matchedRight = ""
 
                             # First check the always-dangerous rights
-                            foreach ($right in $dangerousRights) {
-                                if ($aceRights -match $right) {
-                                    $hasDangerousRight = $true
-                                    $matchedRight = $right
-                                    break
+                            if (-not $aceIsScoped) {
+                                foreach ($right in $dangerousRights) {
+                                    if ($aceRights -match $right) {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = $right
+                                        break
+                                    }
                                 }
                             }
 
@@ -1449,10 +1508,13 @@ function Get-ADCSVulnerabilities {
                             # enrollment. Each is one modification away from ESC1, and each
                             # was discarded here as harmless - a silent false negative on
                             # the most precise form the delegation can take.
-                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
-                                $objectTypeGuid = $ace.ObjectType
+                            #
+                            # A scoped GenericAll or GenericWrite carries the WriteProperty
+                            # bit, so it writes the attribute it names just as a scoped
+                            # WriteProperty does.
+                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty|GenericAll|GenericWrite') {
                                 # Empty GUID or all-zeros means "all properties" = dangerous
-                                if ($null -eq $objectTypeGuid -or $objectTypeGuid -eq [Guid]::Empty) {
+                                if (-not $aceIsScoped) {
                                     $hasDangerousRight = $true
                                     $matchedRight = "WriteProperty (All)"
                                 } else {

@@ -56,6 +56,59 @@ function Test-EKUPresent {
     return [bool]($text -match $pattern)
 }
 
+function Get-TemplateEnrollmentRight {
+    <#
+    .SYNOPSIS
+    Says which of the two enrollment rights an ACE of a certificate template covers.
+
+    .DESCRIPTION
+    The CA asks the template's DACL for Certificate-Enrollment (a manual request) or
+    Certificate-AutoEnrollment. An ACE covers one of them when it applies to the template
+    itself and grants the extended right named, all extended rights, or full control.
+
+    Full control is read by its scope. An object ACE grants its mask on the node of the
+    object type list its GUID names and nowhere else (MS-DTYP 2.5.3.2), so GenericAll
+    scoped to an attribute or to a child class grants no extended right on the template -
+    the check used to take every GenericAll for one, and a Deny of it for a Deny of
+    enrollment. An inherit-only ACE exists only to be passed down and does not apply to
+    the template at all.
+
+    .PARAMETER ACE
+    An ACE as ConvertFrom-SecurityDescriptor returns it (Rights, ObjectType,
+    PropagationFlags).
+
+    .OUTPUTS
+    [string[]] - 'Certificate-Enrollment' and/or 'Certificate-AutoEnrollment'; empty when
+    the ACE covers neither.
+
+    .EXAMPLE
+    Get-TemplateEnrollmentRight -ACE $sd.ACEs[0]
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        $ACE
+    )
+
+    if ($null -eq $ACE) { return @() }
+    if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
+    if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
+
+    $objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
+    if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
+        return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
+        return @('Certificate-Enrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
+        return @('Certificate-AutoEnrollment')
+    }
+    return @()
+}
+
 function Get-ADCSTemplate {
     <#
     .SYNOPSIS
@@ -342,84 +395,92 @@ function Get-ADCSTemplate {
                 @()
             }
 
-            # Deny first, because a Deny wins the Windows access check wherever it applies
-            # and can stand anywhere in the ACE order. Only Allow ACEs were read, so the
-            # common hardening - Allow Enroll for a wide group, Deny Enroll for the same
-            # group on the template - was invisible: the template kept reporting ESC1, ESC2,
-            # ESC3, ESC9, ESC13 and ESC15 for principals that cannot enrol at all, and those
-            # are precisely the templates a customer considers dealt with.
+            # Who may enrol, read in the order the access check reads the DACL:
             #
-            # Only an explicit Deny for the same trustee is acted on. A Deny that reaches
-            # the principal through a group it belongs to is not resolved here - that needs
-            # the membership of every trustee - so such a Deny is reported as its own row
-            # and left for the reader to apply.
+            # - The explicit Denies first. A Deny written on the template wins over every
+            #   Allow, wherever it stands among the explicit ACEs. Only Allow ACEs were read
+            #   at first, so the common hardening - Allow Enroll inherited from the
+            #   container, Deny Enroll on the template - kept reporting ESC1, ESC2, ESC3,
+            #   ESC9, ESC13 and ESC15 for principals that cannot enrol at all, and those are
+            #   precisely the templates a customer considers dealt with.
+            # - Then the explicit Allows, and only then the inherited ACEs, in the order the
+            #   DACL holds them - the nearest parent's first. An inherited Deny therefore
+            #   does not stop an Allow written on the template. Every Deny used to win, which
+            #   dropped the principal, and with it the ESC findings, from a template the
+            #   principal can in fact enrol from.
+            #
+            # The first ACE that decides for a trustee is the one that counts. Which ACEs
+            # cover enrollment at all - their scope, inherit-only - says
+            # Get-TemplateEnrollmentRight.
+            #
+            # Only a Deny for the same trustee is acted on. A Deny that reaches the
+            # principal through a group it belongs to is not resolved here - that needs the
+            # membership of every trustee - so such a Deny is reported as its own row and
+            # left for the reader to apply.
             $enrollmentDenied = @()
-            $enrollmentDeniedSIDs = @{}
-            $enrollmentDeniedNames = @{}
+            $explicitDenies = @()
+            $explicitAllows = @()
+            $inheritedEntries = @()
             foreach ($ace in @($sdACEs)) {
-                if ($ace.Type -ne 'Deny') { continue }
-                if ($ace.Rights -notmatch 'ExtendedRight|GenericAll') { continue }
+                if ($ace.Type -ne 'Allow' -and $ace.Type -ne 'Deny') { continue }
+                $coveredRights = @(Get-TemplateEnrollmentRight -ACE $ace)
+                if ($coveredRights.Count -eq 0) { continue }
 
-                $deniedRight = ''
-                if ($ace.Rights -match 'GenericAll' -or $ace.RightsDisplay -match 'All-Extended-Rights') {
-                    $deniedRight = 'every right, enrollment included'
-                } elseif ($ace.RightsDisplay -match 'Certificate-Enrollment') {
-                    $deniedRight = 'Certificate-Enrollment'
-                } elseif ($ace.RightsDisplay -match 'Certificate-AutoEnrollment') {
+                $entry = [PSCustomObject]@{ ACE = $ace; Rights = $coveredRights }
+                if ($ace.IsInherited) {
+                    $inheritedEntries += $entry
+                } elseif ($ace.Type -eq 'Deny') {
+                    $explicitDenies += $entry
+                } else {
+                    $explicitAllows += $entry
+                }
+
+                if ($ace.Type -ne 'Deny') { continue }
+
+                $deniedRight = if ($coveredRights.Count -gt 1) {
+                    'every right, enrollment included'
+                } elseif ($coveredRights -contains 'Certificate-Enrollment') {
+                    'Certificate-Enrollment'
+                } else {
                     # Autoenrollment alone. It does not stop a manual request, so the
                     # trustee stays in the enrollment list and only the row is printed.
-                    $deniedRight = 'Certificate-AutoEnrollment only, manual enrollment still allowed'
-                } else {
-                    continue
+                    'Certificate-AutoEnrollment only, manual enrollment still allowed'
                 }
 
                 $deniedName = if ($ace.Name) { [string]$ace.Name } else { [string]$ace.SID }
                 if (-not $deniedName) { continue }
                 $deniedEntry = "${deniedName}: Deny on $deniedRight"
+                if ($ace.IsInherited) { $deniedEntry += ' (inherited - an Allow written on the template overrides it)' }
                 if ($enrollmentDenied -notcontains $deniedEntry) { $enrollmentDenied += $deniedEntry }
-
-                if ($deniedRight -notlike 'Certificate-AutoEnrollment only*') {
-                    if ($ace.SID) { $enrollmentDeniedSIDs[[string]$ace.SID] = $true }
-                    if ($ace.Name) { $enrollmentDeniedNames[[string]$ace.Name] = $true }
-                }
             }
 
-            if (@($sdACEs).Count -gt 0) {
-                # Use structured ACEs (includes SIDs directly from SD)
-                foreach ($ace in $sdACEs) {
-                    # Only Allow ACEs
-                    if ($ace.Type -ne 'Allow') { continue }
+            $decidedSIDs = @{}
+            $decidedNames = @{}
+            foreach ($entry in @($explicitDenies + $explicitAllows + $inheritedEntries)) {
+                $ace = $entry.ACE
+                $aceSID = [string]$ace.SID
+                $aceName = [string]$ace.Name
+                if ($aceSID -and $decidedSIDs.ContainsKey($aceSID)) { continue }
+                if ($aceName -and $decidedNames.ContainsKey($aceName)) { continue }
 
-                    # A trustee denied enrollment explicitly cannot enrol, whatever this
-                    # ACE grants.
-                    if ($ace.SID -and $enrollmentDeniedSIDs.ContainsKey([string]$ace.SID)) { continue }
-                    if ($ace.Name -and $enrollmentDeniedNames.ContainsKey([string]$ace.Name)) { continue }
-
-                    # Check for enrollment rights
-                    $hasEnroll = $false
-                    if ($ace.Rights -match 'ExtendedRight' -or $ace.Rights -match 'GenericAll') {
-                        # Check if ExtendedRight is for Certificate-Enrollment or Certificate-AutoEnrollment
-                        if ($ace.Rights -match 'GenericAll' -or
-                            $ace.RightsDisplay -match 'Certificate-Enrollment' -or
-                            $ace.RightsDisplay -match 'Certificate-AutoEnrollment' -or
-                            $ace.RightsDisplay -match 'All-Extended-Rights') {
-                            $hasEnroll = $true
-                        }
-                    }
-
-                    if ($hasEnroll -and $ace.Name -and $enrollmentPrincipals -notcontains $ace.Name) {
-                        $enrollmentPrincipals += $ace.Name
-                        # Append unconditionally, even when the ACE carries no SID. The
-                        # consumer pairs the two lists by index, and appending only the
-                        # SIDs that exist shifted every later entry by one: a principal
-                        # was then judged against another principal's SID. That can rate
-                        # an unprivileged group as privileged and silently suppress the
-                        # ESC1, ESC2 and ESC3 findings for the whole template. A $null
-                        # here makes the consumer fall back to the name, which is the
-                        # documented behaviour for a principal without a SID.
-                        $enrollmentPrincipalSIDs += $ace.SID
-                    }
+                if ($ace.Type -eq 'Deny') {
+                    # A Deny of autoenrollment alone decides nothing about a manual request.
+                    if ($entry.Rights -notcontains 'Certificate-Enrollment') { continue }
+                } elseif ($aceName -and $enrollmentPrincipals -notcontains $aceName) {
+                    $enrollmentPrincipals += $aceName
+                    # Append unconditionally, even when the ACE carries no SID. The
+                    # consumer pairs the two lists by index, and appending only the
+                    # SIDs that exist shifted every later entry by one: a principal
+                    # was then judged against another principal's SID. That can rate
+                    # an unprivileged group as privileged and silently suppress the
+                    # ESC1, ESC2 and ESC3 findings for the whole template. A $null
+                    # here makes the consumer fall back to the name, which is the
+                    # documented behaviour for a principal without a SID.
+                    $enrollmentPrincipalSIDs += $ace.SID
                 }
+
+                if ($aceSID) { $decidedSIDs[$aceSID] = $true }
+                if ($aceName) { $decidedNames[$aceName] = $true }
             }
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
@@ -451,15 +512,23 @@ function Get-ADCSTemplate {
                     if ($ace.Type -ne 'Allow') { continue }
                     if (-not $ace.SID) { continue }
 
+                    # The same two readings as for enrollment: an inherit-only ACE does not
+                    # apply to the template, and a scoped one grants its mask on the
+                    # attribute or child class it names only - GenericAll scoped that way
+                    # is no control over the template.
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+
                     # Check for write/modify rights
                     $hasWriteRight = $false
                     $matchedRight = ""
 
-                    foreach ($right in $writeRights) {
-                        if ($ace.Rights -match $right) {
-                            $hasWriteRight = $true
-                            $matchedRight = $right
-                            break
+                    if (-not $ace.ObjectType) {
+                        foreach ($right in $writeRights) {
+                            if ($ace.Rights -match $right) {
+                                $hasWriteRight = $true
+                                $matchedRight = $right
+                                break
+                            }
                         }
                     }
 

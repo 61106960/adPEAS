@@ -722,6 +722,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Subsystem and Organization Management computer creators. GenericAll now counts like
   CreateChild: for all classes or for the computer class.
 
+- **AD CS permissions are read the way the access check reads them.** `Get-ADCSTemplate`
+  took every GenericAll for an enrollment right and every Deny of one for a Deny of
+  enrollment, whatever the ACE was scoped to, read inherit-only ACEs as if they applied to
+  the template, and let an inherited Deny win over an Allow written on the template - which
+  dropped a principal, and its ESC findings, from a template it can enrol from. ESC4, the
+  check of the CA's AD object and ESC5 on the PKI containers read GenericAll, GenericWrite,
+  WriteDacl and WriteOwner out of any ACE's mask and counted inherit-only ACEs as well. An
+  object ACE grants its mask on the attribute or class its GUID names only: a scoped
+  GenericAll now counts as enrollment for the two enrollment rights, as a write of the
+  attribute it names - for ESC4 one of the six template attributes - and on a PKI
+  container as creating objects of the class it names, which the row says. Inherit-only
+  ACEs are skipped; the delegation wizard's full control of certificate templates is
+  reported by ESC4 on each template it reaches, no longer as GenericAll on the container.
+  An explicit ACE is evaluated before every inherited one, and the row of an inherited
+  Deny says that an Allow on the template overrides it.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

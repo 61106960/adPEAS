@@ -75312,6 +75312,29 @@ function Test-EKUPresent {
 	$pattern = '(?<![\d.])' + [regex]::Escape($Oid) + '(?![\d.])'
 	return [bool]($text -match $pattern)
 }
+function Get-TemplateEnrollmentRight {
+	[CmdletBinding()]
+	[OutputType([string[]])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [AllowNull()]
+	    $ACE
+	)
+	if ($null -eq $ACE) { return @() }
+	if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
+	if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
+	$objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
+	if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
+	    return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
+	}
+	if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
+	    return @('Certificate-Enrollment')
+	}
+	if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
+	    return @('Certificate-AutoEnrollment')
+	}
+	return @()
+}
 function Get-ADCSTemplate {
 	[CmdletBinding()]
 	param(
@@ -75433,49 +75456,51 @@ function Get-ADCSTemplate {
 	            @()
 	        }
 	        $enrollmentDenied = @()
-	        $enrollmentDeniedSIDs = @{}
-	        $enrollmentDeniedNames = @{}
+	        $explicitDenies = @()
+	        $explicitAllows = @()
+	        $inheritedEntries = @()
 	        foreach ($ace in @($sdACEs)) {
-	            if ($ace.Type -ne 'Deny') { continue }
-	            if ($ace.Rights -notmatch 'ExtendedRight|GenericAll') { continue }
-	            $deniedRight = ''
-	            if ($ace.Rights -match 'GenericAll' -or $ace.RightsDisplay -match 'All-Extended-Rights') {
-	                $deniedRight = 'every right, enrollment included'
-	            } elseif ($ace.RightsDisplay -match 'Certificate-Enrollment') {
-	                $deniedRight = 'Certificate-Enrollment'
-	            } elseif ($ace.RightsDisplay -match 'Certificate-AutoEnrollment') {
-	                $deniedRight = 'Certificate-AutoEnrollment only, manual enrollment still allowed'
+	            if ($ace.Type -ne 'Allow' -and $ace.Type -ne 'Deny') { continue }
+	            $coveredRights = @(Get-TemplateEnrollmentRight -ACE $ace)
+	            if ($coveredRights.Count -eq 0) { continue }
+	            $entry = [PSCustomObject]@{ ACE = $ace; Rights = $coveredRights }
+	            if ($ace.IsInherited) {
+	                $inheritedEntries += $entry
+	            } elseif ($ace.Type -eq 'Deny') {
+	                $explicitDenies += $entry
 	            } else {
-	                continue
+	                $explicitAllows += $entry
+	            }
+	            if ($ace.Type -ne 'Deny') { continue }
+	            $deniedRight = if ($coveredRights.Count -gt 1) {
+	                'every right, enrollment included'
+	            } elseif ($coveredRights -contains 'Certificate-Enrollment') {
+	                'Certificate-Enrollment'
+	            } else {
+	                'Certificate-AutoEnrollment only, manual enrollment still allowed'
 	            }
 	            $deniedName = if ($ace.Name) { [string]$ace.Name } else { [string]$ace.SID }
 	            if (-not $deniedName) { continue }
 	            $deniedEntry = "${deniedName}: Deny on $deniedRight"
+	            if ($ace.IsInherited) { $deniedEntry += ' (inherited - an Allow written on the template overrides it)' }
 	            if ($enrollmentDenied -notcontains $deniedEntry) { $enrollmentDenied += $deniedEntry }
-	            if ($deniedRight -notlike 'Certificate-AutoEnrollment only*') {
-	                if ($ace.SID) { $enrollmentDeniedSIDs[[string]$ace.SID] = $true }
-	                if ($ace.Name) { $enrollmentDeniedNames[[string]$ace.Name] = $true }
-	            }
 	        }
-	        if (@($sdACEs).Count -gt 0) {
-	            foreach ($ace in $sdACEs) {
-	                if ($ace.Type -ne 'Allow') { continue }
-	                if ($ace.SID -and $enrollmentDeniedSIDs.ContainsKey([string]$ace.SID)) { continue }
-	                if ($ace.Name -and $enrollmentDeniedNames.ContainsKey([string]$ace.Name)) { continue }
-	                $hasEnroll = $false
-	                if ($ace.Rights -match 'ExtendedRight' -or $ace.Rights -match 'GenericAll') {
-	                    if ($ace.Rights -match 'GenericAll' -or
-	                        $ace.RightsDisplay -match 'Certificate-Enrollment' -or
-	                        $ace.RightsDisplay -match 'Certificate-AutoEnrollment' -or
-	                        $ace.RightsDisplay -match 'All-Extended-Rights') {
-	                        $hasEnroll = $true
-	                    }
-	                }
-	                if ($hasEnroll -and $ace.Name -and $enrollmentPrincipals -notcontains $ace.Name) {
-	                    $enrollmentPrincipals += $ace.Name
-	                    $enrollmentPrincipalSIDs += $ace.SID
-	                }
+	        $decidedSIDs = @{}
+	        $decidedNames = @{}
+	        foreach ($entry in @($explicitDenies + $explicitAllows + $inheritedEntries)) {
+	            $ace = $entry.ACE
+	            $aceSID = [string]$ace.SID
+	            $aceName = [string]$ace.Name
+	            if ($aceSID -and $decidedSIDs.ContainsKey($aceSID)) { continue }
+	            if ($aceName -and $decidedNames.ContainsKey($aceName)) { continue }
+	            if ($ace.Type -eq 'Deny') {
+	                if ($entry.Rights -notcontains 'Certificate-Enrollment') { continue }
+	            } elseif ($aceName -and $enrollmentPrincipals -notcontains $aceName) {
+	                $enrollmentPrincipals += $aceName
+	                $enrollmentPrincipalSIDs += $ace.SID
 	            }
+	            if ($aceSID) { $decidedSIDs[$aceSID] = $true }
+	            if ($aceName) { $decidedNames[$aceName] = $true }
 	        }
 	        $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
 	        $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
@@ -75490,13 +75515,16 @@ function Get-ADCSTemplate {
 	            foreach ($ace in $sdACEs) {
 	                if ($ace.Type -ne 'Allow') { continue }
 	                if (-not $ace.SID) { continue }
+	                if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
 	                $hasWriteRight = $false
 	                $matchedRight = ""
-	                foreach ($right in $writeRights) {
-	                    if ($ace.Rights -match $right) {
-	                        $hasWriteRight = $true
-	                        $matchedRight = $right
-	                        break
+	                if (-not $ace.ObjectType) {
+	                    foreach ($right in $writeRights) {
+	                        if ($ace.Rights -match $right) {
+	                            $hasWriteRight = $true
+	                            $matchedRight = $right
+	                            break
+	                        }
 	                    }
 	                }
 	                if (-not $hasWriteRight -and $ace.Rights -match 'WriteProperty') {
@@ -75784,28 +75812,35 @@ function Get-ADCSVulnerabilities {
 	                    $dacl = $securityDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 	                    foreach ($ace in $dacl) {
 	                        if ($ace.AccessControlType -ne 'Allow') { continue }
+	                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+	                        $caObjectTypeGuid = $ace.ObjectType
+	                        $caAceIsScoped = ($null -ne $caObjectTypeGuid -and $caObjectTypeGuid -ne [Guid]::Empty)
 	                        $aceSID = $ace.IdentityReference.Value
 	                        $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 	                        $hasDangerousRight = $false
 	                        $matchedRight = ""
-	                        foreach ($right in $Script:GenericDangerousRights) {
-	                            if ($aceRights -match $right) {
-	                                $hasDangerousRight = $true
-	                                $matchedRight = $right
-	                                break
+	                        if (-not $caAceIsScoped) {
+	                            foreach ($right in $Script:GenericDangerousRights) {
+	                                if ($aceRights -match $right) {
+	                                    $hasDangerousRight = $true
+	                                    $matchedRight = $right
+	                                    break
+	                                }
 	                            }
 	                        }
-	                        if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
-	                            $hasDangerousRight = $true
-	                            $caObjectTypeGuid = $ace.ObjectType
-	                            if ($null -eq $caObjectTypeGuid -or $caObjectTypeGuid -eq [Guid]::Empty) {
+	                        if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty|GenericAll|GenericWrite') {
+	                            if (-not $caAceIsScoped) {
+	                                $hasDangerousRight = $true
 	                                $matchedRight = 'WriteProperty (All)'
 	                            } else {
 	                                $caResolved = Resolve-ObjectTypeGUID -GUID $caObjectTypeGuid
-	                                $matchedRight = if ($caResolved -and $caResolved.Name) {
-	                                    "WriteProperty ($($caResolved.Name))"
-	                                } else {
-	                                    "WriteProperty ($caObjectTypeGuid)"
+	                                if (-not $caResolved -or $caResolved.Type -ne 'SchemaClass') {
+	                                    $hasDangerousRight = $true
+	                                    $matchedRight = if ($caResolved -and $caResolved.Name) {
+	                                        "WriteProperty ($($caResolved.Name))"
+	                                    } else {
+	                                        "WriteProperty ($caObjectTypeGuid)"
+	                                    }
 	                                }
 	                            }
 	                        }
@@ -76107,11 +76142,27 @@ function Get-ADCSVulnerabilities {
 	                        $secDescriptor.SetSecurityDescriptorBinaryForm($containerObj.nTSecurityDescriptor)
 	                        $dacl = $secDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 	                        foreach ($ace in $dacl) {
+	                            $containerRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+	                            if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+	                                $containerRights = ''
+	                            } elseif ($null -ne $ace.ObjectType -and $ace.ObjectType -ne [Guid]::Empty) {
+	                                $scopeResolved = Resolve-ObjectTypeGUID -GUID $ace.ObjectType
+	                                $scopeName = if ($scopeResolved -and $scopeResolved.Name) { $scopeResolved.Name } else { [string]$ace.ObjectType }
+	                                $scopeIsClass = ($scopeResolved -and $scopeResolved.Type -eq 'SchemaClass')
+	                                $scopedRights = @()
+	                                if ($containerRights -match 'GenericAll|CreateChild' -and ($scopeIsClass -or -not $scopeResolved)) {
+	                                    $scopedRights += "CreateChild ($scopeName)"
+	                                }
+	                                if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and -not $scopeIsClass) {
+	                                    $scopedRights += "WriteProperty ($scopeName)"
+	                                }
+	                                $containerRights = $scopedRights -join ', '
+	                            }
 	                            $containerACL += [PSCustomObject]@{
 	                                AccessControlType = $ace.AccessControlType
 	                                IdentityReference = $ace.IdentityReference
 	                                ActiveDirectoryRights = $ace.ActiveDirectoryRights
-	                                ExpandedRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+	                                ExpandedRights = $containerRights
 	                            }
 	                        }
 	                    }
@@ -76384,20 +76435,24 @@ function Get-ADCSVulnerabilities {
 	                    $dangerousRights = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner')
 	                    foreach ($ace in $dacl) {
 	                        if ($ace.AccessControlType -ne 'Allow') { continue }
+	                        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
 	                        $aceSID = $ace.IdentityReference.Value
 	                        $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+	                        $objectTypeGuid = $ace.ObjectType
+	                        $aceIsScoped = ($null -ne $objectTypeGuid -and $objectTypeGuid -ne [Guid]::Empty)
 	                        $hasDangerousRight = $false
 	                        $matchedRight = ""
-	                        foreach ($right in $dangerousRights) {
-	                            if ($aceRights -match $right) {
-	                                $hasDangerousRight = $true
-	                                $matchedRight = $right
-	                                break
+	                        if (-not $aceIsScoped) {
+	                            foreach ($right in $dangerousRights) {
+	                                if ($aceRights -match $right) {
+	                                    $hasDangerousRight = $true
+	                                    $matchedRight = $right
+	                                    break
+	                                }
 	                            }
 	                        }
-	                        if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
-	                            $objectTypeGuid = $ace.ObjectType
-	                            if ($null -eq $objectTypeGuid -or $objectTypeGuid -eq [Guid]::Empty) {
+	                        if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty|GenericAll|GenericWrite') {
+	                            if (-not $aceIsScoped) {
 	                                $hasDangerousRight = $true
 	                                $matchedRight = "WriteProperty (All)"
 	                            } else {
@@ -91254,7 +91309,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261018-1411"
+$Script:adPEASVersion = "2.7.0+20261018-1443"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

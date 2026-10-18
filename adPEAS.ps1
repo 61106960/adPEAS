@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 14:11:56
-    Version: 2.7.0+20261018-1411
+    Build: 2026-10-18 14:43:51
+    Version: 2.7.0+20261018-1443
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -124181,6 +124181,59 @@ function Test-EKUPresent {
     return [bool]($text -match $pattern)
 }
 
+function Get-TemplateEnrollmentRight {
+    <#
+    .SYNOPSIS
+    Says which of the two enrollment rights an ACE of a certificate template covers.
+
+    .DESCRIPTION
+    The CA asks the template's DACL for Certificate-Enrollment (a manual request) or
+    Certificate-AutoEnrollment. An ACE covers one of them when it applies to the template
+    itself and grants the extended right named, all extended rights, or full control.
+
+    Full control is read by its scope. An object ACE grants its mask on the node of the
+    object type list its GUID names and nowhere else (MS-DTYP 2.5.3.2), so GenericAll
+    scoped to an attribute or to a child class grants no extended right on the template -
+    the check used to take every GenericAll for one, and a Deny of it for a Deny of
+    enrollment. An inherit-only ACE exists only to be passed down and does not apply to
+    the template at all.
+
+    .PARAMETER ACE
+    An ACE as ConvertFrom-SecurityDescriptor returns it (Rights, ObjectType,
+    PropagationFlags).
+
+    .OUTPUTS
+    [string[]] - 'Certificate-Enrollment' and/or 'Certificate-AutoEnrollment'; empty when
+    the ACE covers neither.
+
+    .EXAMPLE
+    Get-TemplateEnrollmentRight -ACE $sd.ACEs[0]
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        $ACE
+    )
+
+    if ($null -eq $ACE) { return @() }
+    if (-not (Test-ACEAppliesToSelf -ACE $ACE)) { return @() }
+    if ([string]$ACE.Rights -notmatch 'GenericAll|ExtendedRight') { return @() }
+
+    $objectType = ([string]$ACE.ObjectType).Trim('{}').ToLower()
+    if (-not $objectType -or $objectType -eq [Guid]::Empty.ToString()) {
+        return @('Certificate-Enrollment', 'Certificate-AutoEnrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateEnrollment']) {
+        return @('Certificate-Enrollment')
+    }
+    if ($objectType -eq $Script:ExtendedRightsAliases['CertificateAutoEnrollment']) {
+        return @('Certificate-AutoEnrollment')
+    }
+    return @()
+}
+
 function Get-ADCSTemplate {
     <#
     .SYNOPSIS
@@ -124467,84 +124520,92 @@ function Get-ADCSTemplate {
                 @()
             }
 
-            # Deny first, because a Deny wins the Windows access check wherever it applies
-            # and can stand anywhere in the ACE order. Only Allow ACEs were read, so the
-            # common hardening - Allow Enroll for a wide group, Deny Enroll for the same
-            # group on the template - was invisible: the template kept reporting ESC1, ESC2,
-            # ESC3, ESC9, ESC13 and ESC15 for principals that cannot enrol at all, and those
-            # are precisely the templates a customer considers dealt with.
+            # Who may enrol, read in the order the access check reads the DACL:
             #
-            # Only an explicit Deny for the same trustee is acted on. A Deny that reaches
-            # the principal through a group it belongs to is not resolved here - that needs
-            # the membership of every trustee - so such a Deny is reported as its own row
-            # and left for the reader to apply.
+            # - The explicit Denies first. A Deny written on the template wins over every
+            #   Allow, wherever it stands among the explicit ACEs. Only Allow ACEs were read
+            #   at first, so the common hardening - Allow Enroll inherited from the
+            #   container, Deny Enroll on the template - kept reporting ESC1, ESC2, ESC3,
+            #   ESC9, ESC13 and ESC15 for principals that cannot enrol at all, and those are
+            #   precisely the templates a customer considers dealt with.
+            # - Then the explicit Allows, and only then the inherited ACEs, in the order the
+            #   DACL holds them - the nearest parent's first. An inherited Deny therefore
+            #   does not stop an Allow written on the template. Every Deny used to win, which
+            #   dropped the principal, and with it the ESC findings, from a template the
+            #   principal can in fact enrol from.
+            #
+            # The first ACE that decides for a trustee is the one that counts. Which ACEs
+            # cover enrollment at all - their scope, inherit-only - says
+            # Get-TemplateEnrollmentRight.
+            #
+            # Only a Deny for the same trustee is acted on. A Deny that reaches the
+            # principal through a group it belongs to is not resolved here - that needs the
+            # membership of every trustee - so such a Deny is reported as its own row and
+            # left for the reader to apply.
             $enrollmentDenied = @()
-            $enrollmentDeniedSIDs = @{}
-            $enrollmentDeniedNames = @{}
+            $explicitDenies = @()
+            $explicitAllows = @()
+            $inheritedEntries = @()
             foreach ($ace in @($sdACEs)) {
-                if ($ace.Type -ne 'Deny') { continue }
-                if ($ace.Rights -notmatch 'ExtendedRight|GenericAll') { continue }
+                if ($ace.Type -ne 'Allow' -and $ace.Type -ne 'Deny') { continue }
+                $coveredRights = @(Get-TemplateEnrollmentRight -ACE $ace)
+                if ($coveredRights.Count -eq 0) { continue }
 
-                $deniedRight = ''
-                if ($ace.Rights -match 'GenericAll' -or $ace.RightsDisplay -match 'All-Extended-Rights') {
-                    $deniedRight = 'every right, enrollment included'
-                } elseif ($ace.RightsDisplay -match 'Certificate-Enrollment') {
-                    $deniedRight = 'Certificate-Enrollment'
-                } elseif ($ace.RightsDisplay -match 'Certificate-AutoEnrollment') {
+                $entry = [PSCustomObject]@{ ACE = $ace; Rights = $coveredRights }
+                if ($ace.IsInherited) {
+                    $inheritedEntries += $entry
+                } elseif ($ace.Type -eq 'Deny') {
+                    $explicitDenies += $entry
+                } else {
+                    $explicitAllows += $entry
+                }
+
+                if ($ace.Type -ne 'Deny') { continue }
+
+                $deniedRight = if ($coveredRights.Count -gt 1) {
+                    'every right, enrollment included'
+                } elseif ($coveredRights -contains 'Certificate-Enrollment') {
+                    'Certificate-Enrollment'
+                } else {
                     # Autoenrollment alone. It does not stop a manual request, so the
                     # trustee stays in the enrollment list and only the row is printed.
-                    $deniedRight = 'Certificate-AutoEnrollment only, manual enrollment still allowed'
-                } else {
-                    continue
+                    'Certificate-AutoEnrollment only, manual enrollment still allowed'
                 }
 
                 $deniedName = if ($ace.Name) { [string]$ace.Name } else { [string]$ace.SID }
                 if (-not $deniedName) { continue }
                 $deniedEntry = "${deniedName}: Deny on $deniedRight"
+                if ($ace.IsInherited) { $deniedEntry += ' (inherited - an Allow written on the template overrides it)' }
                 if ($enrollmentDenied -notcontains $deniedEntry) { $enrollmentDenied += $deniedEntry }
-
-                if ($deniedRight -notlike 'Certificate-AutoEnrollment only*') {
-                    if ($ace.SID) { $enrollmentDeniedSIDs[[string]$ace.SID] = $true }
-                    if ($ace.Name) { $enrollmentDeniedNames[[string]$ace.Name] = $true }
-                }
             }
 
-            if (@($sdACEs).Count -gt 0) {
-                # Use structured ACEs (includes SIDs directly from SD)
-                foreach ($ace in $sdACEs) {
-                    # Only Allow ACEs
-                    if ($ace.Type -ne 'Allow') { continue }
+            $decidedSIDs = @{}
+            $decidedNames = @{}
+            foreach ($entry in @($explicitDenies + $explicitAllows + $inheritedEntries)) {
+                $ace = $entry.ACE
+                $aceSID = [string]$ace.SID
+                $aceName = [string]$ace.Name
+                if ($aceSID -and $decidedSIDs.ContainsKey($aceSID)) { continue }
+                if ($aceName -and $decidedNames.ContainsKey($aceName)) { continue }
 
-                    # A trustee denied enrollment explicitly cannot enrol, whatever this
-                    # ACE grants.
-                    if ($ace.SID -and $enrollmentDeniedSIDs.ContainsKey([string]$ace.SID)) { continue }
-                    if ($ace.Name -and $enrollmentDeniedNames.ContainsKey([string]$ace.Name)) { continue }
-
-                    # Check for enrollment rights
-                    $hasEnroll = $false
-                    if ($ace.Rights -match 'ExtendedRight' -or $ace.Rights -match 'GenericAll') {
-                        # Check if ExtendedRight is for Certificate-Enrollment or Certificate-AutoEnrollment
-                        if ($ace.Rights -match 'GenericAll' -or
-                            $ace.RightsDisplay -match 'Certificate-Enrollment' -or
-                            $ace.RightsDisplay -match 'Certificate-AutoEnrollment' -or
-                            $ace.RightsDisplay -match 'All-Extended-Rights') {
-                            $hasEnroll = $true
-                        }
-                    }
-
-                    if ($hasEnroll -and $ace.Name -and $enrollmentPrincipals -notcontains $ace.Name) {
-                        $enrollmentPrincipals += $ace.Name
-                        # Append unconditionally, even when the ACE carries no SID. The
-                        # consumer pairs the two lists by index, and appending only the
-                        # SIDs that exist shifted every later entry by one: a principal
-                        # was then judged against another principal's SID. That can rate
-                        # an unprivileged group as privileged and silently suppress the
-                        # ESC1, ESC2 and ESC3 findings for the whole template. A $null
-                        # here makes the consumer fall back to the name, which is the
-                        # documented behaviour for a principal without a SID.
-                        $enrollmentPrincipalSIDs += $ace.SID
-                    }
+                if ($ace.Type -eq 'Deny') {
+                    # A Deny of autoenrollment alone decides nothing about a manual request.
+                    if ($entry.Rights -notcontains 'Certificate-Enrollment') { continue }
+                } elseif ($aceName -and $enrollmentPrincipals -notcontains $aceName) {
+                    $enrollmentPrincipals += $aceName
+                    # Append unconditionally, even when the ACE carries no SID. The
+                    # consumer pairs the two lists by index, and appending only the
+                    # SIDs that exist shifted every later entry by one: a principal
+                    # was then judged against another principal's SID. That can rate
+                    # an unprivileged group as privileged and silently suppress the
+                    # ESC1, ESC2 and ESC3 findings for the whole template. A $null
+                    # here makes the consumer fall back to the name, which is the
+                    # documented behaviour for a principal without a SID.
+                    $enrollmentPrincipalSIDs += $ace.SID
                 }
+
+                if ($aceSID) { $decidedSIDs[$aceSID] = $true }
+                if ($aceName) { $decidedNames[$aceName] = $true }
             }
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipals' -NotePropertyValue $enrollmentPrincipals
             $template | Add-Member -NotePropertyName 'EnrollmentPrincipalSIDs' -NotePropertyValue $enrollmentPrincipalSIDs
@@ -124576,15 +124637,23 @@ function Get-ADCSTemplate {
                     if ($ace.Type -ne 'Allow') { continue }
                     if (-not $ace.SID) { continue }
 
+                    # The same two readings as for enrollment: an inherit-only ACE does not
+                    # apply to the template, and a scoped one grants its mask on the
+                    # attribute or child class it names only - GenericAll scoped that way
+                    # is no control over the template.
+                    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+
                     # Check for write/modify rights
                     $hasWriteRight = $false
                     $matchedRight = ""
 
-                    foreach ($right in $writeRights) {
-                        if ($ace.Rights -match $right) {
-                            $hasWriteRight = $true
-                            $matchedRight = $right
-                            break
+                    if (-not $ace.ObjectType) {
+                        foreach ($right in $writeRights) {
+                            if ($ace.Rights -match $right) {
+                                $hasWriteRight = $true
+                                $matchedRight = $right
+                                break
+                            }
                         }
                     }
 
@@ -125098,6 +125167,14 @@ function Get-ADCSVulnerabilities {
                         foreach ($ace in $dacl) {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
+                            # The two readings of the ESC4 block: an inherit-only ACE does
+                            # not apply to the CA object, and an object ACE grants its mask
+                            # on the node its GUID names only, so a scoped GenericAll is no
+                            # WriteDacl or WriteOwner here.
+                            if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+                            $caObjectTypeGuid = $ace.ObjectType
+                            $caAceIsScoped = ($null -ne $caObjectTypeGuid -and $caObjectTypeGuid -ne [Guid]::Empty)
+
                             $aceSID = $ace.IdentityReference.Value
 
                             # See the ESC4 block: ToString() cannot render the SDDL
@@ -125109,11 +125186,13 @@ function Get-ADCSVulnerabilities {
                             $matchedRight = ""
 
                             # Check generic dangerous rights on the AD object
-                            foreach ($right in $Script:GenericDangerousRights) {
-                                if ($aceRights -match $right) {
-                                    $hasDangerousRight = $true
-                                    $matchedRight = $right
-                                    break
+                            if (-not $caAceIsScoped) {
+                                foreach ($right in $Script:GenericDangerousRights) {
+                                    if ($aceRights -match $right) {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = $right
+                                        break
+                                    }
                                 }
                             }
 
@@ -125124,18 +125203,24 @@ function Get-ADCSVulnerabilities {
                             # they built themselves - on this CA, which is the direct
                             # continuation of ESC4 and ESC5. The attribute is named on the
                             # row, so a reader can judge a delegation that names a harmless
-                            # one.
-                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
-                                $hasDangerousRight = $true
-                                $caObjectTypeGuid = $ace.ObjectType
-                                if ($null -eq $caObjectTypeGuid -or $caObjectTypeGuid -eq [Guid]::Empty) {
+                            # one. A scoped GenericAll or GenericWrite writes the attribute
+                            # it names as well. Scoped to a child class it writes no
+                            # attribute at all - the class is the one kind of GUID that
+                            # can never also name a property, which a GUID resolved as an
+                            # extended right can (DNS-Host-Name-Attributes is both).
+                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty|GenericAll|GenericWrite') {
+                                if (-not $caAceIsScoped) {
+                                    $hasDangerousRight = $true
                                     $matchedRight = 'WriteProperty (All)'
                                 } else {
                                     $caResolved = Resolve-ObjectTypeGUID -GUID $caObjectTypeGuid
-                                    $matchedRight = if ($caResolved -and $caResolved.Name) {
-                                        "WriteProperty ($($caResolved.Name))"
-                                    } else {
-                                        "WriteProperty ($caObjectTypeGuid)"
+                                    if (-not $caResolved -or $caResolved.Type -ne 'SchemaClass') {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = if ($caResolved -and $caResolved.Name) {
+                                            "WriteProperty ($($caResolved.Name))"
+                                        } else {
+                                            "WriteProperty ($caObjectTypeGuid)"
+                                        }
                                     }
                                 }
                             }
@@ -125594,6 +125679,34 @@ function Get-ADCSVulnerabilities {
 
                             # Convert to PSCustomObject format
                             foreach ($ace in $dacl) {
+                                $containerRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+
+                                # What the ACE grants on the container itself. An
+                                # inherit-only ACE grants nothing here - it exists for the
+                                # objects below, which ESC4 reads on every template. An
+                                # object ACE grants its mask on the node its GUID names
+                                # only (MS-DTYP 2.5.3.2): scoped to a child class it creates
+                                # objects of that class, scoped to an attribute it writes
+                                # that attribute, and in neither case is it GenericAll,
+                                # WriteDacl or WriteOwner on the container - which is what
+                                # the bare right name said. The scope is named, so the row
+                                # says which class or attribute it is.
+                                if (-not (Test-ACEAppliesToSelf -ACE $ace)) {
+                                    $containerRights = ''
+                                } elseif ($null -ne $ace.ObjectType -and $ace.ObjectType -ne [Guid]::Empty) {
+                                    $scopeResolved = Resolve-ObjectTypeGUID -GUID $ace.ObjectType
+                                    $scopeName = if ($scopeResolved -and $scopeResolved.Name) { $scopeResolved.Name } else { [string]$ace.ObjectType }
+                                    $scopeIsClass = ($scopeResolved -and $scopeResolved.Type -eq 'SchemaClass')
+                                    $scopedRights = @()
+                                    if ($containerRights -match 'GenericAll|CreateChild' -and ($scopeIsClass -or -not $scopeResolved)) {
+                                        $scopedRights += "CreateChild ($scopeName)"
+                                    }
+                                    if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and -not $scopeIsClass) {
+                                        $scopedRights += "WriteProperty ($scopeName)"
+                                    }
+                                    $containerRights = $scopedRights -join ', '
+                                }
+
                                 $containerACL += [PSCustomObject]@{
                                     AccessControlType = $ace.AccessControlType
                                     IdentityReference = $ace.IdentityReference
@@ -125607,7 +125720,7 @@ function Get-ADCSVulnerabilities {
                                     # by the filter and the check went on to report "PKI
                                     # container permissions are properly restricted" -
                                     # ESC5, green, on a domain compromise path.
-                                    ExpandedRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
+                                    ExpandedRights = $containerRights
                                 }
                             }
                         }
@@ -126061,6 +126174,10 @@ function Get-ADCSVulnerabilities {
                         foreach ($ace in $dacl) {
                             if ($ace.AccessControlType -ne 'Allow') { continue }
 
+                            # An inherit-only ACE does not apply to the template - it
+                            # exists to be passed down, and a template has no children.
+                            if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+
                             $aceSID = $ace.IdentityReference.Value
 
                             # ConvertTo-ExpandedADRightsName, not ToString(): the SDDL
@@ -126071,16 +126188,27 @@ function Get-ADCSVulnerabilities {
                             # had already taken over looked untouched here.
                             $aceRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
 
+                            # An object ACE grants its mask on the node its GUID names and
+                            # nowhere else (MS-DTYP 2.5.3.2). GenericAll scoped to an
+                            # attribute writes that attribute; scoped to a child class it
+                            # creates and deletes children of that class. Neither is
+                            # WriteDacl or WriteOwner on the template, and both used to be
+                            # reported as GenericAll.
+                            $objectTypeGuid = $ace.ObjectType
+                            $aceIsScoped = ($null -ne $objectTypeGuid -and $objectTypeGuid -ne [Guid]::Empty)
+
                             # Check if ACE has dangerous rights
                             $hasDangerousRight = $false
                             $matchedRight = ""
 
                             # First check the always-dangerous rights
-                            foreach ($right in $dangerousRights) {
-                                if ($aceRights -match $right) {
-                                    $hasDangerousRight = $true
-                                    $matchedRight = $right
-                                    break
+                            if (-not $aceIsScoped) {
+                                foreach ($right in $dangerousRights) {
+                                    if ($aceRights -match $right) {
+                                        $hasDangerousRight = $true
+                                        $matchedRight = $right
+                                        break
+                                    }
                                 }
                             }
 
@@ -126096,10 +126224,13 @@ function Get-ADCSVulnerabilities {
                             # enrollment. Each is one modification away from ESC1, and each
                             # was discarded here as harmless - a silent false negative on
                             # the most precise form the delegation can take.
-                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty') {
-                                $objectTypeGuid = $ace.ObjectType
+                            #
+                            # A scoped GenericAll or GenericWrite carries the WriteProperty
+                            # bit, so it writes the attribute it names just as a scoped
+                            # WriteProperty does.
+                            if (-not $hasDangerousRight -and $aceRights -match 'WriteProperty|GenericAll|GenericWrite') {
                                 # Empty GUID or all-zeros means "all properties" = dangerous
-                                if ($null -eq $objectTypeGuid -or $objectTypeGuid -eq [Guid]::Empty) {
+                                if (-not $aceIsScoped) {
                                     $hasDangerousRight = $true
                                     $matchedRight = "WriteProperty (All)"
                                 } else {
@@ -146604,7 +146735,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-1411"
+$Script:adPEASVersion = "2.7.0+20261018-1443"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
