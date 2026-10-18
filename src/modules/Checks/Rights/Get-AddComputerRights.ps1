@@ -167,16 +167,16 @@ function Get-AddComputerRights {
                         continue
                     }
 
-                    # Check if this ACE grants CreateChild for Computer objects
-                    $hasCreateChild = $false
-                    if ($ace.RightsRaw -contains 'GenericAll') {
-                        $hasCreateChild = $true
-                    } elseif ($ace.RightsRaw -contains 'CreateChild') {
-                        # CreateChild must be for all objects or specifically for Computer class
-                        if (-not $ace.ObjectType -or $ace.ObjectType -eq $computerClassGUID) {
-                            $hasCreateChild = $true
-                        }
-                    }
+                    # Check if this ACE grants CreateChild for Computer objects: GenericAll or
+                    # CreateChild, for all classes or for the computer class. GenericAll used to
+                    # count whatever class it named - and an object ACE grants its rights on the
+                    # class it names only (MS-DTYP 2.5.3.2). Exchange setup's GenericAll on the
+                    # msExchDynamicDistributionList class, inherited by CN=Computers, made Exchange
+                    # Trusted Subsystem and Organization Management computer creators.
+                    # Get-ObjectACL hands an empty GUID over as $null.
+                    $forComputers = (-not $ace.ObjectType) -or ($ace.ObjectType -eq $computerClassGUID)
+                    $hasCreateChild = $forComputers -and
+                        ((@($ace.RightsRaw) -contains 'GenericAll') -or (@($ace.RightsRaw) -contains 'CreateChild'))
 
                     if ($hasCreateChild) {
                         $seenSIDs[$trusteeSID] = $true

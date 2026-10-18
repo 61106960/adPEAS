@@ -716,6 +716,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   it was listed as WriteDacl and WriteOwner on all of them. Such an ACE grants creating and
   deleting objects of that class, which is what remains reported.
 
+- **Only a grant for computers lets `Get-AddComputerRights` call a trustee a computer
+  creator.** GenericAll on CN=Computers counted whatever class the ACE was scoped to, so
+  Exchange's GenericAll on the `msExchDynamicDistributionList` class made Exchange Trusted
+  Subsystem and Organization Management computer creators. GenericAll now counts like
+  CreateChild: for all classes or for the computer class.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

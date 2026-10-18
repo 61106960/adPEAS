@@ -72929,14 +72929,9 @@ function Get-AddComputerRights {
                         Write-Log "[Get-AddComputerRights] Skipping descendants-only ACE: $($ace.Trustee) ($trusteeSID), PropagationFlags=$($ace.PropagationFlags)"
                         continue
                     }
-                    $hasCreateChild = $false
-                    if ($ace.RightsRaw -contains 'GenericAll') {
-                        $hasCreateChild = $true
-                    } elseif ($ace.RightsRaw -contains 'CreateChild') {
-                        if (-not $ace.ObjectType -or $ace.ObjectType -eq $computerClassGUID) {
-                            $hasCreateChild = $true
-                        }
-                    }
+                    $forComputers = (-not $ace.ObjectType) -or ($ace.ObjectType -eq $computerClassGUID)
+                    $hasCreateChild = $forComputers -and
+                        ((@($ace.RightsRaw) -contains 'GenericAll') -or (@($ace.RightsRaw) -contains 'CreateChild'))
                     if ($hasCreateChild) {
                         $seenSIDs[$trusteeSID] = $true
                         $expectedCheck = Test-IsExpectedACLIdentity -SID $trusteeSID -Context 'Container'
@@ -94316,7 +94311,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-1407"
+$Script:adPEASVersion = "2.7.0+20261018-1411"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
