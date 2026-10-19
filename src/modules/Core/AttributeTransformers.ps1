@@ -296,6 +296,48 @@ function Convert-MemberOfToRenderValues {
     }
 }
 
+# --- memberOfNested Transformer ---
+# The groups Get-DomainUser -ResolveGroups adds beyond memberOf: classified by SID like a
+# group of memberOf, and shown with how each was reached. An entry read back from a JSON
+# report has lost its ToString, so the text is built from its properties.
+function Convert-MemberOfNestedToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $renderValues = @()
+    foreach ($entry in @($Value)) {
+        if ($null -eq $entry) { continue }
+        if ($entry -is [string]) {
+            $renderValues += New-RenderValue -Display $entry -Severity 'Standard' -RawValue $entry
+            continue
+        }
+
+        $groupInfo = [PSCustomObject]@{
+            DisplayName = [string]$entry.Name
+            DN          = [string]$entry.DistinguishedName
+            SID         = [string]$entry.SID
+        }
+        $groupClass = Get-MemberOfClass -GroupInfo $groupInfo
+        $findingId = switch ($groupClass) {
+            'Finding' { 'PRIVILEGED_GROUP_MEMBERSHIP' }
+            'Hint'    { 'OPERATOR_GROUP_MEMBERSHIP' }
+            default   { $null }
+        }
+        $renderValues += New-RenderValue -Display (Format-GroupNestingEntry -Entry $entry) `
+            -Severity $groupClass -FindingId $findingId `
+            -RawValue $groupInfo.DN -Metadata @{ SID = $groupInfo.SID }
+    }
+
+    if ($renderValues.Count -eq 0) { return $null }
+    $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+    return @{
+        RowType             = 'MultiValue'
+        OverallSeverity     = $maxSev
+        ForceAttributeClass = ($maxSev -ne 'Standard')
+        Values              = $renderValues
+    }
+}
+
 # --- privilegedGroups Transformer ---
 function Convert-PrivilegedGroupsToRenderValues {
     [CmdletBinding()]
@@ -1367,6 +1409,7 @@ function Convert-ScriptPathToRenderValues {
 # ============================================================================
 
 $Script:AttributeTransformers['memberOf']                    = ${function:Convert-MemberOfToRenderValues}
+$Script:AttributeTransformers['memberOfNested']              = ${function:Convert-MemberOfNestedToRenderValues}
 $Script:AttributeTransformers['privilegedGroups']            = ${function:Convert-PrivilegedGroupsToRenderValues}
 $Script:AttributeTransformers['member']                      = ${function:Convert-MemberToRenderValues}
 $Script:AttributeTransformers['userAccountControl']          = ${function:Convert-UACToRenderValues}

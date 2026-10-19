@@ -94,6 +94,13 @@ function Get-DomainUser {
 .PARAMETER ShowOwner
     Include Owner and OwnerSID properties on returned objects.
 
+.PARAMETER ResolveGroups
+    Adds memberOfNested: the groups the account is in that memberOf does not list - its
+    primary group, which Active Directory never writes into memberOf, and every group
+    reached through nesting, each with the group it was reached through. memberOf and
+    memberOfNested together are every group of the account in its domain. Costs one query
+    per account, and two per distinct primary group.
+
 .PARAMETER SearchBase
     Alternative SearchBase (DN). Default: Domain DN.
 
@@ -145,6 +152,11 @@ function Get-DomainUser {
 .EXAMPLE
     Get-DomainUser -GMSA -ShowGMSADetails
     Returns all MSAs/gMSAs with extended details (password access, rotation interval, etc.).
+
+.EXAMPLE
+    Get-DomainUser -Identity "jdoe" -ResolveGroups
+    Returns jdoe with memberOfNested, e.g. "Domain Users (primary group)" and
+    "Server Operators (via Tier1)".
 
 .OUTPUTS
     PSCustomObject with user attributes
@@ -232,6 +244,9 @@ function Get-DomainUser {
         [switch]$ShowOwner,
 
         [Parameter(Mandatory=$false)]
+        [switch]$ResolveGroups,
+
+        [Parameter(Mandatory=$false)]
         [string]$SearchBase,
 
         [Parameter(Mandatory=$false)]
@@ -270,6 +285,10 @@ function Get-DomainUser {
         if ($ShowGMSADetails -and -not $GMSA) {
             Write-Log "[Get-DomainUser] -ShowGMSADetails was specified without -GMSA, ignoring extended properties"
         }
+
+        # -ResolveGroups: the primary group and its chain by SID, for every account of this
+        # call - almost all of them share one.
+        $primaryGroupCache = @{}
     }
 
     process {
@@ -340,6 +359,12 @@ function Get-DomainUser {
                 Write-Log "[Get-DomainUser] ShowGMSADetails enabled - MSA/gMSA-specific properties will be included"
             } elseif ($Properties) {
                 $GetParams['Properties'] = $Properties
+            }
+
+            # The four attributes -ResolveGroups reads, where a property list would leave
+            # them out.
+            if ($ResolveGroups -and $GetParams.ContainsKey('Properties')) {
+                $GetParams['Properties'] = @(@($GetParams['Properties']) + @('distinguishedName', 'memberOf', 'primaryGroupID', 'objectSid') | Select-Object -Unique)
             }
 
             # Pass through Identity parameter
@@ -457,6 +482,19 @@ function Get-DomainUser {
 
                     # NOTE: msDS-ManagedPasswordId and msDS-ManagedPasswordPreviousId are already
                     # parsed into a readable form (RootKeyId + L0/L1/L2 indexes) by Invoke-LDAPSearch.
+                }
+            }
+
+            if ($ResolveGroups -and $Users.Count -gt 0) {
+                $nestingParams = @{}
+                if ($Domain) { $nestingParams['Domain'] = $Domain }
+                if ($Server) { $nestingParams['Server'] = $Server }
+                if ($Credential) { $nestingParams['Credential'] = $Credential }
+
+                foreach ($User in $Users) {
+                    if ($null -eq $User) { continue }
+                    $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache)
+                    $User | Add-Member -NotePropertyName 'memberOfNested' -NotePropertyValue $nestedGroups -Force
                 }
             }
 

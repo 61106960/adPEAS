@@ -3410,7 +3410,7 @@ $Script:PrimaryAttributes = @{
 	User = @(
 	    'displayName',
 	    'sAMAccountName', 'userPrincipalName', 'distinguishedName', 'objectSid',
-	    'memberOf', 'privilegedGroups',
+	    'memberOf', 'memberOfNested', 'privilegedGroups',
 	    'servicePrincipalName', 'msDS-SupportedEncryptionTypes',
 	    'unixUserPassword', 'userPassword', 'unicodePwd', 'msSFU30Password',
 	    'sambaNTPassword', 'sambaLMPassword',
@@ -3430,7 +3430,7 @@ $Script:PrimaryAttributes = @{
 	    'displayName',
 	    'sAMAccountName', 'dNSHostName', 'distinguishedName', 'objectSid',
 	    'operatingSystem',
-	    'memberOf', 'privilegedGroups',
+	    'memberOf', 'memberOfNested', 'privilegedGroups',
 	    'ms-Mcs-AdmPwd', 'msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-Account',
 	    'description', 'info',
 	    'msDS-AllowedToDelegateTo', 'msDS-AllowedToActOnBehalfOfOtherIdentity',
@@ -19336,6 +19336,40 @@ function Convert-MemberOfToRenderValues {
 	    Values              = $renderValues
 	}
 }
+function Convert-MemberOfNestedToRenderValues {
+	[CmdletBinding()]
+	param([string]$Name, $Value, $Context)
+	$renderValues = @()
+	foreach ($entry in @($Value)) {
+	    if ($null -eq $entry) { continue }
+	    if ($entry -is [string]) {
+	        $renderValues += New-RenderValue -Display $entry -Severity 'Standard' -RawValue $entry
+	        continue
+	    }
+	    $groupInfo = [PSCustomObject]@{
+	        DisplayName = [string]$entry.Name
+	        DN          = [string]$entry.DistinguishedName
+	        SID         = [string]$entry.SID
+	    }
+	    $groupClass = Get-MemberOfClass -GroupInfo $groupInfo
+	    $findingId = switch ($groupClass) {
+	        'Finding' { 'PRIVILEGED_GROUP_MEMBERSHIP' }
+	        'Hint'    { 'OPERATOR_GROUP_MEMBERSHIP' }
+	        default   { $null }
+	    }
+	    $renderValues += New-RenderValue -Display (Format-GroupNestingEntry -Entry $entry) `
+	        -Severity $groupClass -FindingId $findingId `
+	        -RawValue $groupInfo.DN -Metadata @{ SID = $groupInfo.SID }
+	}
+	if ($renderValues.Count -eq 0) { return $null }
+	$maxSev = Get-MaxSeverityFromValues -Values $renderValues
+	return @{
+	    RowType             = 'MultiValue'
+	    OverallSeverity     = $maxSev
+	    ForceAttributeClass = ($maxSev -ne 'Standard')
+	    Values              = $renderValues
+	}
+}
 function Convert-PrivilegedGroupsToRenderValues {
 	[CmdletBinding()]
 	param([string]$Name, $Value, $Context)
@@ -20116,6 +20150,7 @@ function Convert-ScriptPathToRenderValues {
 	}
 }
 $Script:AttributeTransformers['memberOf']                    = ${function:Convert-MemberOfToRenderValues}
+$Script:AttributeTransformers['memberOfNested']              = ${function:Convert-MemberOfNestedToRenderValues}
 $Script:AttributeTransformers['privilegedGroups']            = ${function:Convert-PrivilegedGroupsToRenderValues}
 $Script:AttributeTransformers['member']                      = ${function:Convert-MemberToRenderValues}
 $Script:AttributeTransformers['userAccountControl']          = ${function:Convert-UACToRenderValues}
@@ -29112,6 +29147,8 @@ function Get-DomainUser {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$ShowOwner,
 	    [Parameter(Mandatory=$false)]
+	    [switch]$ResolveGroups,
+	    [Parameter(Mandatory=$false)]
 	    [string]$SearchBase,
 	    [Parameter(Mandatory=$false)]
 	    [string]$Domain,
@@ -29133,6 +29170,7 @@ function Get-DomainUser {
 	begin {
 	    if ($ShowGMSADetails -and -not $GMSA) {
 	    }
+	    $primaryGroupCache = @{}
 	}
 	process {
 	    try {
@@ -29173,6 +29211,9 @@ function Get-DomainUser {
 	            }
 	        } elseif ($Properties) {
 	            $GetParams['Properties'] = $Properties
+	        }
+	        if ($ResolveGroups -and $GetParams.ContainsKey('Properties')) {
+	            $GetParams['Properties'] = @(@($GetParams['Properties']) + @('distinguishedName', 'memberOf', 'primaryGroupID', 'objectSid') | Select-Object -Unique)
 	        }
 	        if ($Identity) {
 	            $GetParams['Identity'] = $Identity
@@ -29250,6 +29291,17 @@ function Get-DomainUser {
 	                    } catch {
 	                    }
 	                }
+	            }
+	        }
+	        if ($ResolveGroups -and $Users.Count -gt 0) {
+	            $nestingParams = @{}
+	            if ($Domain) { $nestingParams['Domain'] = $Domain }
+	            if ($Server) { $nestingParams['Server'] = $Server }
+	            if ($Credential) { $nestingParams['Credential'] = $Credential }
+	            foreach ($User in $Users) {
+	                if ($null -eq $User) { continue }
+	                $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache)
+	                $User | Add-Member -NotePropertyName 'memberOfNested' -NotePropertyValue $nestedGroups -Force
 	            }
 	        }
 	        return $Users
@@ -52117,6 +52169,158 @@ function Get-PrincipalContainer {
 	    $Script:PrincipalContainerCache = $containers
 	    return $containers
 	}
+}
+function Format-GroupNestingEntry {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Entry
+	)
+	if ($null -eq $Entry) { return '' }
+	$name = [string]$Entry.Name
+	$via = [string]$Entry.Via
+	switch ([string]$Entry.Membership) {
+	    'Primary group' { return "$name (primary group)" }
+	    default {
+	        if ($via) { return "$name (via $via)" }
+	        return "$name (nested)"
+	    }
+	}
+}
+function ConvertTo-GroupNestingSid {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Value
+	)
+	if ($null -eq $Value) { return '' }
+	if ($Value -is [byte[]]) {
+	    try { return (New-Object System.Security.Principal.SecurityIdentifier($Value, 0)).Value } catch { return '' }
+	}
+	$text = [string]$Value
+	if ($text -match '^S-1-') { return $text }
+	return ''
+}
+function Get-GroupNestingName {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Object
+	)
+	if ($null -eq $Object) { return '' }
+	if ($Object.name) { return [string]$Object.name }
+	if ($Object.sAMAccountName) { return [string]$Object.sAMAccountName }
+	$dn = [string]$Object.distinguishedName
+	$parsed = Split-LDAPDN -DistinguishedName $dn
+	if ($parsed -and $parsed.RDNValue) { return $parsed.RDNValue }
+	return $dn
+}
+function New-GroupNestingEntry {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Object,
+	    [Parameter(Mandatory=$true)]
+	    [string]$Membership,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Via
+	)
+	$viaValue = if ($Via) { $Via } else { $null }
+	$entry = [PSCustomObject]@{
+	    Name              = Get-GroupNestingName -Object $Object
+	    Membership        = $Membership
+	    Via               = $viaValue
+	    DistinguishedName = [string]$Object.distinguishedName
+	    SID               = ConvertTo-GroupNestingSid -Value $Object.objectSid
+	}
+	$entry | Add-Member -MemberType ScriptMethod -Name 'ToString' -Value { Format-GroupNestingEntry -Entry $this } -Force
+	return $entry
+}
+function Resolve-AccountGroupNesting {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Account,
+	    [Parameter(Mandatory=$false)]
+	    [hashtable]$ConnectionParams = @{},
+	    [Parameter(Mandatory=$false)]
+	    [hashtable]$PrimaryGroupCache = @{}
+	)
+	$accountDN = [string]$Account.distinguishedName
+	if ([string]::IsNullOrWhiteSpace($accountDN)) { return @() }
+	$groupProperties = @('distinguishedName', 'name', 'objectSid', 'memberOf')
+	$entries = New-Object System.Collections.ArrayList
+	$seen = @{}
+	$directDNs = @(@($Account.memberOf) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	foreach ($directDN in $directDNs) { $seen[$directDN] = $true }
+	function Add-GroupChain {
+	    param([object[]]$Start, [hashtable]$ChainByDN)
+	    $queue = New-Object System.Collections.Queue
+	    foreach ($startGroup in $Start) { $queue.Enqueue($startGroup) }
+	    while ($queue.Count -gt 0) {
+	        $current = $queue.Dequeue()
+	        $parentDNs = @(@($current.memberOf) | ForEach-Object { [string]$_ } |
+	            Where-Object { $ChainByDN.ContainsKey($_) } | Sort-Object)
+	        foreach ($parentDN in $parentDNs) {
+	            if ($seen.ContainsKey($parentDN)) { continue }
+	            $seen[$parentDN] = $true
+	            $parent = $ChainByDN[$parentDN]
+	            [void]$entries.Add((New-GroupNestingEntry -Object $parent -Membership 'Nested' -Via (Get-GroupNestingName -Object $current)))
+	            $queue.Enqueue($parent)
+	        }
+	    }
+	    foreach ($chainDN in @($ChainByDN.Keys | Sort-Object)) {
+	        if ($seen.ContainsKey($chainDN)) { continue }
+	        $seen[$chainDN] = $true
+	        [void]$entries.Add((New-GroupNestingEntry -Object $ChainByDN[$chainDN] -Membership 'Nested'))
+	    }
+	}
+	function Get-GroupChainByDN {
+	    param([string]$MemberDN)
+	    $escapedDN = Escape-LDAPFilterDN -DistinguishedName $MemberDN
+	    $chainByDN = @{}
+	    foreach ($chainGroup in @(Get-DomainObject -LDAPFilter "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=$escapedDN))" -Properties $groupProperties @ConnectionParams)) {
+	        if ($chainGroup -and $chainGroup.distinguishedName) { $chainByDN[[string]$chainGroup.distinguishedName] = $chainGroup }
+	    }
+	    return $chainByDN
+	}
+	$accountChain = Get-GroupChainByDN -MemberDN $accountDN
+	$directGroups = @($directDNs | Sort-Object | Where-Object { $accountChain.ContainsKey($_) } | ForEach-Object { $accountChain[$_] })
+	Add-GroupChain -Start $directGroups -ChainByDN $accountChain
+	$primaryRID = 0
+	$accountSID = ConvertTo-GroupNestingSid -Value $Account.objectSid
+	if ([int]::TryParse(([string]$Account.primaryGroupID).Trim(), [ref]$primaryRID) -and $primaryRID -gt 0 -and
+	    $accountSID -match '^(S-1-5-21-\d+-\d+-\d+)-\d+$') {
+	    $primarySID = "$($Matches[1])-$primaryRID"
+	    if (-not $PrimaryGroupCache.ContainsKey($primarySID)) {
+	        $primaryGroup = @(Get-DomainObject -Identity $primarySID -Properties $groupProperties @ConnectionParams | Where-Object { $_ })[0]
+	        $primaryChain = @{}
+	        if ($primaryGroup -and $primaryGroup.distinguishedName) {
+	            $primaryChain = Get-GroupChainByDN -MemberDN ([string]$primaryGroup.distinguishedName)
+	        }
+	        $PrimaryGroupCache[$primarySID] = @{ Group = $primaryGroup; Chain = $primaryChain }
+	    }
+	    $cached = $PrimaryGroupCache[$primarySID]
+	    if ($cached.Group) {
+	        $primaryDN = [string]$cached.Group.distinguishedName
+	        if (-not $seen.ContainsKey($primaryDN)) {
+	            $seen[$primaryDN] = $true
+	            [void]$entries.Add((New-GroupNestingEntry -Object $cached.Group -Membership 'Primary group'))
+	        }
+	        Add-GroupChain -Start @($cached.Group) -ChainByDN $cached.Chain
+	    }
+	}
+	return @($entries)
 }
 function Get-GPOStatusMap {
 	[CmdletBinding()]
@@ -91786,7 +91990,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261019-0625"
+$Script:adPEASVersion = "2.7.0+20261019-1933"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

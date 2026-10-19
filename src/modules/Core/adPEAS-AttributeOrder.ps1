@@ -32,7 +32,9 @@ $Script:PrimaryAttributes = @{
         'sAMAccountName', 'userPrincipalName', 'distinguishedName', 'objectSid',
 
         # 2. GROUP MEMBERSHIPS (security-critical)
-        'memberOf', 'privilegedGroups',
+        # memberOfNested: the primary group and the nested groups, from
+        # Get-DomainUser -ResolveGroups.
+        'memberOf', 'memberOfNested', 'privilegedGroups',
 
         # 3. SERVICE PRINCIPAL NAMES (Kerberoasting indicator)
         #
@@ -87,7 +89,9 @@ $Script:PrimaryAttributes = @{
         'operatingSystem',
 
         # 3. GROUP MEMBERSHIPS
-        'memberOf', 'privilegedGroups',
+        # memberOfNested: a managed service account from Get-DomainUser -GMSA -ResolveGroups
+        # is rendered as a computer.
+        'memberOf', 'memberOfNested', 'privilegedGroups',
 
         # 4. CREDENTIAL EXPOSURE (LAPS)
         # Note: servicePrincipalName moved to extended view (too verbose for primary display)

@@ -76,6 +76,7 @@ Get-DomainUser
     [-GMSA]
     [-ShowGMSADetails]
     [-ShowOwner]
+    [-ResolveGroups]
     [-Raw]
     [-ResultLimit <Int>]
     [-Domain <String>]
@@ -113,6 +114,7 @@ Get-DomainUser
 | `-GMSA` | Switch | Return only Managed Service Accounts (MSA and gMSA) |
 | `-ShowGMSADetails` | Switch | Shows extended MSA/gMSA information (password access, rotation, SPNs). Use with -GMSA |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
+| `-ResolveGroups` | Switch | Adds `memberOfNested`: the primary group and every group reached through nesting, each with the group it was reached through. One more query per account |
 | `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
 | `-ResultLimit` | Int | Limit the number of results returned. Default: 0 (unlimited) |
 | `-Domain` | String | Target domain (FQDN) |
@@ -124,6 +126,9 @@ Get-DomainUser
 ```powershell
 # Get specific user
 Get-DomainUser -Identity "administrator"
+
+# Every group of a user: memberOf plus memberOfNested (primary group and nesting)
+Get-DomainUser -Identity "jdoe" -ResolveGroups
 
 # Get all Kerberoastable users (with SPNs)
 Get-DomainUser -SPN
@@ -177,6 +182,7 @@ Common properties returned:
 - `userPrincipalName` - UPN (user@domain.com)
 - `objectSid` - Security Identifier
 - `memberOf` - Group memberships
+- `memberOfNested` - With `-ResolveGroups`: the groups `memberOf` does not list - the primary group (`Domain Users (primary group)`) and nested groups (`Server Operators (via Tier1)`). Each entry carries `Name`, `Membership`, `Via`, `DistinguishedName` and `SID`; groups in another domain or forest that hold the account through a foreign security principal are not found
 - `userAccountControl` - Account flags
 - `pwdLastSet` - Password last changed
 - `lastLogon` - Last logon timestamp

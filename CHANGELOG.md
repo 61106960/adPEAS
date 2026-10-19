@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Get-DomainUser -ResolveGroups` lists every group of an account.** `memberOf` holds
+  only the groups whose `member` names the account: it never contains the primary group
+  - Active Directory keeps that in `primaryGroupID` - and none of the groups those groups
+  are nested in. The new switch adds `memberOfNested` with exactly those, each saying how
+  it was reached: "Domain Users (primary group)", "Server Operators (via Tier1)". The
+  nesting comes from one query per account with `LDAP_MATCHING_RULE_IN_CHAIN`, the
+  primary group and its chain once per distinct primary group. A nested privileged group
+  is coloured like one in `memberOf`. Groups in another domain or forest that hold the
+  account through a foreign security principal are not found.
+
 - **`Get-GPOScheduledTasks` reads who may write the UNC path a task running as SYSTEM or
   as a privileged account starts from.** **This is a new outgoing connection: adPEAS now
   connects over SMB, with the session's credentials, to the file servers such tasks

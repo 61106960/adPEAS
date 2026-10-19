@@ -198,6 +198,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Get-UnixPasswordFormat.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrivilegedAccountFilter.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrincipalContainer.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Resolve-GroupNesting.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-GPOEffectiveness.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-DomainControllerGPOContext.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-GPORelativePath.ps1"
