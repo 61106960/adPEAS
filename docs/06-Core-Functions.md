@@ -363,7 +363,7 @@ Get-DomainGroup
 | `-GroupScope` | String | Filter by Group Scope. Valid values: `DomainLocal`, `Global`, `Universal` |
 | `-GroupCategory` | String | Filter by Group Category. Valid values: `Security`, `Distribution` |
 | `-ShowMembers` | Switch | Returns the DNs of the direct members (the `member` attribute) instead of the group. Requires -Identity; with several matches, the first group |
-| `-Recurse` | Switch | Implies -ShowMembers and returns every member instead: direct, nested at any depth, and accounts whose primary group is the group or a nested one. One object per member with `Name`, `ObjectClass`, `Membership` (`Direct`, `Nested`, `Primary group`), `Via`, `DistinguishedName` and `SID` |
+| `-Recurse` | Switch | Implies -ShowMembers and returns every member instead: direct, nested at any depth, and accounts whose primary group is the group or a nested one. One object per member with `Name`, `ObjectClass`, `Membership` (`Direct`, `Nested`, `Primary group`), `Via`, `Domain`, `DistinguishedName` and `SID`. A member of another domain of the forest comes from the Global Catalog, opened only for one, and names its domain; a universal group there is followed to its members. Of a global group there only the accounts whose primary group it is, with a warning naming the group |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
 | `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
 | `-Domain` | String | Target domain (FQDN) |

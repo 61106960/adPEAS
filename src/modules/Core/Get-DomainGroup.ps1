@@ -45,9 +45,12 @@ function Get-DomainGroup {
     of nested groups at any depth, and the accounts whose primary group is the group or a
     group nested in it, which no member attribute lists. One object per member, with
     Name, ObjectClass, Membership ('Direct', 'Nested' or 'Primary group'), Via (the
-    group that holds it), DistinguishedName and SID. Nested groups are listed as members
-    too. A member in another domain or forest reached through a foreign security
-    principal is listed as that principal, not resolved further.
+    group that holds it), Domain (for a member of another domain), DistinguishedName and
+    SID. Nested groups are listed as members too. A member of another domain of the
+    forest is looked up in the Global Catalog, which is opened only for one; a universal
+    group there is followed to its members. Of a global group there the Global Catalog
+    holds only the accounts whose primary group it is, and a warning names it. A member
+    of another forest is listed as its foreign security principal, not resolved further.
 
 .PARAMETER SearchBase
     Alternative SearchBase (DN). Default: Domain DN.

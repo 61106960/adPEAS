@@ -38,8 +38,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the `member` attribute of every group of the chain: `memberOf` is not readable on every
   object - a domain user cannot read it on the foreign security principals of
   INTERACTIVE, IUSR or Enterprise Domain Controllers - and such a member would be
-  missing. The help of `-ShowMembers` promised a formatted list with member types; it
-  says what it returns now.
+  missing. A member of another domain of the forest is looked up in the Global Catalog,
+  opened only once the walk meets one: it names its domain - "Enterprise Admins
+  (contoso.com)" in Administrators of a child domain - and a universal group there is
+  followed to its members, back into the group's own domain too. Of a global group of
+  another domain the Global Catalog holds no members, only `primaryGroupID`: the
+  accounts whose primary group it is are listed, and a warning names the group. A member
+  of another forest stays its foreign security principal. The help of `-ShowMembers`
+  promised a formatted list with member types; it says what it returns now.
 
 - **`Get-GPOScheduledTasks` reads who may write the UNC path a task running as SYSTEM or
   as a privileged account starts from.** **This is a new outgoing connection: adPEAS now

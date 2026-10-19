@@ -53998,6 +53998,35 @@ function Get-GroupNestingName {
     if ($parsed -and $parsed.RDNValue) { return $parsed.RDNValue }
     return $dn
 }
+function Get-GroupNestingDomainDN {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$DistinguishedName
+    )
+    if ($DistinguishedName -match '(?i)(?:^|,)(DC=[^,]+(?:,DC=[^,]+)*)$') { return $Matches[1] }
+    return ''
+}
+function Get-GroupNestingForeignDomain {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$DistinguishedName,
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$HomeDomainDN
+    )
+    $domainDN = Get-GroupNestingDomainDN -DistinguishedName $DistinguishedName
+    if ($domainDN -ieq $HomeDomainDN) { return '' }
+    return ($domainDN -replace '^DC=', '' -replace ',DC=', '.')
+}
 function New-GroupNestingEntry {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
@@ -54041,6 +54070,7 @@ function New-GroupNestingEntry {
             ObjectClass       = $objectClass
             Membership        = $Membership
             Via               = $viaValue
+            Domain            = if ($Domain) { $Domain } else { $null }
             DistinguishedName = [string]$Object.distinguishedName
             SID               = $sid
         }
@@ -54128,11 +54158,6 @@ function Resolve-AccountGroupNesting {
         }
     }
     if ($GlobalCatalog) {
-        function Get-GroupNestingDomainDN {
-            param([string]$DistinguishedName)
-            if ($DistinguishedName -match '(?i)(?:^|,)(DC=[^,]+(?:,DC=[^,]+)*)$') { return $Matches[1] }
-            return ''
-        }
         $accountDomainDN = Get-GroupNestingDomainDN -DistinguishedName $accountDN
         function Get-ForestGroupChain {
             param([string]$MemberDN)
@@ -54160,8 +54185,7 @@ function Resolve-AccountGroupNesting {
                 $groupDN = [string]$Group.distinguishedName
                 if ($seen.ContainsKey($groupDN)) { return }
                 $seen[$groupDN] = $true
-                $groupDomainDN = Get-GroupNestingDomainDN -DistinguishedName $groupDN
-                $domainName = if ($groupDomainDN -ine $accountDomainDN) { $groupDomainDN -replace '^DC=', '' -replace ',DC=', '.' } else { '' }
+                $domainName = Get-GroupNestingForeignDomain -DistinguishedName $groupDN -HomeDomainDN $accountDomainDN
                 [void]$entries.Add((New-GroupNestingEntry -Object $Group -Membership $Membership -Via $Via -Domain $domainName))
             }
             foreach ($startDN in @($Forest.StartDNs | Sort-Object)) {
@@ -54212,7 +54236,9 @@ function Resolve-GroupMemberNesting {
     )
     $groupDN = [string]$Group.distinguishedName
     if ([string]::IsNullOrWhiteSpace($groupDN)) { return @() }
+    $groupDomainDN = Get-GroupNestingDomainDN -DistinguishedName $groupDN
     $memberProperties = @('distinguishedName', 'name', 'sAMAccountName', 'objectSid', 'objectClass', 'memberOf', 'member')
+    $forestProperties = $memberProperties + @('groupType')
     $escapedDN = Escape-LDAPFilterDN -DistinguishedName $groupDN
     $chainMembers = @(Get-DomainObject -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedDN)" -Properties $memberProperties @ConnectionParams |
         Where-Object { $_ -and $_.distinguishedName })
@@ -54224,44 +54250,75 @@ function Resolve-GroupMemberNesting {
         if (@($chainMember.objectClass) -contains 'group') { $groupsByDN[[string]$chainMember.distinguishedName] = $chainMember }
     }
     $childrenOf = @{}
-    foreach ($chainMember in $chainMembers) {
-        foreach ($parentDN in @(@($chainMember.memberOf) | ForEach-Object { [string]$_ })) {
-            if (-not $groupsByDN.ContainsKey($parentDN)) { continue }
+    function Add-ChildLink {
+        param($Object)
+        foreach ($parentDN in @(@($Object.memberOf) | ForEach-Object { [string]$_ })) {
             if (-not $childrenOf.ContainsKey($parentDN)) { $childrenOf[$parentDN] = New-Object System.Collections.ArrayList }
-            [void]$childrenOf[$parentDN].Add($chainMember)
+            [void]$childrenOf[$parentDN].Add([string]$Object.distinguishedName)
         }
+    }
+    foreach ($chainMember in $chainMembers) { Add-ChildLink -Object $chainMember }
+    $forest = @{ Asked = $false; Connection = $null; ByDN = @{} }
+    function Read-ForestMembers {
+        $forest.Asked = $true
+        $forest.Connection = Get-GCConnection
+        if (-not $forest.Connection) { return }
+        foreach ($forestMember in @(Invoke-LDAPSearch -Filter "(memberOf:1.2.840.113556.1.4.1941:=$escapedDN)" -Properties $forestProperties `
+                -LdapConnection $forest.Connection -Raw)) {
+            $forest.ByDN[[string]$forestMember.distinguishedName] = $forestMember
+            Add-ChildLink -Object $forestMember
+        }
+    }
+    function Resolve-MemberObject {
+        param([string]$MemberDN)
+        $found = $null
+        if ($MemberDN -match '^CN=(S-1-[0-9-]+),CN=ForeignSecurityPrincipals,') {
+            $found = [PSCustomObject]@{
+                distinguishedName = $MemberDN
+                name              = $Matches[1]
+                objectSid         = $Matches[1]
+                objectClass       = @('top', 'foreignSecurityPrincipal')
+            }
+        } elseif (-not (Get-GroupNestingForeignDomain -DistinguishedName $MemberDN -HomeDomainDN $groupDomainDN)) {
+            $found = @(Get-DomainObject -Identity $MemberDN -Properties $memberProperties @ConnectionParams | Where-Object { $_ })[0]
+        } elseif ($forest.ByDN.ContainsKey($MemberDN)) {
+            $found = $forest.ByDN[$MemberDN]
+        } elseif ($forest.Connection) {
+            $escapedMemberDN = Escape-LDAPFilterDN -DistinguishedName $MemberDN
+            $found = @(Invoke-LDAPSearch -Filter "(distinguishedName=$escapedMemberDN)" -Properties $forestProperties -LdapConnection $forest.Connection -Raw)[0]
+        }
+        if (-not $found) { $found = [PSCustomObject]@{ distinguishedName = $MemberDN } }
+        $objectsByDN[$MemberDN] = $found
+        if (@($found.objectClass) -contains 'group') { $groupsByDN[$MemberDN] = $found }
     }
     function Get-GroupChildren {
         param($Holder)
-        $holderDN = [string]$Holder.distinguishedName
-        $children = New-Object System.Collections.ArrayList
-        if ($childrenOf.ContainsKey($holderDN)) {
-            foreach ($known in $childrenOf[$holderDN]) { [void]$children.Add($known) }
+        $memberDNs = @(@($Holder.member) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if (-not $forest.Asked -and @($memberDNs | Where-Object { Get-GroupNestingForeignDomain -DistinguishedName $_ -HomeDomainDN $groupDomainDN }).Count -gt 0) {
+            Read-ForestMembers
         }
-        foreach ($memberValue in @($Holder.member)) {
-            $memberDN = [string]$memberValue
-            if ([string]::IsNullOrWhiteSpace($memberDN)) { continue }
-            if (-not $objectsByDN.ContainsKey($memberDN)) {
-                $found = $null
-                if ($memberDN -match '^CN=(S-1-[0-9-]+),CN=ForeignSecurityPrincipals,') {
-                    $found = [PSCustomObject]@{
-                        distinguishedName = $memberDN
-                        name              = $Matches[1]
-                        objectSid         = $Matches[1]
-                        objectClass       = @('top', 'foreignSecurityPrincipal')
-                    }
-                } else {
-                    $found = @(Get-DomainObject -Identity $memberDN -Properties $memberProperties @ConnectionParams | Where-Object { $_ })[0]
-                    if (-not $found) { $found = [PSCustomObject]@{ distinguishedName = $memberDN } }
-                }
-                $objectsByDN[$memberDN] = $found
-                if (@($found.objectClass) -contains 'group') { $groupsByDN[$memberDN] = $found }
-            }
-            [void]$children.Add($objectsByDN[$memberDN])
+        $childDNs = @()
+        $holderDN = [string]$Holder.distinguishedName
+        if ($childrenOf.ContainsKey($holderDN)) { $childDNs += @($childrenOf[$holderDN]) }
+        $childDNs += $memberDNs
+        $children = New-Object System.Collections.ArrayList
+        foreach ($childDN in $childDNs) {
+            if (-not $objectsByDN.ContainsKey($childDN)) { Resolve-MemberObject -MemberDN $childDN }
+            [void]$children.Add($objectsByDN[$childDN])
         }
         return @($children | Sort-Object -Property { [string]$_.distinguishedName })
     }
     $entries = New-Object System.Collections.ArrayList
+    $unreadGroups = New-Object System.Collections.ArrayList
+    function Add-MemberEntry {
+        param($Object, [string]$Membership, [string]$Via)
+        $memberDomain = Get-GroupNestingForeignDomain -DistinguishedName ([string]$Object.distinguishedName) -HomeDomainDN $groupDomainDN
+        [void]$entries.Add((New-GroupNestingEntry -Object $Object -Membership $Membership -Via $Via -Domain $memberDomain -WithObjectClass))
+        $groupType = [int64]0
+        if ($memberDomain -and [int64]::TryParse([string]$Object.groupType, [ref]$groupType) -and -not ($groupType -band 8)) {
+            [void]$unreadGroups.Add("$(Get-GroupNestingName -Object $Object) ($memberDomain)")
+        }
+    }
     $seen = @{}
     $seen[$groupDN] = $true
     $nestedGroups = New-Object System.Collections.ArrayList
@@ -54276,9 +54333,9 @@ function Resolve-GroupMemberNesting {
             if ($seen.ContainsKey($childDN)) { continue }
             $seen[$childDN] = $true
             if ($isTop) {
-                [void]$entries.Add((New-GroupNestingEntry -Object $child -Membership 'Direct' -WithObjectClass))
+                Add-MemberEntry -Object $child -Membership 'Direct'
             } else {
-                [void]$entries.Add((New-GroupNestingEntry -Object $child -Membership 'Nested' -Via (Get-GroupNestingName -Object $current) -WithObjectClass))
+                Add-MemberEntry -Object $child -Membership 'Nested' -Via (Get-GroupNestingName -Object $current)
             }
             if ($groupsByDN.ContainsKey($childDN)) {
                 [void]$nestedGroups.Add($child)
@@ -54286,12 +54343,12 @@ function Resolve-GroupMemberNesting {
             }
         }
     }
-    foreach ($chainMember in @($chainMembers | Sort-Object -Property { [string]$_.distinguishedName })) {
+    foreach ($chainMember in @(@($chainMembers) + @($forest.ByDN.Values) | Sort-Object -Property { [string]$_.distinguishedName })) {
         $memberDN = [string]$chainMember.distinguishedName
         if ($seen.ContainsKey($memberDN)) { continue }
         $seen[$memberDN] = $true
-        [void]$entries.Add((New-GroupNestingEntry -Object $chainMember -Membership 'Nested' -WithObjectClass))
-        if ($groupsByDN.ContainsKey($memberDN)) { [void]$nestedGroups.Add($chainMember) }
+        Add-MemberEntry -Object $chainMember -Membership 'Nested'
+        if (@($chainMember.objectClass) -contains 'group') { [void]$nestedGroups.Add($chainMember) }
     }
     $holderBySID = @{}
     foreach ($candidate in @(@($Group) + @($nestedGroups))) {
@@ -54300,24 +54357,39 @@ function Resolve-GroupMemberNesting {
             $holderBySID[$candidateSID] = $candidate
         }
     }
-    if ($holderBySID.Count -gt 0) {
-        $rids = @($holderBySID.Keys | ForEach-Object { ($_ -split '-')[-1] } | Sort-Object -Property { [int]$_ })
+    $ridsByDomain = @{}
+    foreach ($holderSID in @($holderBySID.Keys)) {
+        $holderDomainDN = Get-GroupNestingDomainDN -DistinguishedName ([string]$holderBySID[$holderSID].distinguishedName)
+        if (-not $ridsByDomain.ContainsKey($holderDomainDN)) { $ridsByDomain[$holderDomainDN] = @() }
+        $ridsByDomain[$holderDomainDN] += ($holderSID -split '-')[-1]
+    }
+    $primaryMembers = @()
+    foreach ($holderDomainDN in @($ridsByDomain.Keys | Sort-Object)) {
+        $rids = @($ridsByDomain[$holderDomainDN] | Sort-Object -Property { [int]$_ })
         $ridClauses = ($rids | ForEach-Object { "(primaryGroupID=$_)" }) -join ''
         $primaryFilter = if ($rids.Count -eq 1) { $ridClauses } else { "(|$ridClauses)" }
-        $primaryMembers = @(Get-DomainObject -LDAPFilter $primaryFilter -Properties ($memberProperties + @('primaryGroupID')) @ConnectionParams |
-            Where-Object { $_ -and $_.distinguishedName })
-        foreach ($primaryMember in @($primaryMembers | Sort-Object -Property { [string]$_.distinguishedName })) {
-            $memberDN = [string]$primaryMember.distinguishedName
-            if ($seen.ContainsKey($memberDN)) { continue }
-            $memberSID = ConvertTo-GroupNestingSid -Value $primaryMember.objectSid
-            if ($memberSID -notmatch '^(S-1-5-21-\d+-\d+-\d+)-\d+$') { continue }
-            $holderSID = "$($Matches[1])-$(([string]$primaryMember.primaryGroupID).Trim())"
-            if (-not $holderBySID.ContainsKey($holderSID)) { continue }
-            $seen[$memberDN] = $true
-            $holder = $holderBySID[$holderSID]
-            $via = if ([string]$holder.distinguishedName -ne $groupDN) { Get-GroupNestingName -Object $holder } else { '' }
-            [void]$entries.Add((New-GroupNestingEntry -Object $primaryMember -Membership 'Primary group' -Via $via -WithObjectClass))
+        if ($holderDomainDN -ieq $groupDomainDN) {
+            $primaryMembers += @(Get-DomainObject -LDAPFilter $primaryFilter -Properties ($memberProperties + @('primaryGroupID')) @ConnectionParams)
+        } else {
+            $primaryMembers += @(Invoke-LDAPSearch -Filter $primaryFilter -SearchBase $holderDomainDN -Properties ($forestProperties + @('primaryGroupID')) `
+                -LdapConnection $forest.Connection -Raw)
         }
+    }
+    foreach ($primaryMember in @($primaryMembers | Where-Object { $_ -and $_.distinguishedName } | Sort-Object -Property { [string]$_.distinguishedName })) {
+        $memberDN = [string]$primaryMember.distinguishedName
+        if ($seen.ContainsKey($memberDN)) { continue }
+        $memberSID = ConvertTo-GroupNestingSid -Value $primaryMember.objectSid
+        if ($memberSID -notmatch '^(S-1-5-21-\d+-\d+-\d+)-\d+$') { continue }
+        $holderSID = "$($Matches[1])-$(([string]$primaryMember.primaryGroupID).Trim())"
+        if (-not $holderBySID.ContainsKey($holderSID)) { continue }
+        $seen[$memberDN] = $true
+        $holder = $holderBySID[$holderSID]
+        $via = if ([string]$holder.distinguishedName -ne $groupDN) { Get-GroupNestingName -Object $holder } else { '' }
+        Add-MemberEntry -Object $primaryMember -Membership 'Primary group' -Via $via
+    }
+    if ($unreadGroups.Count -gt 0) {
+        Write-Warning ("[Resolve-GroupMemberNesting] Members not read: $($unreadGroups -join ', ') - the Global Catalog holds no members " +
+            "of a global group of another domain; listed are only the accounts whose primary group it is.")
     }
     return @($entries)
 }
@@ -95297,7 +95369,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261019-2015"
+$Script:adPEASVersion = "2.7.0+20261019-2231"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
