@@ -1405,8 +1405,8 @@ function Resolve-GPOSettingPrecedence {
 
 .DESCRIPTION
     The two checks write "Not Configured" and "Not configured", and the SMB check qualifies
-    the latter with the role the policy lands on ("Not configured - the Domain Controllers
-    default requires it"). All of them are the absence of an instruction.
+    the latter with the role the policy lands on ("Not configured (DC default: required)").
+    All of them are the absence of an instruction.
 #>
 function Test-GPOSettingConfigured {
     [CmdletBinding()]

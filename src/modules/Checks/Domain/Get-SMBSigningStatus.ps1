@@ -391,9 +391,9 @@ function Get-SMBSigningStatus {
                     # no role to be read against.
                     if ($gpoFinding.ServerSigning -eq 'Not configured') {
                         if ($precScope -eq 'DomainControllers') {
-                            $gpoFinding.ServerSigning = 'Not configured - the Domain Controllers default requires it'
+                            $gpoFinding.ServerSigning = 'Not configured (DC default: required)'
                         } elseif ($precScope -in @('Domain', 'OtherOU', 'Site', 'Blocked')) {
-                            $gpoFinding.ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                            $gpoFinding.ServerSigning = 'Not configured (not required before Server 2025)'
                         }
                     }
                 }
@@ -534,7 +534,7 @@ function Get-SMBSigningStatus {
                     $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
                     $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
                     $memberPosture = [PSCustomObject]@{
-                        ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                        ServerSigning = 'Not configured (not required before Server 2025)'
                         ClientSigning = 'Not configured'
                         # Short; why no policy reaches them, and what is not read here, is
                         # the card's to say.

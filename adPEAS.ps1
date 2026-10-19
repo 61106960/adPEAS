@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-18 22:43:58
-    Version: 2.7.0+20261018-2243
+    Build: 2026-10-19 06:07:09
+    Version: 2.7.0+20261019-0607
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -15364,8 +15364,8 @@ Get-ADObject -SearchBase $schema `
             # neutral, and no card, because there is nothing here to write up. Anywhere else
             # the default is "not required" until Windows Server 2025, which is the state a
             # relay needs, and that keeps the hint and the card it always had.
-            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - the Domain Controllers default'; Severity = 'Note'; SeverityOnly = $true }
-            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - not required by default'; Severity = 'Hint' }
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(DC default'; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(not required'; Severity = 'Hint' }
             @{ Attribute = 'ClientSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
             @{ Attribute = 'ClientSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
         )
@@ -27764,6 +27764,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "SMB client signing requirements"
             "GPO configurations enforcing SMB signing"
             "Systems that may not require signing"
+            "A server-side value the policy leaves unset, read against where it is linked: on the Domain Controllers OU the Default Domain Controllers Policy requires signing (DC default: required); elsewhere a server before Windows Server 2025 enables signing without requiring it"
         )
         SecureMessage = "SMB signing is required on both servers and clients via GPO. NTLM relay attacks targeting SMB file shares are blocked, preventing unauthorized access and lateral movement."
     }
@@ -84251,8 +84252,8 @@ function Resolve-GPOSettingPrecedence {
 
 .DESCRIPTION
     The two checks write "Not Configured" and "Not configured", and the SMB check qualifies
-    the latter with the role the policy lands on ("Not configured - the Domain Controllers
-    default requires it"). All of them are the absence of an instruction.
+    the latter with the role the policy lands on ("Not configured (DC default: required)").
+    All of them are the absence of an instruction.
 #>
 function Test-GPOSettingConfigured {
     [CmdletBinding()]
@@ -107155,9 +107156,9 @@ function Get-SMBSigningStatus {
                     # no role to be read against.
                     if ($gpoFinding.ServerSigning -eq 'Not configured') {
                         if ($precScope -eq 'DomainControllers') {
-                            $gpoFinding.ServerSigning = 'Not configured - the Domain Controllers default requires it'
+                            $gpoFinding.ServerSigning = 'Not configured (DC default: required)'
                         } elseif ($precScope -in @('Domain', 'OtherOU', 'Site', 'Blocked')) {
-                            $gpoFinding.ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                            $gpoFinding.ServerSigning = 'Not configured (not required before Server 2025)'
                         }
                     }
                 }
@@ -107298,7 +107299,7 @@ function Get-SMBSigningStatus {
                     $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
                     $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
                     $memberPosture = [PSCustomObject]@{
-                        ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                        ServerSigning = 'Not configured (not required before Server 2025)'
                         ClientSigning = 'Not configured'
                         # Short; why no policy reaches them, and what is not read here, is
                         # the card's to say.
@@ -147547,7 +147548,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261018-2243"
+$Script:adPEASVersion = "2.7.0+20261019-0607"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

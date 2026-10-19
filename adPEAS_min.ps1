@@ -10697,8 +10697,8 @@ Get-ADObject -SearchBase $schema `
         Triggers = @(
             @{ Attribute = 'ServerSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
             @{ Attribute = 'ServerSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
-            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - the Domain Controllers default'; Severity = 'Note'; SeverityOnly = $true }
-            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - not required by default'; Severity = 'Hint' }
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(DC default'; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(not required'; Severity = 'Hint' }
             @{ Attribute = 'ClientSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
             @{ Attribute = 'ClientSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
         )
@@ -20775,6 +20775,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "SMB client signing requirements"
             "GPO configurations enforcing SMB signing"
             "Systems that may not require signing"
+            "A server-side value the policy leaves unset, read against where it is linked: on the Domain Controllers OU the Default Domain Controllers Policy requires signing (DC default: required); elsewhere a server before Windows Server 2025 enables signing without requiring it"
         )
         SecureMessage = "SMB signing is required on both servers and clients via GPO. NTLM relay attacks targeting SMB file shares are blocked, preventing unauthorized access and lateral movement."
     }
@@ -68466,9 +68467,9 @@ function Get-SMBSigningStatus {
                     $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
                     if ($gpoFinding.ServerSigning -eq 'Not configured') {
                         if ($precScope -eq 'DomainControllers') {
-                            $gpoFinding.ServerSigning = 'Not configured - the Domain Controllers default requires it'
+                            $gpoFinding.ServerSigning = 'Not configured (DC default: required)'
                         } elseif ($precScope -in @('Domain', 'OtherOU', 'Site', 'Blocked')) {
-                            $gpoFinding.ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                            $gpoFinding.ServerSigning = 'Not configured (not required before Server 2025)'
                         }
                     }
                 }
@@ -68546,7 +68547,7 @@ function Get-SMBSigningStatus {
                     $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
                     $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
                     $memberPosture = [PSCustomObject]@{
-                        ServerSigning = 'Not configured - not required by default before Windows Server 2025'
+                        ServerSigning = 'Not configured (not required before Server 2025)'
                         ClientSigning = 'Not configured'
                         decidedBy     = 'None (signing is set on the DC OU only)'
                     }
@@ -94752,7 +94753,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261018-2243"
+$Script:adPEASVersion = "2.7.0+20261019-0607"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

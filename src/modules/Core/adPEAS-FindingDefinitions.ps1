@@ -6972,8 +6972,8 @@ Get-ADObject -SearchBase $schema `
             # neutral, and no card, because there is nothing here to write up. Anywhere else
             # the default is "not required" until Windows Server 2025, which is the state a
             # relay needs, and that keeps the hint and the card it always had.
-            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - the Domain Controllers default'; Severity = 'Note'; SeverityOnly = $true }
-            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured - not required by default'; Severity = 'Hint' }
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(DC default'; Severity = 'Note'; SeverityOnly = $true }
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(not required'; Severity = 'Hint' }
             @{ Attribute = 'ClientSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
             @{ Attribute = 'ClientSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
         )

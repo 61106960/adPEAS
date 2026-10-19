@@ -1149,8 +1149,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   so the HTML report carried it without the remediation of the SMB signing card. It is
   now the counterpart of the domain controller object: *In force on member servers and
   clients*, with both values as the policy rows read an unset value outside the Domain
-  Controllers OU and which policy decides them - "None (signing is set on the DC OU
-  only)". What reading the policies cannot see is on its card.
+  Controllers OU - "Not configured (not required before Server 2025)", and "Not
+  configured (DC default: required)" on the Domain Controllers OU - and which policy
+  decides them - "None (signing is set on the DC OU only)". What reading the policies
+  cannot see, and what the two defaults are, is on the cards.
 
 - **`Get-AddComputerRights` says who can use the machine account quota on the quota
   object.** The statement stood in the line above the object - "Any authenticated user

@@ -215,6 +215,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "SMB client signing requirements"
             "GPO configurations enforcing SMB signing"
             "Systems that may not require signing"
+            "A server-side value the policy leaves unset, read against where it is linked: on the Domain Controllers OU the Default Domain Controllers Policy requires signing (DC default: required); elsewhere a server before Windows Server 2025 enables signing without requiring it"
         )
         SecureMessage = "SMB signing is required on both servers and clients via GPO. NTLM relay attacks targeting SMB file shares are blocked, preventing unauthorized access and lateral movement."
     }
