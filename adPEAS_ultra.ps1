@@ -29171,6 +29171,8 @@ function Get-DomainUser {
 	    if ($ShowGMSADetails -and -not $GMSA) {
 	    }
 	    $primaryGroupCache = @{}
+	    $globalCatalog = $null
+	    $globalCatalogAsked = $false
 	}
 	process {
 	    try {
@@ -29298,9 +29300,13 @@ function Get-DomainUser {
 	            if ($Domain) { $nestingParams['Domain'] = $Domain }
 	            if ($Server) { $nestingParams['Server'] = $Server }
 	            if ($Credential) { $nestingParams['Credential'] = $Credential }
+	            if (-not $globalCatalogAsked) {
+	                $globalCatalog = Get-GCConnection
+	                $globalCatalogAsked = $true
+	            }
 	            foreach ($User in $Users) {
 	                if ($null -eq $User) { continue }
-	                $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache)
+	                $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache -GlobalCatalog $globalCatalog)
 	                $User | Add-Member -NotePropertyName 'memberOfNested' -NotePropertyValue $nestedGroups -Force
 	            }
 	        }
@@ -52196,17 +52202,20 @@ function Format-GroupNestingEntry {
 	if ($null -eq $Entry) { return '' }
 	$name = [string]$Entry.Name
 	$via = [string]$Entry.Via
+	$qualifiers = @()
+	if ($Entry.Domain) { $qualifiers += [string]$Entry.Domain }
 	switch ([string]$Entry.Membership) {
-	    'Direct' { return $name }
+	    'Direct' { }
 	    'Primary group' {
-	        if ($via) { return "$name (via $via, primary group)" }
-	        return "$name (primary group)"
+	        if ($via) { $qualifiers += "via $via" }
+	        $qualifiers += 'primary group'
 	    }
 	    default {
-	        if ($via) { return "$name (via $via)" }
-	        return "$name (nested)"
+	        if ($via) { $qualifiers += "via $via" } else { $qualifiers += 'nested' }
 	    }
 	}
+	if ($qualifiers.Count -eq 0) { return $name }
+	return "$name ($($qualifiers -join ', '))"
 }
 function ConvertTo-GroupNestingSid {
 	[CmdletBinding()]
@@ -52217,6 +52226,7 @@ function ConvertTo-GroupNestingSid {
 	    $Value
 	)
 	if ($null -eq $Value) { return '' }
+	if ($Value -is [array] -and $Value.Count -gt 0 -and $Value[0] -is [byte[]]) { $Value = $Value[0] }
 	if ($Value -is [byte[]]) {
 	    try { return (New-Object System.Security.Principal.SecurityIdentifier($Value, 0)).Value } catch { return '' }
 	}
@@ -52253,6 +52263,10 @@ function New-GroupNestingEntry {
 	    [AllowEmptyString()]
 	    [string]$Via,
 	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
 	    [switch]$WithObjectClass
 	)
 	$sid = ConvertTo-GroupNestingSid -Value $Object.objectSid
@@ -52263,6 +52277,7 @@ function New-GroupNestingEntry {
 	        Name              = $name
 	        Membership        = $Membership
 	        Via               = $viaValue
+	        Domain            = if ($Domain) { $Domain } else { $null }
 	        DistinguishedName = [string]$Object.distinguishedName
 	        SID               = $sid
 	    }
@@ -52294,7 +52309,10 @@ function Resolve-AccountGroupNesting {
 	    [Parameter(Mandatory=$false)]
 	    [hashtable]$ConnectionParams = @{},
 	    [Parameter(Mandatory=$false)]
-	    [hashtable]$PrimaryGroupCache = @{}
+	    [hashtable]$PrimaryGroupCache = @{},
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $GlobalCatalog = $null
 	)
 	$accountDN = [string]$Account.distinguishedName
 	if ([string]::IsNullOrWhiteSpace($accountDN)) { return @() }
@@ -52337,6 +52355,7 @@ function Resolve-AccountGroupNesting {
 	$accountChain = Get-GroupChainByDN -MemberDN $accountDN
 	$directGroups = @($directDNs | Sort-Object | Where-Object { $accountChain.ContainsKey($_) } | ForEach-Object { $accountChain[$_] })
 	Add-GroupChain -Start $directGroups -ChainByDN $accountChain
+	$primarySID = $null
 	$primaryRID = 0
 	$accountSID = ConvertTo-GroupNestingSid -Value $Account.objectSid
 	if ([int]::TryParse(([string]$Account.primaryGroupID).Trim(), [ref]$primaryRID) -and $primaryRID -gt 0 -and
@@ -52358,6 +52377,78 @@ function Resolve-AccountGroupNesting {
 	            [void]$entries.Add((New-GroupNestingEntry -Object $cached.Group -Membership 'Primary group'))
 	        }
 	        Add-GroupChain -Start @($cached.Group) -ChainByDN $cached.Chain
+	    }
+	}
+	if ($GlobalCatalog) {
+	    function Get-GroupNestingDomainDN {
+	        param([string]$DistinguishedName)
+	        if ($DistinguishedName -match '(?i)(?:^|,)(DC=[^,]+(?:,DC=[^,]+)*)$') { return $Matches[1] }
+	        return ''
+	    }
+	    $accountDomainDN = Get-GroupNestingDomainDN -DistinguishedName $accountDN
+	    function Get-ForestGroupChain {
+	        param([string]$MemberDN)
+	        $escapedDN = Escape-LDAPFilterDN -DistinguishedName $MemberDN
+	        $memberObject = @(Invoke-LDAPSearch -Filter "(distinguishedName=$escapedDN)" -Properties @('distinguishedName', 'memberOf') `
+	            -LdapConnection $GlobalCatalog -Raw | Where-Object { $_ })[0]
+	        $chainByDN = @{}
+	        foreach ($chainGroup in @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=$escapedDN))" `
+	                -Properties @('distinguishedName', 'name', 'objectSid', 'memberOf') -LdapConnection $GlobalCatalog -Raw)) {
+	            if ($chainGroup -and $chainGroup.distinguishedName) { $chainByDN[[string]$chainGroup.distinguishedName] = $chainGroup }
+	        }
+	        $startDNs = @()
+	        if ($memberObject) {
+	            $startDNs = @(@($memberObject.memberOf) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	        }
+	        return @{ StartDNs = $startDNs; Chain = $chainByDN }
+	    }
+	    function Add-ForestGroupChain {
+	        param([hashtable]$Forest, [string]$StartVia)
+	        $chainByDN = $Forest.Chain
+	        $visited = @{}
+	        $queue = New-Object System.Collections.Queue
+	        function Add-ForestEntry {
+	            param($Group, [string]$Membership, [string]$Via)
+	            $groupDN = [string]$Group.distinguishedName
+	            if ($seen.ContainsKey($groupDN)) { return }
+	            $seen[$groupDN] = $true
+	            $groupDomainDN = Get-GroupNestingDomainDN -DistinguishedName $groupDN
+	            $domainName = if ($groupDomainDN -ine $accountDomainDN) { $groupDomainDN -replace '^DC=', '' -replace ',DC=', '.' } else { '' }
+	            [void]$entries.Add((New-GroupNestingEntry -Object $Group -Membership $Membership -Via $Via -Domain $domainName))
+	        }
+	        foreach ($startDN in @($Forest.StartDNs | Sort-Object)) {
+	            if (-not $chainByDN.ContainsKey($startDN) -or $visited.ContainsKey($startDN)) { continue }
+	            $visited[$startDN] = $true
+	            if ($StartVia) {
+	                Add-ForestEntry -Group $chainByDN[$startDN] -Membership 'Nested' -Via $StartVia
+	            } else {
+	                Add-ForestEntry -Group $chainByDN[$startDN] -Membership 'Direct'
+	            }
+	            $queue.Enqueue($chainByDN[$startDN])
+	        }
+	        while ($queue.Count -gt 0) {
+	            $current = $queue.Dequeue()
+	            $parentDNs = @(@($current.memberOf) | ForEach-Object { [string]$_ } |
+	                Where-Object { $chainByDN.ContainsKey($_) } | Sort-Object)
+	            foreach ($parentDN in $parentDNs) {
+	                if ($visited.ContainsKey($parentDN)) { continue }
+	                $visited[$parentDN] = $true
+	                Add-ForestEntry -Group $chainByDN[$parentDN] -Membership 'Nested' -Via (Get-GroupNestingName -Object $current)
+	                $queue.Enqueue($chainByDN[$parentDN])
+	            }
+	        }
+	        foreach ($chainDN in @($chainByDN.Keys | Sort-Object)) {
+	            if ($visited.ContainsKey($chainDN)) { continue }
+	            Add-ForestEntry -Group $chainByDN[$chainDN] -Membership 'Nested'
+	        }
+	    }
+	    Add-ForestGroupChain -Forest (Get-ForestGroupChain -MemberDN $accountDN)
+	    if ($primarySID -and $PrimaryGroupCache.ContainsKey($primarySID) -and $PrimaryGroupCache[$primarySID].Group) {
+	        $cached = $PrimaryGroupCache[$primarySID]
+	        if (-not $cached.ContainsKey('Forest')) {
+	            $cached['Forest'] = Get-ForestGroupChain -MemberDN ([string]$cached.Group.distinguishedName)
+	        }
+	        Add-ForestGroupChain -Forest $cached.Forest -StartVia (Get-GroupNestingName -Object $cached.Group)
 	    }
 	}
 	return @($entries)
@@ -92150,7 +92241,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261019-1950"
+$Script:adPEASVersion = "2.7.0+20261019-2015"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

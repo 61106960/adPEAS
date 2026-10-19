@@ -114,7 +114,7 @@ Get-DomainUser
 | `-GMSA` | Switch | Return only Managed Service Accounts (MSA and gMSA) |
 | `-ShowGMSADetails` | Switch | Shows extended MSA/gMSA information (password access, rotation, SPNs). Use with -GMSA |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
-| `-ResolveGroups` | Switch | Adds `memberOfNested`: the primary group and every group reached through nesting, each with the group it was reached through. One more query per account |
+| `-ResolveGroups` | Switch | Adds `memberOfNested`: the primary group and every group reached through nesting, each with the group it was reached through, and the universal groups of other domains of the forest from the Global Catalog. One more query per account, two on the Global Catalog |
 | `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
 | `-ResultLimit` | Int | Limit the number of results returned. Default: 0 (unlimited) |
 | `-Domain` | String | Target domain (FQDN) |
@@ -182,7 +182,7 @@ Common properties returned:
 - `userPrincipalName` - UPN (user@domain.com)
 - `objectSid` - Security Identifier
 - `memberOf` - Group memberships
-- `memberOfNested` - With `-ResolveGroups`: the groups `memberOf` does not list - the primary group (`Domain Users (primary group)`) and nested groups (`Server Operators (via Tier1)`). Each entry carries `Name`, `Membership`, `Via`, `DistinguishedName` and `SID`; groups in another domain or forest that hold the account through a foreign security principal are not found
+- `memberOfNested` - With `-ResolveGroups`: the groups `memberOf` does not list - the primary group (`Domain Users (primary group)`) and nested groups (`Server Operators (via Tier1)`). A universal group of another domain of the forest comes from the Global Catalog and names its domain (`Enterprise Admins (contoso.com, via Tier0)`). Each entry carries `Name`, `Membership`, `Via`, `Domain`, `DistinguishedName` and `SID`. Not found: domain local groups of other domains, and groups of other forests
 - `userAccountControl` - Account flags
 - `pwdLastSet` - Password last changed
 - `lastLogon` - Last logon timestamp

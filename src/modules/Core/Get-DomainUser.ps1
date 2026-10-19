@@ -98,8 +98,12 @@ function Get-DomainUser {
     Adds memberOfNested: the groups the account is in that memberOf does not list - its
     primary group, which Active Directory never writes into memberOf, and every group
     reached through nesting, each with the group it was reached through. memberOf and
-    memberOfNested together are every group of the account in its domain. Costs one query
-    per account, and two per distinct primary group.
+    memberOfNested together are every group of the account in its domain. The universal
+    groups of other domains of the forest - Enterprise Admins and Schema Admins in the
+    forest root among them - come from the Global Catalog and name their domain. Not
+    found: domain local groups of other domains, and groups of other forests. Costs one
+    query per account and two on the Global Catalog, and as many again per distinct
+    primary group.
 
 .PARAMETER SearchBase
     Alternative SearchBase (DN). Default: Domain DN.
@@ -287,8 +291,11 @@ function Get-DomainUser {
         }
 
         # -ResolveGroups: the primary group and its chain by SID, for every account of this
-        # call - almost all of them share one.
+        # call - almost all of them share one. The Global Catalog is asked for once per call
+        # too, not once per account piped in.
         $primaryGroupCache = @{}
+        $globalCatalog = $null
+        $globalCatalogAsked = $false
     }
 
     process {
@@ -491,9 +498,17 @@ function Get-DomainUser {
                 if ($Server) { $nestingParams['Server'] = $Server }
                 if ($Credential) { $nestingParams['Credential'] = $Credential }
 
+                # The universal groups of the other domains of the forest are only in the
+                # Global Catalog. Get-GCConnection asks the session's domain controller first,
+                # then the forest root; without one, those groups are left out and it says so.
+                if (-not $globalCatalogAsked) {
+                    $globalCatalog = Get-GCConnection
+                    $globalCatalogAsked = $true
+                }
+
                 foreach ($User in $Users) {
                     if ($null -eq $User) { continue }
-                    $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache)
+                    $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache -GlobalCatalog $globalCatalog)
                     $User | Add-Member -NotePropertyName 'memberOfNested' -NotePropertyValue $nestedGroups -Force
                 }
             }

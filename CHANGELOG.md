@@ -16,9 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   are nested in. The new switch adds `memberOfNested` with exactly those, each saying how
   it was reached: "Domain Users (primary group)", "Server Operators (via Tier1)". The
   nesting comes from one query per account with `LDAP_MATCHING_RULE_IN_CHAIN`, the
-  primary group and its chain once per distinct primary group. A nested privileged group
-  is coloured like one in `memberOf`. Groups in another domain or forest that hold the
-  account through a foreign security principal are not found.
+  primary group and its chain once per distinct primary group. The domain controller
+  holds its own domain only, so the same is asked of the Global Catalog, which holds the
+  universal groups of every domain of the forest: a group of another domain names it -
+  "Enterprise Admins (contoso.com, via Tier0)" for an account of a child domain - and a
+  group of the account's own domain that holds it only through such a group is found
+  too. The Global Catalog connection is the one adPEAS already uses, on the session's
+  domain controller or, failing that, the forest root. A nested privileged group is
+  coloured like one in `memberOf`. Not found: domain local groups of other domains, whose
+  members the Global Catalog does not hold, and groups of other forests.
 
 - **`Get-DomainGroup -ShowMembers -Recurse` lists every member of a group.**
   `-ShowMembers` returns the DNs of the `member` attribute: the direct members only, and

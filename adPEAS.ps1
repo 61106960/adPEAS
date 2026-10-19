@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-19 19:50:09
-    Version: 2.7.0+20261019-1950
+    Build: 2026-10-19 20:15:34
+    Version: 2.7.0+20261019-2015
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -41832,8 +41832,12 @@ function Get-DomainUser {
     Adds memberOfNested: the groups the account is in that memberOf does not list - its
     primary group, which Active Directory never writes into memberOf, and every group
     reached through nesting, each with the group it was reached through. memberOf and
-    memberOfNested together are every group of the account in its domain. Costs one query
-    per account, and two per distinct primary group.
+    memberOfNested together are every group of the account in its domain. The universal
+    groups of other domains of the forest - Enterprise Admins and Schema Admins in the
+    forest root among them - come from the Global Catalog and name their domain. Not
+    found: domain local groups of other domains, and groups of other forests. Costs one
+    query per account and two on the Global Catalog, and as many again per distinct
+    primary group.
 
 .PARAMETER SearchBase
     Alternative SearchBase (DN). Default: Domain DN.
@@ -42021,8 +42025,11 @@ function Get-DomainUser {
         }
 
         # -ResolveGroups: the primary group and its chain by SID, for every account of this
-        # call - almost all of them share one.
+        # call - almost all of them share one. The Global Catalog is asked for once per call
+        # too, not once per account piped in.
         $primaryGroupCache = @{}
+        $globalCatalog = $null
+        $globalCatalogAsked = $false
     }
 
     process {
@@ -42225,9 +42232,17 @@ function Get-DomainUser {
                 if ($Server) { $nestingParams['Server'] = $Server }
                 if ($Credential) { $nestingParams['Credential'] = $Credential }
 
+                # The universal groups of the other domains of the forest are only in the
+                # Global Catalog. Get-GCConnection asks the session's domain controller first,
+                # then the forest root; without one, those groups are left out and it says so.
+                if (-not $globalCatalogAsked) {
+                    $globalCatalog = Get-GCConnection
+                    $globalCatalogAsked = $true
+                }
+
                 foreach ($User in $Users) {
                     if ($null -eq $User) { continue }
-                    $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache)
+                    $nestedGroups = @(Resolve-AccountGroupNesting -Account $User -ConnectionParams $nestingParams -PrimaryGroupCache $primaryGroupCache -GlobalCatalog $globalCatalog)
                     $User | Add-Member -NotePropertyName 'memberOfNested' -NotePropertyValue $nestedGroups -Force
                 }
             }
@@ -82988,9 +83003,12 @@ function Get-PrincipalContainer {
     The chains come from LDAP_MATCHING_RULE_IN_CHAIN (1.2.840.113556.1.4.1941), which the
     domain controller evaluates over the whole chain in one query. Which group an entry
     was reached through is read from memberOf of the objects the query returned, so a
-    chain can be followed link by link. The rule is evaluated within the domain the query
-    runs against: a group in another domain or forest that holds an account through a
-    foreign security principal is not found.
+    chain can be followed link by link. A domain controller holds its own domain only.
+    The groups of an account are asked of the Global Catalog as well, which holds the
+    universal groups of every domain of the forest with their members - Enterprise Admins
+    and Schema Admins among them, in the forest root. Not found: a domain local group of
+    another domain, whose members the Global Catalog does not hold, and a group of
+    another forest, which holds the account through a foreign security principal.
 
     Get-DomainUser -ResolveGroups and Get-DomainGroup -ShowMembers -Recurse use these.
 
@@ -83004,12 +83022,13 @@ function Get-PrincipalContainer {
 
 .DESCRIPTION
     "Server Operators (via Tier1)", "Domain Users (primary group)", "jdoe (via Domain
-    Users, primary group)", or the name alone for a direct member. Shared by the ToString
-    of the entries and by the memberOfNested transformer, which also sees entries that
-    came back from a JSON report and carry no ToString of their own.
+    Users, primary group)", "Enterprise Admins (contoso.com, via Tier0)" for a group of
+    another domain, or the name alone for a direct member. Shared by the ToString of the
+    entries and by the memberOfNested transformer, which also sees entries that came back
+    from a JSON report and carry no ToString of their own.
 
 .PARAMETER Entry
-    An entry with Name, Membership and Via.
+    An entry with Name, Membership, Via and, for a group of another domain, Domain.
 #>
 function Format-GroupNestingEntry {
     [CmdletBinding()]
@@ -83024,18 +83043,22 @@ function Format-GroupNestingEntry {
     $name = [string]$Entry.Name
     $via = [string]$Entry.Via
 
+    $qualifiers = @()
+    if ($Entry.Domain) { $qualifiers += [string]$Entry.Domain }
     switch ([string]$Entry.Membership) {
-        'Direct' { return $name }
+        'Direct' { }
         'Primary group' {
             # On a member: through the primary group of a nested group, or of the group.
-            if ($via) { return "$name (via $via, primary group)" }
-            return "$name (primary group)"
+            if ($via) { $qualifiers += "via $via" }
+            $qualifiers += 'primary group'
         }
         default {
-            if ($via) { return "$name (via $via)" }
-            return "$name (nested)"
+            if ($via) { $qualifiers += "via $via" } else { $qualifiers += 'nested' }
         }
     }
+
+    if ($qualifiers.Count -eq 0) { return $name }
+    return "$name ($($qualifiers -join ', '))"
 }
 
 <#
@@ -83043,7 +83066,8 @@ function Format-GroupNestingEntry {
     The SID of an object as a string, from either shape it can arrive in.
 
 .PARAMETER Value
-    objectSid as Get-DomainObject returns it: a string, or the byte[] of -Raw.
+    objectSid as Get-DomainObject returns it: a string, or the byte[] of -Raw - which a
+    raw Global Catalog answer may wrap in an array of one.
 #>
 function ConvertTo-GroupNestingSid {
     [CmdletBinding()]
@@ -83055,6 +83079,7 @@ function ConvertTo-GroupNestingSid {
     )
 
     if ($null -eq $Value) { return '' }
+    if ($Value -is [array] -and $Value.Count -gt 0 -and $Value[0] -is [byte[]]) { $Value = $Value[0] }
     if ($Value -is [byte[]]) {
         try { return (New-Object System.Security.Principal.SecurityIdentifier($Value, 0)).Value } catch { return '' }
     }
@@ -83101,6 +83126,9 @@ function Get-GroupNestingName {
 .PARAMETER Via
     The name of the group the entry was reached through, or empty.
 
+.PARAMETER Domain
+    The DNS name of the domain of a group outside the account's own domain, or empty.
+
 .PARAMETER WithObjectClass
     Adds ObjectClass, the most specific class of the object - for members, which are not
     all groups.
@@ -83121,6 +83149,11 @@ function New-GroupNestingEntry {
         [string]$Via,
 
         [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
         [switch]$WithObjectClass
     )
 
@@ -83133,6 +83166,7 @@ function New-GroupNestingEntry {
             Name              = $name
             Membership        = $Membership
             Via               = $viaValue
+            Domain            = if ($Domain) { $Domain } else { $null }
             DistinguishedName = [string]$Object.distinguishedName
             SID               = $sid
         }
@@ -83167,9 +83201,17 @@ function New-GroupNestingEntry {
 
 .DESCRIPTION
     The groups of memberOf are not repeated; memberOf and the result together are every
-    group of the account in its domain. Nested groups come first, in the order a
-    breadth-first walk up from memberOf reaches them, each naming the group it was reached
-    through; then the primary group and the groups it is nested in.
+    group of the account in its domain, and with a Global Catalog every universal group of
+    the forest too. Nested groups come first, in the order a breadth-first walk up from
+    memberOf reaches them, each naming the group it was reached through; then the primary
+    group and the groups it is nested in; then the groups of other domains, from the
+    Global Catalog, each naming its domain.
+
+    A domain controller does not see a link into another domain: memberOf on it lists
+    the groups of its own domain only, and its chain query walks only those. The Global
+    Catalog holds the universal groups of every domain with their members, so it is asked
+    the same two questions - which groups hold the account at all, and which it is
+    directly in - for the account and for its primary group.
 
 .PARAMETER Account
     The account object, with distinguishedName, memberOf, primaryGroupID and objectSid.
@@ -83181,9 +83223,14 @@ function New-GroupNestingEntry {
     The primary group and the groups it is nested in, by SID, shared across the accounts
     of one call: almost every account has the same primary group.
 
+.PARAMETER GlobalCatalog
+    The Global Catalog connection, from Get-GCConnection, or $null - the groups of other
+    domains are then left out.
+
 .OUTPUTS
-    One PSCustomObject per group: Name, Membership ('Nested' or 'Primary group'), Via,
-    DistinguishedName and SID.
+    One PSCustomObject per group: Name, Membership ('Nested', 'Primary group', or
+    'Direct' for a group of another domain that holds the account itself), Via, Domain
+    (the DNS name of another domain, else $null), DistinguishedName and SID.
 #>
 function Resolve-AccountGroupNesting {
     [CmdletBinding()]
@@ -83196,7 +83243,11 @@ function Resolve-AccountGroupNesting {
         [hashtable]$ConnectionParams = @{},
 
         [Parameter(Mandatory=$false)]
-        [hashtable]$PrimaryGroupCache = @{}
+        [hashtable]$PrimaryGroupCache = @{},
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GlobalCatalog = $null
     )
 
     $accountDN = [string]$Account.distinguishedName
@@ -83257,6 +83308,7 @@ function Resolve-AccountGroupNesting {
     Add-GroupChain -Start $directGroups -ChainByDN $accountChain
 
     # The primary group: its SID is the account's domain SID and primaryGroupID.
+    $primarySID = $null
     $primaryRID = 0
     $accountSID = ConvertTo-GroupNestingSid -Value $Account.objectSid
     if ([int]::TryParse(([string]$Account.primaryGroupID).Trim(), [ref]$primaryRID) -and $primaryRID -gt 0 -and
@@ -83280,6 +83332,99 @@ function Resolve-AccountGroupNesting {
                 [void]$entries.Add((New-GroupNestingEntry -Object $cached.Group -Membership 'Primary group'))
             }
             Add-GroupChain -Start @($cached.Group) -ChainByDN $cached.Chain
+        }
+    }
+
+    if ($GlobalCatalog) {
+        # The domain of a DN is its trailing run of DC= components.
+        function Get-GroupNestingDomainDN {
+            param([string]$DistinguishedName)
+            if ($DistinguishedName -match '(?i)(?:^|,)(DC=[^,]+(?:,DC=[^,]+)*)$') { return $Matches[1] }
+            return ''
+        }
+        $accountDomainDN = Get-GroupNestingDomainDN -DistinguishedName $accountDN
+
+        # The two questions, asked of the Global Catalog: the groups that hold the object
+        # through any chain, and the ones it is directly in. -Raw, like the other Global
+        # Catalog lookups: the explicit attribute list then works on the GC port.
+        function Get-ForestGroupChain {
+            param([string]$MemberDN)
+
+            $escapedDN = Escape-LDAPFilterDN -DistinguishedName $MemberDN
+            $memberObject = @(Invoke-LDAPSearch -Filter "(distinguishedName=$escapedDN)" -Properties @('distinguishedName', 'memberOf') `
+                -LdapConnection $GlobalCatalog -Raw | Where-Object { $_ })[0]
+            $chainByDN = @{}
+            foreach ($chainGroup in @(Invoke-LDAPSearch -Filter "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=$escapedDN))" `
+                    -Properties @('distinguishedName', 'name', 'objectSid', 'memberOf') -LdapConnection $GlobalCatalog -Raw)) {
+                if ($chainGroup -and $chainGroup.distinguishedName) { $chainByDN[[string]$chainGroup.distinguishedName] = $chainGroup }
+            }
+            $startDNs = @()
+            if ($memberObject) {
+                $startDNs = @(@($memberObject.memberOf) | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            }
+            return @{ StartDNs = $startDNs; Chain = $chainByDN }
+        }
+
+        # The same walk as Add-GroupChain, over the whole forest: through the groups the
+        # domain controller already gave, which are not listed again, to the rest. That is
+        # mostly groups of other domains - and a group of the account's own domain that holds
+        # it only through one of theirs: a domain local group with a universal group of
+        # another domain in it, a link the domain controller does not see. StartVia names
+        # the object the start groups hold, when that is not the account itself.
+        function Add-ForestGroupChain {
+            param([hashtable]$Forest, [string]$StartVia)
+
+            $chainByDN = $Forest.Chain
+            $visited = @{}
+            $queue = New-Object System.Collections.Queue
+
+            function Add-ForestEntry {
+                param($Group, [string]$Membership, [string]$Via)
+                $groupDN = [string]$Group.distinguishedName
+                if ($seen.ContainsKey($groupDN)) { return }
+                $seen[$groupDN] = $true
+                $groupDomainDN = Get-GroupNestingDomainDN -DistinguishedName $groupDN
+                $domainName = if ($groupDomainDN -ine $accountDomainDN) { $groupDomainDN -replace '^DC=', '' -replace ',DC=', '.' } else { '' }
+                [void]$entries.Add((New-GroupNestingEntry -Object $Group -Membership $Membership -Via $Via -Domain $domainName))
+            }
+
+            foreach ($startDN in @($Forest.StartDNs | Sort-Object)) {
+                if (-not $chainByDN.ContainsKey($startDN) -or $visited.ContainsKey($startDN)) { continue }
+                $visited[$startDN] = $true
+                if ($StartVia) {
+                    Add-ForestEntry -Group $chainByDN[$startDN] -Membership 'Nested' -Via $StartVia
+                } else {
+                    Add-ForestEntry -Group $chainByDN[$startDN] -Membership 'Direct'
+                }
+                $queue.Enqueue($chainByDN[$startDN])
+            }
+
+            while ($queue.Count -gt 0) {
+                $current = $queue.Dequeue()
+                $parentDNs = @(@($current.memberOf) | ForEach-Object { [string]$_ } |
+                    Where-Object { $chainByDN.ContainsKey($_) } | Sort-Object)
+                foreach ($parentDN in $parentDNs) {
+                    if ($visited.ContainsKey($parentDN)) { continue }
+                    $visited[$parentDN] = $true
+                    Add-ForestEntry -Group $chainByDN[$parentDN] -Membership 'Nested' -Via (Get-GroupNestingName -Object $current)
+                    $queue.Enqueue($chainByDN[$parentDN])
+                }
+            }
+
+            foreach ($chainDN in @($chainByDN.Keys | Sort-Object)) {
+                if ($visited.ContainsKey($chainDN)) { continue }
+                Add-ForestEntry -Group $chainByDN[$chainDN] -Membership 'Nested'
+            }
+        }
+
+        Add-ForestGroupChain -Forest (Get-ForestGroupChain -MemberDN $accountDN)
+
+        if ($primarySID -and $PrimaryGroupCache.ContainsKey($primarySID) -and $PrimaryGroupCache[$primarySID].Group) {
+            $cached = $PrimaryGroupCache[$primarySID]
+            if (-not $cached.ContainsKey('Forest')) {
+                $cached['Forest'] = Get-ForestGroupChain -MemberDN ([string]$cached.Group.distinguishedName)
+            }
+            Add-ForestGroupChain -Forest $cached.Forest -StartVia (Get-GroupNestingName -Object $cached.Group)
         }
     }
 
@@ -148332,7 +148477,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261019-1950"
+$Script:adPEASVersion = "2.7.0+20261019-2015"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
