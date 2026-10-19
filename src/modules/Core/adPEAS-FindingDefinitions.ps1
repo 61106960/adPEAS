@@ -9408,8 +9408,8 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             "A PSO assigned to a privileged group is an exception carved out for the accounts that matter most"
         )
         Attack = @(
-            "1. Attacker reads the PSOs - msDS-PasswordSettings objects are readable by any authenticated user"
-            "2. Reads msDS-PSOAppliesTo to learn which accounts the weaker policy covers"
+            "1. Attacker learns which accounts a PSO covers from msDS-PSOApplied on its users and groups - readable to far more accounts than the PSO itself, which by default only Domain Admins may read"
+            "2. Learns the weaker settings wherever the PSO is readable - to an account with the rights this report was run with, or through a delegated read permission"
             "3. Sprays or cracks against exactly those accounts, within whatever lockout the PSO allows"
         )
         Remediation = @(

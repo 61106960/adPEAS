@@ -333,6 +333,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   so a policy that let the passwords of the admin group never expire was silent. The rows
   carry the names and texts of the domain policy, so its cards judge both.
 
+- **`Get-DomainPasswordPolicy` finds Fine-Grained Password Policies without Domain Admin
+  rights.** By default only Domain Admins may list the Password Settings Container or
+  read a policy in it, so for every other account the section said "No Fine-Grained
+  Password Policy found" whatever the domain held. The policies are now looked for where
+  they are assigned: `msDS-PSOApplied` on the users and groups a policy applies to, and
+  `msDS-ResultantPSO` of the scanning account. Each policy found that way shows its name,
+  `appliesTo`, its privileged targets and `inEffectForThisAccount` where it is the policy
+  that wins for the scanning account; `settings` reads "Unknown (readable by Domain
+  Admins only)". With none found the line reads "No Fine-Grained Password Policy assigned
+  to a readable user or group". A policy assigned to nobody, and an assignment on an
+  object the account may not read, stay invisible - the card says so. The *Weaker Than
+  the Domain Default* card no longer claims that any authenticated user can read a PSO.
+
 - **`Get-DomainInformation` says what a deletion leaves behind in the forest.** Neither
   the tombstone lifetime nor the Active Directory Recycle Bin was read. `tombstoneLifetime`
   comes from `CN=Directory Service` - 60 days when the attribute is not set, at least 2
@@ -891,9 +904,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   printed "Disabled" and counted as a weakness, the precedence became 999 and the policy
   read as assigned to nobody. Those rows say "Unknown" now, a policy that could not be
   read in full is named as not assessed, and a value that does not parse no longer throws
-  the whole section away. Where no policy comes back at all, the check says that only
-  Domain Admins can read them by default instead of "No Fine-Grained Password Policies
-  configured".
+  the whole section away. Where no policy comes back at all, the check no longer says "No
+  Fine-Grained Password Policies configured" - by default that is the answer every account
+  outside Domain Admins gets - and looks for them by assignment instead.
 
 - **A Fine-Grained Password Policy names whom it applies to, and a privileged target is a
   finding only on a weak policy.** `appliesTo` counted its targets - "2 user(s)/group(s)"

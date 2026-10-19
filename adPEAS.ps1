@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-19 06:11:16
-    Version: 2.7.0+20261019-0611
+    Build: 2026-10-19 06:25:35
+    Version: 2.7.0+20261019-0625
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6897,13 +6897,17 @@ $Script:PrimaryAttributes = @{
     # Fine-Grained Password Policy (PSO)
     FineGrainedPasswordPolicy = @(
         'psoName', 'precedence',
+        # settings stands in for the rows below on a policy found by its assignment,
+        # whose settings this account cannot read.
+        'settings',
         'minPwdLength', 'passwordComplexity',
         'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
         'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
         # appliesToPrivileged exists only where a target of the policy is privileged,
+        # inEffectForThisAccount only on the policy that wins for the scanning account,
         # and this type is strict - a row the list does not name is dropped in silence.
-        'appliesTo', 'appliesToPrivileged'
+        'appliesTo', 'appliesToPrivileged', 'inEffectForThisAccount'
     )
 
     # Certificate Authority objects
@@ -17800,8 +17804,8 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             "A PSO assigned to a privileged group is an exception carved out for the accounts that matter most"
         )
         Attack = @(
-            "1. Attacker reads the PSOs - msDS-PasswordSettings objects are readable by any authenticated user"
-            "2. Reads msDS-PSOAppliesTo to learn which accounts the weaker policy covers"
+            "1. Attacker learns which accounts a PSO covers from msDS-PSOApplied on its users and groups - readable to far more accounts than the PSO itself, which by default only Domain Admins may read"
+            "2. Learns the weaker settings wherever the PSO is readable - to an account with the rights this report was run with, or through a delegated read permission"
             "3. Sprays or cracks against exactly those accounts, within whatever lockout the PSO allows"
         )
         Remediation = @(
@@ -27697,6 +27701,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Which users or groups each PSO applies to"
             "Password requirements defined in each PSO"
             "Priority/precedence of overlapping policies"
+            "Without Domain Admin rights: by default only Domain Admins may read a PSO, so it is found by assignment - through msDS-PSOApplied on the users and groups it applies to, and msDS-ResultantPSO of the scanning account (inEffectForThisAccount: the PSO that wins for it). That gives the name and the direct targets, not the settings or the precedence"
+            "Not visible that way: a PSO assigned to nobody, and an assignment on a user or group this account may not read - msDS-PSOApplied needs Read all properties, which Pre-Windows 2000 Compatible Access holds on users and groups"
         )
         SecureMessage = "All Fine-Grained Password Policies are properly configured with strong password requirements. No PSO allows weaker passwords than the domain default policy."
     }
@@ -104997,6 +105003,98 @@ function Format-PasswordHistoryLength {
     return "$Value passwords remembered"
 }
 
+<#
+.SYNOPSIS
+    The Fine-Grained Password Policies an account outside Domain Admins can find: through
+    the users and groups they are assigned to.
+
+.DESCRIPTION
+    By default only Domain Admins and SYSTEM may list the Password Settings Container or
+    read a policy in it (Microsoft, "AD DS: Fine-Grained Password Policies"). The
+    assignment is stored at the other end too: msDS-PSOApplied, the back link of
+    msDS-PSOAppliesTo, holds the DN of the policy on every user and global group the
+    policy names. It belongs to no property set, so it needs Read all properties on that
+    object - which Pre-Windows 2000 Compatible Access holds on every user and group, and
+    Authenticated Users is a member of it by default. The scanning account's own
+    msDS-ResultantPSO, the policy that wins for it, is readable to the account itself; it
+    is constructed, so it has to be asked for by name.
+
+    Both carry a DN and nothing more: the name of a policy and whom it is assigned to,
+    never its settings or its precedence. A policy assigned to nobody, and an assignment
+    on an object this account may not read, stay invisible.
+
+.PARAMETER DomainDN
+    The DN of the domain searched.
+
+.PARAMETER ThisAccountDN
+    The DN of the scanning account, or empty. Read only when it lies in DomainDN - the
+    resultant policy of an account from another domain is not one of this domain's.
+
+.PARAMETER ConnectionParams
+    Domain, Server and Credential for Get-DomainObject, where the check was given them.
+
+.OUTPUTS
+    One PSCustomObject per policy, sorted by name: DistinguishedName, Name, Targets (the
+    DNs of the users and groups it was found on) and InEffectForThisAccount.
+#>
+function Get-PSOAssignment {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$DomainDN,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$ThisAccountDN,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    # Keyed by the policy DN; a PowerShell hashtable compares string keys without case,
+    # as the directory compares DNs.
+    $policies = @{}
+    function Add-PSOEntry {
+        param([string]$PolicyDN)
+        if (-not $policies.ContainsKey($PolicyDN)) {
+            $parsedDN = Split-LDAPDN -DistinguishedName $PolicyDN
+            $policyName = if ($parsedDN -and $parsedDN.RDNValue) { $parsedDN.RDNValue } else { $PolicyDN }
+            $policies[$PolicyDN] = [PSCustomObject]@{
+                DistinguishedName      = $PolicyDN
+                Name                   = $policyName
+                Targets                = @()
+                InEffectForThisAccount = $false
+            }
+        }
+        return $policies[$PolicyDN]
+    }
+
+    # The users and groups are read for this lookup only and never shown as objects of
+    # their own, so the property list is allowed here.
+    $assignedObjects = @(Get-DomainObject -LDAPFilter '(msDS-PSOApplied=*)' -Properties 'distinguishedName', 'msDS-PSOApplied' @ConnectionParams)
+    foreach ($assignedObject in $assignedObjects) {
+        # A $null answer arrives here as one $null element, and a $null value list as one
+        # $null value; neither names a policy.
+        foreach ($policyDN in @($assignedObject.'msDS-PSOApplied')) {
+            if ([string]::IsNullOrWhiteSpace([string]$policyDN)) { continue }
+            $entry = Add-PSOEntry -PolicyDN "$policyDN"
+            $entry.Targets = @($entry.Targets) + @("$($assignedObject.distinguishedName)")
+        }
+    }
+
+    if ($ThisAccountDN -and $ThisAccountDN.EndsWith(",$DomainDN", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $thisAccount = @(Get-DomainObject -Identity $ThisAccountDN -Properties 'distinguishedName', 'msDS-ResultantPSO' @ConnectionParams)[0]
+        $resultantDN = if ($thisAccount) { [string]$thisAccount.'msDS-ResultantPSO' } else { '' }
+        if (-not [string]::IsNullOrWhiteSpace($resultantDN)) {
+            (Add-PSOEntry -PolicyDN $resultantDN).InEffectForThisAccount = $true
+        }
+    }
+
+    return @($policies.Values | Sort-Object -Property Name)
+}
+
 function Get-DomainPasswordPolicy {
     <#
     .SYNOPSIS
@@ -105368,11 +105466,16 @@ function Get-DomainPasswordPolicy {
                     Write-Log "[Get-DomainPasswordPolicy] Password Settings Container not returned (error: $_)"
                 }
 
+                # Whether the policies themselves came back. Where they did not, they are
+                # looked for where they are assigned, below.
+                $psosListed = $false
+
                 if ($psoContainerExists) {
                     try {
                         $psos = Get-DomainObject -LDAPFilter "(objectClass=msDS-PasswordSettings)" -SearchBase $psoContainerDN @PSBoundParameters
 
                     if (@($psos).Count -gt 0) {
+                        $psosListed = $true
                         Show-Line "Found $(@($psos).Count) Fine-Grained Password Polic$(if(@($psos).Count -eq 1){'y'}else{'ies'}):" -Class Hint
 
                         # Every setting read below is a mandatory attribute of
@@ -105563,22 +105666,75 @@ function Get-DomainPasswordPolicy {
                             Show-Line "Assigned to no user and no group, and therefore not assessed: $($unassignedPSONames -join ', ')" -Class Note
                         }
 
-                    } else {
-                        # Not "none configured": by default Authenticated Users may not read a
-                        # policy (Microsoft, "AD DS: Fine-Grained Password Policies"), so an
-                        # empty answer is what any account outside Domain Admins gets.
-                        Show-Line "No Fine-Grained Password Policy found - by default only Domain Admins can read them" -Class Note
                     }
                     } catch {
                         Write-Log "[Get-DomainPasswordPolicy] FGPP enumeration failed: $_" -Level Error
                         Write-Warning "[Get-DomainPasswordPolicy] Failed to query Fine-Grained Password Policies: $_"
                     }
-                } else {
-                    # The container is created in every domain and cannot be renamed, moved or
-                    # deleted (same source), and its default security descriptor admits only
-                    # Domain Admins and SYSTEM - so not finding it means not seeing it, which
-                    # says nothing about the policies.
-                    Show-Line "No Fine-Grained Password Policy found - by default only Domain Admins can read them" -Class Note
+                }
+
+                # No policy came back - and that is what any account outside Domain Admins
+                # gets, whatever the domain holds: the container is created in every domain
+                # and cannot be renamed, moved or deleted, and by default Authenticated Users
+                # may neither list it nor read a policy in it (Microsoft, "AD DS:
+                # Fine-Grained Password Policies"). The line said so and nothing more.
+                #
+                # Who a policy is assigned to is also written on the assigned users and
+                # groups, readable far more widely, and so is the policy in force for this
+                # account. That gives a name and the direct targets, never the settings.
+                if (-not $psosListed) {
+                    $connectionParams = @{}
+                    if ($PSBoundParameters.ContainsKey('Domain')) { $connectionParams['Domain'] = $Domain }
+                    if ($PSBoundParameters.ContainsKey('Server')) { $connectionParams['Server'] = $Server }
+                    if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
+                    $assignedPSOs = $null
+                    try {
+                        $assignedPSOs = @(Get-PSOAssignment -DomainDN $domainDN -ThisAccountDN ([string]$Script:LDAPContext.AuthenticatedUserDN) -ConnectionParams $connectionParams)
+                    } catch {
+                        Write-Log "[Get-DomainPasswordPolicy] PSO assignment lookup failed: $_" -Level Error
+                        Write-Warning "[Get-DomainPasswordPolicy] Failed to look up Fine-Grained Password Policy assignments: $_"
+                    }
+
+                    if ($null -ne $assignedPSOs -and $assignedPSOs.Count -gt 0) {
+                        Show-Line "Found $($assignedPSOs.Count) Fine-Grained Password Polic$(if($assignedPSOs.Count -eq 1){'y'}else{'ies'}) by assignment:" -Class Hint
+
+                        foreach ($assignedPSO in $assignedPSOs) {
+                            $targetNames = @()
+                            $privilegedTargetNames = @()
+                            foreach ($targetDN in @($assignedPSO.Targets)) {
+                                $parsedTarget = Split-LDAPDN -DistinguishedName "$targetDN"
+                                $targetName = if ($parsedTarget -and $parsedTarget.RDNValue) { $parsedTarget.RDNValue } else { "$targetDN" }
+                                $targetNames += $targetName
+
+                                $assignedTargetPriv = Test-IsPrivileged -Identity "$targetDN" -IncludeOperators
+                                if ($assignedTargetPriv.IsPrivileged) { $privilegedTargetNames += $targetName }
+                            }
+
+                            # Short rows: what the settings are is not known, and the card says
+                            # why. Without the settings rows there is no verdict to draw, so a
+                            # privileged target is named without the PRIVILEGED prefix that
+                            # makes a weak policy a finding.
+                            $assignedObj = [PSCustomObject]@{
+                                psoName   = $assignedPSO.Name
+                                settings  = 'Unknown (readable by Domain Admins only)'
+                                appliesTo = if ($targetNames.Count -gt 0) { $targetNames -join ', ' } else { 'Unknown (not readable)' }
+                            }
+                            if ($privilegedTargetNames.Count -gt 0) {
+                                $assignedObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue ($privilegedTargetNames -join ', ') -Force
+                            }
+                            if ($assignedPSO.InEffectForThisAccount) {
+                                $assignedObj | Add-Member -NotePropertyName 'inEffectForThisAccount' -NotePropertyValue 'Yes' -Force
+                            }
+
+                            $assignedObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
+                            Show-Object $assignedObj -Class Hint
+                        }
+                    } elseif ($null -ne $assignedPSOs) {
+                        # Not "none configured": a policy assigned to nobody, or only to
+                        # objects this account may not read, is not found this way either.
+                        Show-Line "No Fine-Grained Password Policy assigned to a readable user or group" -Class Note
+                    }
                 }
             } else {
                 Show-Line "Fine-Grained Password Policies not available (requires Domain Functional Level 2008+)" -Raw
@@ -147555,7 +147711,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261019-0611"
+$Script:adPEASVersion = "2.7.0+20261019-0625"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

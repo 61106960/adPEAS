@@ -227,13 +227,17 @@ $Script:PrimaryAttributes = @{
     # Fine-Grained Password Policy (PSO)
     FineGrainedPasswordPolicy = @(
         'psoName', 'precedence',
+        # settings stands in for the rows below on a policy found by its assignment,
+        # whose settings this account cannot read.
+        'settings',
         'minPwdLength', 'passwordComplexity',
         'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
         'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
         # appliesToPrivileged exists only where a target of the policy is privileged,
+        # inEffectForThisAccount only on the policy that wins for the scanning account,
         # and this type is strict - a row the list does not name is dropped in silence.
-        'appliesTo', 'appliesToPrivileged'
+        'appliesTo', 'appliesToPrivileged', 'inEffectForThisAccount'
     )
 
     # Certificate Authority objects

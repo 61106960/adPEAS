@@ -157,6 +157,7 @@ Get-DomainInformation
 - Reversible encryption setting
 - Password history (`pwdHistoryLength`): 0 lets a user set the password a reset replaced at once - a hint; Microsoft's default remembers 24
 - Fine-Grained Password Policies: the same settings - length, complexity, reversible encryption, lockout threshold, duration and window, minimum and maximum age, password history - plus precedence and whom each policy applies to
+- Without Domain Admin rights the policies themselves cannot be read by default; they are found by assignment instead - `msDS-PSOApplied` on the users and groups a policy applies to, and `msDS-ResultantPSO` of the scanning account - with name and direct targets, but no settings
 
 **Security Impact**: Weak password policies allow attackers to crack passwords more easily or use brute-force attacks without lockout.
 
