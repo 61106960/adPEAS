@@ -895,6 +895,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Domain Admins can read them by default instead of "No Fine-Grained Password Policies
   configured".
 
+- **A Fine-Grained Password Policy names whom it applies to, and a privileged target is a
+  finding only on a weak policy.** `appliesTo` counted its targets - "2 user(s)/group(s)"
+  - and names them now, `appliesToPrivileged` names the privileged ones among them, and
+  the weak policies are named on a line with the card *Fine-Grained Password Policy
+  Weaker Than the Domain Default* instead of "1 FGPP weakness(es)". A policy assigned to
+  nobody no longer counts as weak. A strong policy for Domain Admins - what Microsoft
+  recommends - read as a finding with that card behind it; the row reads "PRIVILEGED -
+  ..." and carries the card only when the policy is weak.
+
 - **`Get-LAPSConfiguration` and `Get-OutdatedComputers` say when they could not finish.**
   Both wrote a failed query to the log only, so the section simply ended - a LAPS
   coverage figure that was never computed looked like a domain with nothing to report.

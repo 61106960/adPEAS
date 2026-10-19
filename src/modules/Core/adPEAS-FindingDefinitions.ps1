@@ -9440,8 +9440,10 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1110"
         Triggers = @(
             # The line that names the weak policies carries this id directly. The trigger
-            # below is for the row on the policy object: a PSO whose targets include a
-            # privileged principal is the case this card exists for.
+            # below is for the row on the policy object: a weak PSO whose targets include a
+            # privileged principal is the case this card exists for. Get-DomainPasswordPolicy
+            # writes the prefix for a weak policy only - a strong one for the same group
+            # names its targets without it.
             @{ Attribute = 'appliesToPrivileged'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
         )
     }

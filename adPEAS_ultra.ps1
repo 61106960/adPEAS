@@ -65265,8 +65265,9 @@ function Get-DomainPasswordPolicy {
 	                            }
 	                        }
 	                        if (@($appliesToPrivileged).Count -gt 0) {
-	                            $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue (
-	                                'PRIVILEGED - ' + (@($appliesToPrivileged) -join ', ')) -Force
+	                            $privilegedTargets = @($appliesToPrivileged) -join ', '
+	                            if ($psoState -eq 'Weak') { $privilegedTargets = 'PRIVILEGED - ' + $privilegedTargets }
+	                            $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue $privilegedTargets -Force
 	                        }
 	                        $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
 	                        Show-Object $psoObj -Class Hint
@@ -91698,7 +91699,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261019-0607"
+$Script:adPEASVersion = "2.7.0+20261019-0611"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

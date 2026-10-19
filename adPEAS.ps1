@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-19 06:07:09
-    Version: 2.7.0+20261019-0607
+    Build: 2026-10-19 06:11:16
+    Version: 2.7.0+20261019-0611
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -17832,8 +17832,10 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1110"
         Triggers = @(
             # The line that names the weak policies carries this id directly. The trigger
-            # below is for the row on the policy object: a PSO whose targets include a
-            # privileged principal is the case this card exists for.
+            # below is for the row on the policy object: a weak PSO whose targets include a
+            # privileged principal is the case this card exists for. Get-DomainPasswordPolicy
+            # writes the prefix for a weak policy only - a strong one for the same group
+            # names its targets without it.
             @{ Attribute = 'appliesToPrivileged'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
         )
     }
@@ -105520,9 +105522,14 @@ function Get-DomainPasswordPolicy {
                                 }
                             }
 
+                            # The PRIVILEGED prefix is what the WEAK_FGPP trigger answers, so it
+                            # is written for a weak policy only. A strong policy for Domain
+                            # Admins is what Microsoft recommends, and it read as a finding with
+                            # the card "Weaker Than the Domain Default" behind it.
                             if (@($appliesToPrivileged).Count -gt 0) {
-                                $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue (
-                                    'PRIVILEGED - ' + (@($appliesToPrivileged) -join ', ')) -Force
+                                $privilegedTargets = @($appliesToPrivileged) -join ', '
+                                if ($psoState -eq 'Weak') { $privilegedTargets = 'PRIVILEGED - ' + $privilegedTargets }
+                                $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue $privilegedTargets -Force
                             }
 
                             $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
@@ -147548,7 +147555,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261019-0607"
+$Script:adPEASVersion = "2.7.0+20261019-0611"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
