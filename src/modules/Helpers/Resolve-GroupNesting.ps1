@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Group nesting, resolved: every group an account is in.
+    Group nesting, resolved both ways: every group an account is in, and every member a
+    group has.
 
 .DESCRIPTION
     memberOf and member hold the links written on the two objects, and nothing else. Two
@@ -18,7 +19,7 @@
     runs against: a group in another domain or forest that holds an account through a
     foreign security principal is not found.
 
-    Get-DomainUser -ResolveGroups uses these.
+    Get-DomainUser -ResolveGroups and Get-DomainGroup -ShowMembers -Recurse use these.
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -29,9 +30,10 @@
     One entry as a reader sees it: the name and how it was reached.
 
 .DESCRIPTION
-    "Server Operators (via Tier1)" or "Domain Users (primary group)". Shared by the
-    ToString of the entries and by the memberOfNested transformer, which also sees entries
-    that came back from a JSON report and carry no ToString of their own.
+    "Server Operators (via Tier1)", "Domain Users (primary group)", "jdoe (via Domain
+    Users, primary group)", or the name alone for a direct member. Shared by the ToString
+    of the entries and by the memberOfNested transformer, which also sees entries that
+    came back from a JSON report and carry no ToString of their own.
 
 .PARAMETER Entry
     An entry with Name, Membership and Via.
@@ -50,7 +52,12 @@ function Format-GroupNestingEntry {
     $via = [string]$Entry.Via
 
     switch ([string]$Entry.Membership) {
-        'Primary group' { return "$name (primary group)" }
+        'Direct' { return $name }
+        'Primary group' {
+            # On a member: through the primary group of a nested group, or of the group.
+            if ($via) { return "$name (via $via, primary group)" }
+            return "$name (primary group)"
+        }
         default {
             if ($via) { return "$name (via $via)" }
             return "$name (nested)"
@@ -113,13 +120,17 @@ function Get-GroupNestingName {
     Builds one entry and gives it the ToString a console list shows.
 
 .PARAMETER Object
-    The group the entry is about.
+    The group or member object the entry is about.
 
 .PARAMETER Membership
-    'Nested' or 'Primary group'.
+    'Direct', 'Nested' or 'Primary group'.
 
 .PARAMETER Via
     The name of the group the entry was reached through, or empty.
+
+.PARAMETER WithObjectClass
+    Adds ObjectClass, the most specific class of the object - for members, which are not
+    all groups.
 #>
 function New-GroupNestingEntry {
     [CmdletBinding()]
@@ -134,16 +145,43 @@ function New-GroupNestingEntry {
         [Parameter(Mandatory=$false)]
         [AllowNull()]
         [AllowEmptyString()]
-        [string]$Via
+        [string]$Via,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$WithObjectClass
     )
 
+    $sid = ConvertTo-GroupNestingSid -Value $Object.objectSid
+    $name = Get-GroupNestingName -Object $Object
     $viaValue = if ($Via) { $Via } else { $null }
-    $entry = [PSCustomObject]@{
-        Name              = Get-GroupNestingName -Object $Object
-        Membership        = $Membership
-        Via               = $viaValue
-        DistinguishedName = [string]$Object.distinguishedName
-        SID               = ConvertTo-GroupNestingSid -Value $Object.objectSid
+
+    if (-not $WithObjectClass) {
+        $entry = [PSCustomObject]@{
+            Name              = $name
+            Membership        = $Membership
+            Via               = $viaValue
+            DistinguishedName = [string]$Object.distinguishedName
+            SID               = $sid
+        }
+    } else {
+        $classes = @(@($Object.objectClass) | Where-Object { $_ })
+        $objectClass = if ($classes.Count -gt 0) { [string]$classes[$classes.Count - 1] } else { '' }
+
+        # A foreign security principal is named by its SID; the name it stands for is what
+        # a reader needs.
+        if ($objectClass -eq 'foreignSecurityPrincipal' -and $sid) {
+            $resolvedName = ConvertFrom-SID -SID $sid
+            if ($resolvedName -and $resolvedName -ne $sid) { $name = [string]$resolvedName }
+        }
+
+        $entry = [PSCustomObject]@{
+            Name              = $name
+            ObjectClass       = $objectClass
+            Membership        = $Membership
+            Via               = $viaValue
+            DistinguishedName = [string]$Object.distinguishedName
+            SID               = $sid
+        }
     }
     $entry | Add-Member -MemberType ScriptMethod -Name 'ToString' -Value { Format-GroupNestingEntry -Entry $this } -Force
     return $entry
@@ -275,3 +313,186 @@ function Resolve-AccountGroupNesting {
     return @($entries)
 }
 
+<#
+.SYNOPSIS
+    Every member of a group: direct, through nested groups, and through the primary group
+    of the group or of a group nested in it.
+
+.DESCRIPTION
+    Direct members come first, then the members of nested groups, in the order a
+    breadth-first walk down from the group reaches them - each naming the group that
+    holds it. Then the accounts whose primary group is the group or one nested in it,
+    which no member attribute lists; an account already found another way keeps that
+    entry. Nested groups are members too and are listed with the others.
+
+    Built from both ends of the link. The chain query matches memberOf, and memberOf of
+    what it returns gives the links; that does not depend on the member attribute, which
+    arrives in ranges on a large group. But memberOf is not readable everywhere - measured
+    on a lab domain, a domain user sees it on the foreign security principal of
+    Authenticated Users and not on those of INTERACTIVE, IUSR or Enterprise Domain
+    Controllers - and an object whose memberOf cannot be read is not matched at all. So
+    the member attribute of each group of the chain is read as well, and a DN found there
+    and nowhere else is looked up; a foreign security principal is named by the SID its
+    DN carries.
+
+.PARAMETER Group
+    The group object, with distinguishedName and objectSid.
+
+.PARAMETER ConnectionParams
+    Domain, Server and Credential for Get-DomainObject, where the caller was given them.
+
+.OUTPUTS
+    One PSCustomObject per member: Name, ObjectClass, Membership ('Direct', 'Nested' or
+    'Primary group'), Via, DistinguishedName and SID.
+#>
+function Resolve-GroupMemberNesting {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Group,
+
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $groupDN = [string]$Group.distinguishedName
+    if ([string]::IsNullOrWhiteSpace($groupDN)) { return @() }
+
+    $memberProperties = @('distinguishedName', 'name', 'sAMAccountName', 'objectSid', 'objectClass', 'memberOf', 'member')
+    $escapedDN = Escape-LDAPFilterDN -DistinguishedName $groupDN
+    $chainMembers = @(Get-DomainObject -LDAPFilter "(memberOf:1.2.840.113556.1.4.1941:=$escapedDN)" -Properties $memberProperties @ConnectionParams |
+        Where-Object { $_ -and $_.distinguishedName })
+
+    # Every object known so far by DN, and the groups among them, the group itself included.
+    $objectsByDN = @{}
+    $groupsByDN = @{}
+    $groupsByDN[$groupDN] = $Group
+    foreach ($chainMember in $chainMembers) {
+        $objectsByDN[[string]$chainMember.distinguishedName] = $chainMember
+        if (@($chainMember.objectClass) -contains 'group') { $groupsByDN[[string]$chainMember.distinguishedName] = $chainMember }
+    }
+
+    # Who each group holds, from memberOf of what the chain query returned.
+    $childrenOf = @{}
+    foreach ($chainMember in $chainMembers) {
+        foreach ($parentDN in @(@($chainMember.memberOf) | ForEach-Object { [string]$_ })) {
+            if (-not $groupsByDN.ContainsKey($parentDN)) { continue }
+            if (-not $childrenOf.ContainsKey($parentDN)) { $childrenOf[$parentDN] = New-Object System.Collections.ArrayList }
+            [void]$childrenOf[$parentDN].Add($chainMember)
+        }
+    }
+
+    # And from member of the group itself, for what memberOf did not show. A DN known
+    # from nowhere else is looked up once; a foreign security principal needs no lookup,
+    # its DN carries its SID.
+    function Get-GroupChildren {
+        param($Holder)
+
+        # A child named by both sides comes twice; the walk lists each DN once.
+        $holderDN = [string]$Holder.distinguishedName
+        $children = New-Object System.Collections.ArrayList
+        if ($childrenOf.ContainsKey($holderDN)) {
+            foreach ($known in $childrenOf[$holderDN]) { [void]$children.Add($known) }
+        }
+
+        foreach ($memberValue in @($Holder.member)) {
+            $memberDN = [string]$memberValue
+            if ([string]::IsNullOrWhiteSpace($memberDN)) { continue }
+
+            if (-not $objectsByDN.ContainsKey($memberDN)) {
+                $found = $null
+                if ($memberDN -match '^CN=(S-1-[0-9-]+),CN=ForeignSecurityPrincipals,') {
+                    $found = [PSCustomObject]@{
+                        distinguishedName = $memberDN
+                        name              = $Matches[1]
+                        objectSid         = $Matches[1]
+                        objectClass       = @('top', 'foreignSecurityPrincipal')
+                    }
+                } else {
+                    $found = @(Get-DomainObject -Identity $memberDN -Properties $memberProperties @ConnectionParams | Where-Object { $_ })[0]
+                    if (-not $found) { $found = [PSCustomObject]@{ distinguishedName = $memberDN } }
+                }
+                $objectsByDN[$memberDN] = $found
+                if (@($found.objectClass) -contains 'group') { $groupsByDN[$memberDN] = $found }
+            }
+            [void]$children.Add($objectsByDN[$memberDN])
+        }
+
+        return @($children | Sort-Object -Property { [string]$_.distinguishedName })
+    }
+
+    $entries = New-Object System.Collections.ArrayList
+    # The group itself is seen from the start: in a nesting loop it is its own member.
+    $seen = @{}
+    $seen[$groupDN] = $true
+    $nestedGroups = New-Object System.Collections.ArrayList
+
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($Group)
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        $currentDN = [string]$current.distinguishedName
+        $isTop = ($currentDN -eq $groupDN)
+        foreach ($child in @(Get-GroupChildren -Holder $current)) {
+            $childDN = [string]$child.distinguishedName
+            if ($seen.ContainsKey($childDN)) { continue }
+            $seen[$childDN] = $true
+            if ($isTop) {
+                [void]$entries.Add((New-GroupNestingEntry -Object $child -Membership 'Direct' -WithObjectClass))
+            } else {
+                [void]$entries.Add((New-GroupNestingEntry -Object $child -Membership 'Nested' -Via (Get-GroupNestingName -Object $current) -WithObjectClass))
+            }
+            if ($groupsByDN.ContainsKey($childDN)) {
+                [void]$nestedGroups.Add($child)
+                $queue.Enqueue($child)
+            }
+        }
+    }
+
+    # A member the chain query returned but the walk did not reach - a memberOf that did
+    # not arrive whole: still a member.
+    foreach ($chainMember in @($chainMembers | Sort-Object -Property { [string]$_.distinguishedName })) {
+        $memberDN = [string]$chainMember.distinguishedName
+        if ($seen.ContainsKey($memberDN)) { continue }
+        $seen[$memberDN] = $true
+        [void]$entries.Add((New-GroupNestingEntry -Object $chainMember -Membership 'Nested' -WithObjectClass))
+        if ($groupsByDN.ContainsKey($memberDN)) { [void]$nestedGroups.Add($chainMember) }
+    }
+
+    # Accounts whose primary group is the group or one nested in it. primaryGroupID is a
+    # RID of the account's own domain, so a group can be one only for accounts of its own
+    # domain - never a builtin group, though one nested in a builtin group can: Domain Users
+    # in BUILTIN\Users. Keyed by the full SID, so an account is matched by its domain too.
+    $holderBySID = @{}
+    foreach ($candidate in @(@($Group) + @($nestedGroups))) {
+        $candidateSID = ConvertTo-GroupNestingSid -Value $candidate.objectSid
+        if ($candidateSID -match '^S-1-5-21-\d+-\d+-\d+-\d+$' -and -not $holderBySID.ContainsKey($candidateSID)) {
+            $holderBySID[$candidateSID] = $candidate
+        }
+    }
+
+    if ($holderBySID.Count -gt 0) {
+        $rids = @($holderBySID.Keys | ForEach-Object { ($_ -split '-')[-1] } | Sort-Object -Property { [int]$_ })
+        $ridClauses = ($rids | ForEach-Object { "(primaryGroupID=$_)" }) -join ''
+        $primaryFilter = if ($rids.Count -eq 1) { $ridClauses } else { "(|$ridClauses)" }
+        $primaryMembers = @(Get-DomainObject -LDAPFilter $primaryFilter -Properties ($memberProperties + @('primaryGroupID')) @ConnectionParams |
+            Where-Object { $_ -and $_.distinguishedName })
+
+        foreach ($primaryMember in @($primaryMembers | Sort-Object -Property { [string]$_.distinguishedName })) {
+            $memberDN = [string]$primaryMember.distinguishedName
+            if ($seen.ContainsKey($memberDN)) { continue }
+            $memberSID = ConvertTo-GroupNestingSid -Value $primaryMember.objectSid
+            if ($memberSID -notmatch '^(S-1-5-21-\d+-\d+-\d+)-\d+$') { continue }
+            $holderSID = "$($Matches[1])-$(([string]$primaryMember.primaryGroupID).Trim())"
+            if (-not $holderBySID.ContainsKey($holderSID)) { continue }
+
+            $seen[$memberDN] = $true
+            $holder = $holderBySID[$holderSID]
+            $via = if ([string]$holder.distinguishedName -ne $groupDN) { Get-GroupNestingName -Object $holder } else { '' }
+            [void]$entries.Add((New-GroupNestingEntry -Object $primaryMember -Membership 'Primary group' -Via $via -WithObjectClass))
+        }
+    }
+
+    return @($entries)
+}

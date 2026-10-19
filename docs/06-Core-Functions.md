@@ -343,6 +343,7 @@ Get-DomainGroup
     [-GroupScope <String>]
     [-GroupCategory <String>]
     [-ShowMembers]
+    [-Recurse]
     [-ShowOwner]
     [-Raw]
     [-Domain <String>]
@@ -361,7 +362,8 @@ Get-DomainGroup
 | `-AdminCount` | Switch | Only groups with adminCount=1 (privileged groups) |
 | `-GroupScope` | String | Filter by Group Scope. Valid values: `DomainLocal`, `Global`, `Universal` |
 | `-GroupCategory` | String | Filter by Group Category. Valid values: `Security`, `Distribution` |
-| `-ShowMembers` | Switch | Resolves and returns all group members (requires -Identity) |
+| `-ShowMembers` | Switch | Returns the DNs of the direct members (the `member` attribute) instead of the group. Requires -Identity; with several matches, the first group |
+| `-Recurse` | Switch | Implies -ShowMembers and returns every member instead: direct, nested at any depth, and accounts whose primary group is the group or a nested one. One object per member with `Name`, `ObjectClass`, `Membership` (`Direct`, `Nested`, `Primary group`), `Via`, `DistinguishedName` and `SID` |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
 | `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
 | `-Domain` | String | Target domain (FQDN) |
@@ -389,8 +391,11 @@ Get-DomainGroup -GroupScope Universal
 # Get distribution groups
 Get-DomainGroup -GroupCategory Distribution
 
-# Get group members
+# Get the direct members (DNs)
 Get-DomainGroup -Identity "Domain Admins" -ShowMembers
+
+# Get every member: nested groups and primary group included, each with the group that holds it
+Get-DomainGroup -Identity "Domain Admins" -ShowMembers -Recurse
 
 # Get groups with specific text in description
 Get-DomainGroup -LDAPFilter "(description=*admin*)"

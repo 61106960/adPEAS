@@ -20,6 +20,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   is coloured like one in `memberOf`. Groups in another domain or forest that hold the
   account through a foreign security principal are not found.
 
+- **`Get-DomainGroup -ShowMembers -Recurse` lists every member of a group.**
+  `-ShowMembers` returns the DNs of the `member` attribute: the direct members only, and
+  none of the accounts whose primary group the group is - Domain Users lists almost no
+  one. `-Recurse` (which implies `-ShowMembers`) returns one object per member instead:
+  direct members, the members of nested groups at any depth, and the accounts whose
+  primary group is the group or one nested in it, each with `Membership` and the group
+  that holds it in `Via` - "jdoe (via Tier1)", "svc (via Domain Users, primary group)".
+  A foreign security principal is named by the account it stands for. The members and
+  their links come from one `LDAP_MATCHING_RULE_IN_CHAIN` query on `memberOf`, and from
+  the `member` attribute of every group of the chain: `memberOf` is not readable on every
+  object - a domain user cannot read it on the foreign security principals of
+  INTERACTIVE, IUSR or Enterprise Domain Controllers - and such a member would be
+  missing. The help of `-ShowMembers` promised a formatted list with member types; it
+  says what it returns now.
+
 - **`Get-GPOScheduledTasks` reads who may write the UNC path a task running as SYSTEM or
   as a privileged account starts from.** **This is a new outgoing connection: adPEAS now
   connects over SMB, with the session's credentials, to the file servers such tasks

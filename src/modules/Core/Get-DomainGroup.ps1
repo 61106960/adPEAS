@@ -37,8 +37,17 @@ function Get-DomainGroup {
     The owner has implicit control over the object.
 
 .PARAMETER ShowMembers
-    Resolves and displays all group members with their type and description.
-    Members are shown in a formatted list (User, Computer, Group, gMSA, etc.).
+    Returns the DNs in the member attribute of the group instead of the group: its direct
+    members. Requires -Identity; where it matches several groups, the first one.
+
+.PARAMETER Recurse
+    With -ShowMembers, which it implies: every member instead - direct ones, the members
+    of nested groups at any depth, and the accounts whose primary group is the group or a
+    group nested in it, which no member attribute lists. One object per member, with
+    Name, ObjectClass, Membership ('Direct', 'Nested' or 'Primary group'), Via (the
+    group that holds it), DistinguishedName and SID. Nested groups are listed as members
+    too. A member in another domain or forest reached through a foreign security
+    principal is listed as that principal, not resolved further.
 
 .PARAMETER SearchBase
     Alternative SearchBase (DN). Default: Domain DN.
@@ -61,7 +70,12 @@ function Get-DomainGroup {
 
 .EXAMPLE
     Get-DomainGroup -Identity "Domain Admins" -ShowMembers
-    Shows all members of Domain Admins group with their types.
+    Returns the DNs of the direct members of Domain Admins.
+
+.EXAMPLE
+    Get-DomainGroup -Identity "Domain Admins" -ShowMembers -Recurse
+    Returns every member of Domain Admins, nested and by primary group included, each
+    with the group that holds it.
 
 .OUTPUTS
     PSCustomObject with group attributes
@@ -99,6 +113,9 @@ function Get-DomainGroup {
         [switch]$ShowMembers,
 
         [Parameter(Mandatory=$false)]
+        [switch]$Recurse,
+
+        [Parameter(Mandatory=$false)]
         [string]$SearchBase,
 
         [Parameter(Mandatory=$false)]
@@ -120,6 +137,9 @@ function Get-DomainGroup {
 
     process {
         try {
+            # -Recurse is a way of showing the members, so it implies -ShowMembers.
+            if ($Recurse) { $ShowMembers = $true }
+
             # Validation: ShowMembers requires Identity (ignore if not provided)
             if ($ShowMembers -and -not $Identity) {
                 Write-Log "[Get-DomainGroup] -ShowMembers requires -Identity parameter - ignoring ShowMembers switch"
@@ -178,8 +198,14 @@ function Get-DomainGroup {
                 $GetParams['Identity'] = $Identity
             }
 
-            # Pass through other parameters
-            if ($Properties) { $GetParams['Properties'] = $Properties }
+            # Pass through other parameters. -Recurse reads the DN, the SID and the members
+            # of the group, where a property list would leave them out.
+            if ($Properties) {
+                $GetParams['Properties'] = $Properties
+                if ($Recurse -and $ShowMembers) {
+                    $GetParams['Properties'] = @(@($Properties) + @('distinguishedName', 'objectSid', 'member') | Select-Object -Unique)
+                }
+            }
             if ($ShowOwner) { $GetParams['ShowOwner'] = $true }
             if ($SearchBase) { $GetParams['SearchBase'] = $SearchBase }
             if ($Domain) { $GetParams['Domain'] = $Domain }
@@ -194,6 +220,13 @@ function Get-DomainGroup {
             # If ShowMembers is set, return only member DNs as array
             if ($ShowMembers) {
                 foreach ($Group in $Groups) {
+                    if ($Recurse) {
+                        $nestingParams = @{}
+                        if ($Domain) { $nestingParams['Domain'] = $Domain }
+                        if ($Server) { $nestingParams['Server'] = $Server }
+                        if ($Credential) { $nestingParams['Credential'] = $Credential }
+                        return @(Resolve-GroupMemberNesting -Group $Group -ConnectionParams $nestingParams)
+                    }
                     if ($Group.member) {
                         # Return member DNs directly
                         return $Group.member
