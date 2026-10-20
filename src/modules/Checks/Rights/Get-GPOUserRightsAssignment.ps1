@@ -385,10 +385,10 @@ function Get-GPOUserRightsAssignment {
 
                         Add-GPOConditionRow -Object $finding -GPOGUID $gpo.Name
 
-                        if (-not $comparison.HasBaseline) {
-                            $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
-                                -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
-                        }
+                        # A right without a documented default needs no row of its own saying
+                        # so: only two rights have none, and the card of each - the tooltip of
+                        # GrantedBeyondDefault - says how its holders were filtered. The row
+                        # was one long sentence on the console.
 
                         $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $statusMap[$gpoGUIDKey] `
                             -Scope 'Machine' -Link $(if ($null -eq $linkage) { $null } else { $links })

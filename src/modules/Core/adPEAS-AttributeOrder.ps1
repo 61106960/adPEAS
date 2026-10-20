@@ -409,7 +409,7 @@ $Script:PrimaryAttributes = @{
     # entry already carries the explanation for the whole section.
     GPOUserRights = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
-        'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
+        'GrantedBeyondDefault', 'RemovedFromDefault',
         'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 

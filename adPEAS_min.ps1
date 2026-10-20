@@ -3625,7 +3625,7 @@ $Script:PrimaryAttributes = @{
     )
     GPOUserRights = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
-        'GrantedBeyondDefault', 'RemovedFromDefault', 'BaselineUnknown',
+        'GrantedBeyondDefault', 'RemovedFromDefault',
         'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
     MachineAccountQuota = @(
@@ -10185,7 +10185,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         Title = "'Log on as a Service' (SeServiceLogonRight) Granted via GPO"
         Risk = "Hint"
         BaseScore = 45
-        Description = "A Group Policy grants SeServiceLogonRight to a principal. Windows ships no fixed default for this right - every product installed on a machine adds its own service accounts - so this is reported through the identity filter rather than a deviation from a documented baseline; treat it as worth a look, not automatically as new. The holder can start a Windows service as itself, which begins running with no one needing to log on."
+        Description = "A Group Policy grants SeServiceLogonRight to a principal. Windows ships no fixed default for this right - every product installed on a machine adds its own service accounts - so this is reported through the identity filter rather than a deviation from a documented baseline: GrantedBeyondDefault lists every holder except privileged, operator and well-known service identities. Treat it as worth a look against what the targeted machines actually run, not automatically as new. The holder can start a Windows service as itself, which begins running with no one needing to log on."
         Impact = @(
             "Service execution as the holder, starting automatically at boot with no interactive session"
             "A classic persistence mechanism, and a way to run code under a service account's specific privileges, which are sometimes broader than an ordinary user's"
@@ -10323,7 +10323,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         Title = "'Obtain an Impersonation Token for Another User in the Same Session' (SeDelegateSessionUserImpersonatePrivilege) Granted via GPO"
         Risk = "Hint"
         BaseScore = 30
-        Description = "A Group Policy grants SeDelegateSessionUserImpersonatePrivilege to a principal. The privilege obtains an impersonation token for another user in the same session, and the holder then acts as that user. Microsoft documents what the privilege does and publishes no default holder set for it, so this is reported through the identity filter rather than as a deviation from a documented baseline."
+        Description = "A Group Policy grants SeDelegateSessionUserImpersonatePrivilege to a principal. The privilege obtains an impersonation token for another user in the same session, and the holder then acts as that user. Microsoft documents what the privilege does and publishes no default holder set for it, so this is reported through the identity filter rather than as a deviation from a documented baseline: GrantedBeyondDefault lists every holder except privileged, operator and well-known service identities."
         Impact = @(
             "The holder acts as another user signed in to the same session, with that user's access"
         )
@@ -10501,30 +10501,6 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         MITRE = "-"
         Triggers = @(
             @{ Attribute = 'RemovedFromDefault'; Severity = 'Note' }
-        )
-    }
-    'GPO_USERRIGHT_BASELINE_UNKNOWN' = @{
-        Title = "User Right Has No Documented Windows Default"
-        Risk = "Hint"
-        BaseScore = 10
-        Description = "Windows publishes no fixed default holder set for this right - who holds it varies with what is installed on the machine (SQL, Exchange, IIS and similar products each add their own accounts). The comparison this check is built around cannot run for it, so every holder is reported unfiltered rather than only the ones beyond a default that does not exist."
-        Impact = @(
-            "The list below has not been checked against a Windows baseline - judge each holder against what this domain actually runs, not against an assumed default"
-            "A privileged or broad principal in the list is still worth the same scrutiny it would get anywhere else"
-        )
-        Attack = @(
-            "Not an attack path on its own - it is a disclaimer on the holder list next to it, whose own severity carries the actual finding"
-        )
-        Remediation = @(
-            "Review the holder list by hand against the services actually installed on the targeted machines"
-        )
-        References = @(
-            @{ Title = "User Rights Assignment - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
-        )
-        Tools = @("-")
-        MITRE = "-"
-        Triggers = @(
-            @{ Attribute = 'BaselineUnknown'; Severity = 'Hint' }
         )
     }
     'LAPS_ENCRYPTED_READ_NO_DECRYPTOR' = @{
@@ -74552,10 +74528,6 @@ function Get-GPOUserRightsAssignment {
                             _severity            = $severity
                         }
                         Add-GPOConditionRow -Object $finding -GPOGUID $gpo.Name
-                        if (-not $comparison.HasBaseline) {
-                            $finding | Add-Member -NotePropertyName 'BaselineUnknown' `
-                                -NotePropertyValue 'Windows publishes no fixed default set for this right, so the holders above were filtered by identity instead of compared. Judge them against what this domain actually runs.' -Force
-                        }
                         $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $statusMap[$gpoGUIDKey] `
                             -Scope 'Machine' -Link $(if ($null -eq $linkage) { $null } else { $links })
                         if ($gpoStatus) {
@@ -95593,7 +95565,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-1709"
+$Script:adPEASVersion = "2.7.0+20261020-1732"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

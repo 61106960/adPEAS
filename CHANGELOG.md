@@ -1273,6 +1273,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   above it, and `whoCanAddComputers` says the default it rests on: "Any authenticated user
   by default, up to the quota".
 
+- **`Get-GPOUserRightsAssignment` drops the `BaselineUnknown` row.** For a right without a
+  documented Windows default the object carried one long sentence saying the holders were
+  filtered by identity instead of compared. Only two rights have none -
+  `SeServiceLogonRight` and `SeDelegateSessionUserImpersonatePrivilege` - and the card of
+  each, the tooltip of `GrantedBeyondDefault`, now says which holders that list leaves out.
+  The separate *User Right Has No Documented Windows Default* card is gone with the row.
+
 - **A check that fails inside SYSVOL no longer blinds the checks after it.**
   `Invoke-SMBAccess` ran a check's block inside its retry loop for the mount, so an
   exception in the block counted as a failed connection: the share was recorded as
