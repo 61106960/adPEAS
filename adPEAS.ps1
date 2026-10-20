@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 16:56:51
-    Version: 2.7.0+20261020-1656
+    Build: 2026-10-20 17:09:50
+    Version: 2.7.0+20261020-1709
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -64560,8 +64560,9 @@ function Convert-ADTimestamp {
     Helps identify what operation is being performed.
 
 .PARAMETER RetryCount
-    Number of retry attempts on transient network errors.
-    Default: 2
+    Number of retry attempts on transient network errors while mounting the share.
+    Default: 2. The scriptblock itself runs once: an exception in it is handled as
+    ErrorHandling says, and does not mark the share as failed.
 
 .PARAMETER Timeout
     Timeout in seconds for PSDrive mount operations.
@@ -65399,6 +65400,7 @@ function Invoke-SMBAccess {
         $shareKey = $null
         $heldShare = $false
         $nestedRun = $false
+        $blockError = $null
 
         try {
             if ($Credential) {
@@ -65627,10 +65629,6 @@ function Invoke-SMBAccess {
                             }
                             $driveMounted = $true
                             Write-Log "[Invoke-SMBAccess] PSDrive mounted successfully (direct)"
-
-                            # Execute scriptblock
-                            & $ScriptBlock $targetPath
-                            $success = $true
                         } catch {
                             throw $_.Exception.Message
                         }
@@ -65673,9 +65671,6 @@ try {
                                 if ($result -and $result.Success) {
                                     $driveMounted = $true
                                     Write-Log "[Invoke-SMBAccess] PSDrive mounted successfully (runspace)"
-
-                                    # Execute scriptblock
-                                    & $ScriptBlock $targetPath
                                 } else {
                                     $errorMsg = if ($result -and $result.Error) { $result.Error } else { "Unknown error during PSDrive mount" }
                                     throw $errorMsg
@@ -65696,10 +65691,10 @@ try {
                                 $runspace.Dispose()
                             }
                         }
-
-                        $success = $true
                     }
 
+                    # Mounted. What is retried is the mount, never the block - see below.
+                    $success = $true
                 } catch {
                     $lastError = $_
                     Write-Log "[Invoke-SMBAccess] Error on attempt ${attempt}: $_"
@@ -65715,18 +65710,36 @@ try {
                 }
             }
 
+            # The loop throws on its last failed attempt itself; this keeps the block below
+            # off a share that was not mounted should that ever change.
             if (-not $success) {
                 throw $lastError
+            }
+
+            # The block runs once, on the mounted share. It used to run inside the retry
+            # loop, so an exception in it counted as a failed mount: the block ran again,
+            # beside whatever it had collected the first time, and then the share was cached
+            # as failed - every later access to it was turned away for the rest of the
+            # session. One check that broke on one file left each SYSVOL check after it
+            # reading nothing, and saying so as a result.
+            try {
+                & $ScriptBlock $targetPath
+            } catch {
+                $blockError = $_
+            }
+            if ($blockError) {
+                Write-Log "[Invoke-SMBAccess] $operationDesc - the block failed on a reachable share: $($blockError.Exception.Message)"
+                throw $blockError
             }
 
         } catch {
             $errorMsg = "SMB access failed: $_"
             Write-Log "[Invoke-SMBAccess] $errorMsg"
 
-            # Cache the failed share to prevent repeated timeout attempts. Not from a run on
-            # an enclosing call's mount: the share is reachable there, and what failed was
-            # the block - caching it would turn every later access to the share away.
-            if ($shareKey -and -not $nestedRun) {
+            # Cache the failed share to prevent repeated timeout attempts. Not where the
+            # block failed - on this call's mount or on an enclosing call's: the share is
+            # reachable, and caching it would turn every later access to it away.
+            if ($shareKey -and -not $nestedRun -and -not $blockError) {
                 $Script:SMBShareAccessCache[$shareKey] = [string]$_
                 Write-Log "[Invoke-SMBAccess] Cached failed share: $shareKey"
             }
@@ -149099,7 +149112,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1656"
+$Script:adPEASVersion = "2.7.0+20261020-1709"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

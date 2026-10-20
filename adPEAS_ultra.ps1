@@ -42201,6 +42201,7 @@ function Invoke-SMBAccess {
 	    $shareKey = $null
 	    $heldShare = $false
 	    $nestedRun = $false
+	    $blockError = $null
 	    try {
 	        if ($Credential) {
 	            $credToUse = $Credential
@@ -42334,8 +42335,6 @@ function Invoke-SMBAccess {
 	                            New-PSDrive -Name $driveName -PSProvider FileSystem -Root $targetPath -Scope Script -ErrorAction Stop | Out-Null
 	                        }
 	                        $driveMounted = $true
-	                        & $ScriptBlock $targetPath
-	                        $success = $true
 	                    } catch {
 	                        throw $_.Exception.Message
 	                    }
@@ -42364,7 +42363,6 @@ try {
 	                            $result = $powershell.EndInvoke($asyncResult)
 	                            if ($result -and $result.Success) {
 	                                $driveMounted = $true
-	                                & $ScriptBlock $targetPath
 	                            } else {
 	                                $errorMsg = if ($result -and $result.Error) { $result.Error } else { "Unknown error during PSDrive mount" }
 	                                throw $errorMsg
@@ -42382,8 +42380,8 @@ try {
 	                            $runspace.Dispose()
 	                        }
 	                    }
-	                    $success = $true
 	                }
+	                $success = $true
 	            } catch {
 	                $lastError = $_
 	                $errorInfo = Get-ExceptionErrorInfo -Exception $_.Exception -Context "SMB"
@@ -42395,9 +42393,17 @@ try {
 	        if (-not $success) {
 	            throw $lastError
 	        }
+	        try {
+	            & $ScriptBlock $targetPath
+	        } catch {
+	            $blockError = $_
+	        }
+	        if ($blockError) {
+	            throw $blockError
+	        }
 	    } catch {
 	        $errorMsg = "SMB access failed: $_"
-	        if ($shareKey -and -not $nestedRun) {
+	        if ($shareKey -and -not $nestedRun -and -not $blockError) {
 	            $Script:SMBShareAccessCache[$shareKey] = [string]$_
 	        }
 	        switch ($ErrorHandling) {
@@ -92530,7 +92536,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1656"
+$Script:adPEASVersion = "2.7.0+20261020-1709"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

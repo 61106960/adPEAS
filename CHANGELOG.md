@@ -1273,6 +1273,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   above it, and `whoCanAddComputers` says the default it rests on: "Any authenticated user
   by default, up to the quota".
 
+- **A check that fails inside SYSVOL no longer blinds the checks after it.**
+  `Invoke-SMBAccess` ran a check's block inside its retry loop for the mount, so an
+  exception in the block counted as a failed connection: the share was recorded as
+  unreachable, and every later SYSVOL access in the session was skipped without a word -
+  each SYSVOL-based check after the one that broke read nothing and reported on that. On
+  the runspace path a network-type exception also ran the block a second time. The block
+  now runs once, after the mount; an exception in it is handled as the caller's
+  `-ErrorHandling` says, as before, and leaves the share usable. Only a failed mount marks
+  the share as unreachable.
+
 - **A Tier-0 account in `Get-ProtectedUsersStatus` shows the groups that make it one.**
   The account object carried `tier0Groups` and, for an account the metric leaves out,
   `excludedReason`, but the Tier-0 type had no row list of its own, so the account
