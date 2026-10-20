@@ -11555,7 +11555,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Tools = @("Mimikatz", "Impacket")
 	    MITRE = "T1558"
 	    Triggers = @(
-	        @{ Attribute = 'trustPasswordRotation'; Pattern = '^Stale'; Severity = 'Hint' }
+	        @{ Attribute = 'trustPasswordLastSet'; Pattern = '\((9\d|[1-9]\d{2,}) days ago,'; Severity = 'Hint' }
 	    )
 	}
 	'TRUST_BIDIRECTIONAL' = @{
@@ -66090,7 +66090,6 @@ function Get-DomainTrusts {
 	                    $trustAccounts = $null
 	                }
 	            }
-	            $staleTrusts = 0
 	            foreach ($trust in $trusts) {
 	                $direction = $trust.trustDirection
 	                $type = $trust.trustType
@@ -66137,11 +66136,7 @@ function Get-DomainTrusts {
 	                        if ($pwdLastSet -is [DateTime]) {
 	                            $ageDays = [int][Math]::Floor(((Get-Date) - $pwdLastSet).TotalDays)
 	                            $lastSetText = "$(Format-adPEASDate $pwdLastSet 'yyyy-MM-dd') ($ageDays days ago, on $accountName)"
-	                            if ($ageDays -ge $staleTrustPasswordDays) {
-	                                $passwordStale = $true
-	                                $trustObject | Add-Member -NotePropertyName 'trustPasswordRotation' `
-	                                    -NotePropertyValue "Stale - not changed for $ageDays days; the trusting domain changes it about every 30 days" -Force
-	                            }
+	                            if ($ageDays -ge $staleTrustPasswordDays) { $passwordStale = $true }
 	                        } else {
 	                            $lastSetText = "Never - $accountName has no password change recorded"
 	                        }
@@ -66172,13 +66167,9 @@ function Get-DomainTrusts {
 	                    $keyWeakness = $true
 	                }
 	                $objectClass = $verdict.Severity
-	                if ($passwordStale) { $staleTrusts++ }
 	                if (($keyWeakness -or $passwordStale) -and $objectClass -ne 'Finding') { $objectClass = 'Hint' }
 	                $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
 	                Show-Object $trustObject -Class $objectClass
-	            }
-	            if ($staleTrusts -gt 0) {
-	                Show-Line "$staleTrusts of them have a trust password that has not changed for $staleTrustPasswordDays days or more" -Class Hint -FindingId 'TRUST_PASSWORD_STALE'
 	            }
 	        }
 	        if (@($trusts).Count -eq 0) {
@@ -92522,7 +92513,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1601"
+$Script:adPEASVersion = "2.7.0+20261020-1621"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

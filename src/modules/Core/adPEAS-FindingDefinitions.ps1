@@ -7937,7 +7937,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Mimikatz", "Impacket")
         MITRE = "T1558"
         Triggers = @(
-            @{ Attribute = 'trustPasswordRotation'; Pattern = '^Stale'; Severity = 'Hint' }
+            # "2026-01-05 (120 days ago, on EU$)": 90 days or more, the threshold of
+            # Get-DomainTrusts.
+            @{ Attribute = 'trustPasswordLastSet'; Pattern = '\((9\d|[1-9]\d{2,}) days ago,'; Severity = 'Hint' }
         )
     }
 

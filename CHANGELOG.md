@@ -365,9 +365,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   partner extends to this domain, `trustPasswordLastSet` says when the password of its
   interdomain trust account `<flatName>$` was last changed - one query for all of them.
   The trusting domain changes it about every 30 days; at 90 days or more the rotation has
-  stopped, a trust key extracted before stays valid, and the trust is a hint with the new
-  card *Trust Password No Longer Rotated* and a line that counts such trusts. A missing
-  or unreadable account is said as such.
+  stopped, a trust key extracted before stays valid, and the trust is a hint: the date is
+  coloured and carries the new card *Trust Password No Longer Rotated* as its tooltip in
+  the HTML report, with no row or line beside it that repeats the age. A missing or
+  unreadable account is said as such.
 
 - **`Get-DomainPasswordPolicy` reads the password history and the five PSO settings it
   skipped.** `pwdHistoryLength` was not read: a history of 0 - a user can set the

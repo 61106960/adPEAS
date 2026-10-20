@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 16:01:31
-    Version: 2.7.0+20261020-1601
+    Build: 2026-10-20 16:21:03
+    Version: 2.7.0+20261020-1621
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -16376,7 +16376,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Mimikatz", "Impacket")
         MITRE = "T1558"
         Triggers = @(
-            @{ Attribute = 'trustPasswordRotation'; Pattern = '^Stale'; Severity = 'Hint' }
+            # "2026-01-05 (120 days ago, on EU$)": 90 days or more, the threshold of
+            # Get-DomainTrusts.
+            @{ Attribute = 'trustPasswordLastSet'; Pattern = '\((9\d|[1-9]\d{2,}) days ago,'; Severity = 'Hint' }
         )
     }
 
@@ -107013,7 +107015,6 @@ function Get-DomainTrusts {
                     }
                 }
 
-                $staleTrusts = 0
                 foreach ($trust in $trusts) {
                     # trustDirection, trustType and trustAttributes are already decoded
                     # by Invoke-LDAPSearch into readable strings/arrays
@@ -107073,6 +107074,11 @@ function Get-DomainTrusts {
                     # The password of the inbound side, on its interdomain trust account. A
                     # password the trusting domain no longer changes keeps a trust key that
                     # was extracted once working for as long as it stays.
+                    #
+                    # The verdict has no row of its own. trustPasswordLastSet is coloured by
+                    # the TRUST_PASSWORD_STALE trigger from 90 days on, and that card is the
+                    # explanation. A trustPasswordRotation row repeated the age the date
+                    # names, and a line under all trusts counted the stale ones again.
                     $passwordStale = $false
                     if ($direction -in @('Inbound', 'Bidirectional') -and $trust.flatName) {
                         $accountName = "$($trust.flatName)`$"
@@ -107086,11 +107092,7 @@ function Get-DomainTrusts {
                             if ($pwdLastSet -is [DateTime]) {
                                 $ageDays = [int][Math]::Floor(((Get-Date) - $pwdLastSet).TotalDays)
                                 $lastSetText = "$(Format-adPEASDate $pwdLastSet 'yyyy-MM-dd') ($ageDays days ago, on $accountName)"
-                                if ($ageDays -ge $staleTrustPasswordDays) {
-                                    $passwordStale = $true
-                                    $trustObject | Add-Member -NotePropertyName 'trustPasswordRotation' `
-                                        -NotePropertyValue "Stale - not changed for $ageDays days; the trusting domain changes it about every 30 days" -Force
-                                }
+                                if ($ageDays -ge $staleTrustPasswordDays) { $passwordStale = $true }
                             } else {
                                 $lastSetText = "Never - $accountName has no password change recorded"
                             }
@@ -107152,7 +107154,6 @@ function Get-DomainTrusts {
                     # The class of the object: the SID filtering verdict, raised to a hint
                     # by a key without AES or a password that is no longer changed.
                     $objectClass = $verdict.Severity
-                    if ($passwordStale) { $staleTrusts++ }
                     if (($keyWeakness -or $passwordStale) -and $objectClass -ne 'Finding') { $objectClass = 'Hint' }
 
                     $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
@@ -107160,11 +107161,9 @@ function Get-DomainTrusts {
 
                 }
 
-                # No summary of the SID filtering verdicts or of the encryption types: each
-                # is a row of its trust, coloured there and with its card behind it.
-                if ($staleTrusts -gt 0) {
-                    Show-Line "$staleTrusts of them have a trust password that has not changed for $staleTrustPasswordDays days or more" -Class Hint -FindingId 'TRUST_PASSWORD_STALE'
-                }
+                # No summary of the SID filtering verdicts, the encryption types or the
+                # trust passwords: each is a row of its trust, coloured there and with its
+                # card behind it.
             }
 
             if (@($trusts).Count -eq 0) {
@@ -149055,7 +149054,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1601"
+$Script:adPEASVersion = "2.7.0+20261020-1621"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
