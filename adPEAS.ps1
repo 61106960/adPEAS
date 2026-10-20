@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 11:17:48
-    Version: 2.7.0+20261020-1117
+    Build: 2026-10-20 11:35:23
+    Version: 2.7.0+20261020-1135
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -38611,14 +38611,17 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
                 } elseif ($PropNameLower -eq 'trusttype') {
-                    # Convert trust type to readable value (MS-ADTS 6.1.6.7.15)
+                    # Convert trust type to readable value (MS-ADTS 6.1.6.7.15). The
+                    # constant names (DOWNLEVEL, UPLEVEL) are not repeated: the
+                    # name of what the partner is says the same.
                     try {
                         $TrustTypeVal = [Int32]$PropValue[0]
                         $TrustTypeName = switch ($TrustTypeVal) {
-                            1 { "Windows NT (Downlevel)" }
-                            2 { "Active Directory (Uplevel)" }
+                            1 { "Windows NT" }
+                            2 { "Active Directory" }
                             3 { "MIT Kerberos Realm" }
                             4 { "DCE" }
+                            5 { "Entra ID" }
                             default { "Unknown ($TrustTypeVal)" }
                         }
                         $ConvertedProperties[$PropName] = $TrustTypeName
@@ -106975,8 +106978,8 @@ function Get-DomainTrusts {
                     # RC4 is weaker than AES, and on a realm trust to MIT Kerberos the trust
                     # password is one an administrator typed - but it is not on its own a
                     # way in, so it stays a hint.
-                    $isAdTrust = ("$type" -match 'Uplevel')
-                    $isMitTrust = ("$type" -match 'MIT')
+                    $isAdTrust = ("$type" -eq 'Active Directory')
+                    $isMitTrust = ("$type" -eq 'MIT Kerberos Realm')
                     $encTypeProp = $trust.PSObject.Properties['msDS-SupportedEncryptionTypes']
                     $keyTypes = @()
                     if ($encTypeProp -and $null -ne $encTypeProp.Value) {
@@ -107014,7 +107017,7 @@ function Get-DomainTrusts {
                         # on every trust that carried it, it said something about the key that
                         # the bit cannot say.
                         $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-                            -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+                            -NotePropertyValue "Set, but meaningful only on an MIT realm trust - MS-ADTS defines the RC4 attribute bit for it. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
                     }
 
                     # The class of the object: the SID filtering verdict, raised to a hint
@@ -146981,10 +146984,11 @@ function Collect-BHDomain {
         }
 
         $trustTypeInt = switch ($trust.trustType) {
-            'Windows NT (Downlevel)'      { 1 }
-            'Active Directory (Uplevel)'  { 2 }
+            'Windows NT'                  { 1 }
+            'Active Directory'            { 2 }
             'MIT Kerberos Realm'          { 3 }
             'DCE'                         { 4 }
+            'Entra ID'                    { 5 }
             default                       { 2 }
         }
 
@@ -148618,7 +148622,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1117"
+$Script:adPEASVersion = "2.7.0+20261020-1135"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

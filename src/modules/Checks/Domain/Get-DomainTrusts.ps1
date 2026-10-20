@@ -311,8 +311,8 @@ function Get-DomainTrusts {
                     # RC4 is weaker than AES, and on a realm trust to MIT Kerberos the trust
                     # password is one an administrator typed - but it is not on its own a
                     # way in, so it stays a hint.
-                    $isAdTrust = ("$type" -match 'Uplevel')
-                    $isMitTrust = ("$type" -match 'MIT')
+                    $isAdTrust = ("$type" -eq 'Active Directory')
+                    $isMitTrust = ("$type" -eq 'MIT Kerberos Realm')
                     $encTypeProp = $trust.PSObject.Properties['msDS-SupportedEncryptionTypes']
                     $keyTypes = @()
                     if ($encTypeProp -and $null -ne $encTypeProp.Value) {
@@ -350,7 +350,7 @@ function Get-DomainTrusts {
                         # on every trust that carried it, it said something about the key that
                         # the bit cannot say.
                         $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-                            -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+                            -NotePropertyValue "Set, but meaningful only on an MIT realm trust - MS-ADTS defines the RC4 attribute bit for it. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
                     }
 
                     # The class of the object: the SID filtering verdict, raised to a hint

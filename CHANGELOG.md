@@ -1346,6 +1346,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   inherited Deny only does so from an inherited Allow. Inherit-only ACEs are skipped,
   and a scoped ACE needs the control access right.
 
+- **`trustType` names what the trust partner is, and knows Entra ID.** The row read
+  "Active Directory (Uplevel)" and "Windows NT (Downlevel)" - the bracket repeated the
+  constant name of what the words before it already said. It reads "Active Directory"
+  and "Windows NT" now. Value 5, a partner in Entra ID (MS-ADTS 6.1.6.7.15), was shown as
+  "Unknown (5)" and reads "Entra ID"; the BloodHound export maps it back to 5. The RC4
+  bit on a trust other than an MIT realm reads "Set, but meaningful only on an MIT realm
+  trust" instead of naming the type with a wrong article.
+
 ---
 
 ## [2.7.0] - 2026-10-08

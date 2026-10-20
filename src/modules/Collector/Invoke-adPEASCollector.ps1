@@ -1539,10 +1539,11 @@ function Collect-BHDomain {
         }
 
         $trustTypeInt = switch ($trust.trustType) {
-            'Windows NT (Downlevel)'      { 1 }
-            'Active Directory (Uplevel)'  { 2 }
+            'Windows NT'                  { 1 }
+            'Active Directory'            { 2 }
             'MIT Kerberos Realm'          { 3 }
             'DCE'                         { 4 }
+            'Entra ID'                    { 5 }
             default                       { 2 }
         }
 

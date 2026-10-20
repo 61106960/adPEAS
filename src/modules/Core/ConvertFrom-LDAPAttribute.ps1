@@ -1376,14 +1376,17 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
                 } elseif ($PropNameLower -eq 'trusttype') {
-                    # Convert trust type to readable value (MS-ADTS 6.1.6.7.15)
+                    # Convert trust type to readable value (MS-ADTS 6.1.6.7.15). The
+                    # constant names (DOWNLEVEL, UPLEVEL) are not repeated: the
+                    # name of what the partner is says the same.
                     try {
                         $TrustTypeVal = [Int32]$PropValue[0]
                         $TrustTypeName = switch ($TrustTypeVal) {
-                            1 { "Windows NT (Downlevel)" }
-                            2 { "Active Directory (Uplevel)" }
+                            1 { "Windows NT" }
+                            2 { "Active Directory" }
                             3 { "MIT Kerberos Realm" }
                             4 { "DCE" }
+                            5 { "Entra ID" }
                             default { "Unknown ($TrustTypeVal)" }
                         }
                         $ConvertedProperties[$PropName] = $TrustTypeName

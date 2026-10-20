@@ -27337,10 +27337,11 @@ function ConvertFrom-LDAPAttribute {
 	                try {
 	                    $TrustTypeVal = [Int32]$PropValue[0]
 	                    $TrustTypeName = switch ($TrustTypeVal) {
-	                        1 { "Windows NT (Downlevel)" }
-	                        2 { "Active Directory (Uplevel)" }
+	                        1 { "Windows NT" }
+	                        2 { "Active Directory" }
 	                        3 { "MIT Kerberos Realm" }
 	                        4 { "DCE" }
+	                        5 { "Entra ID" }
 	                        default { "Unknown ($TrustTypeVal)" }
 	                    }
 	                    $ConvertedProperties[$PropName] = $TrustTypeName
@@ -66078,8 +66079,8 @@ function Get-DomainTrusts {
 	                    }
 	                    $trustObject | Add-Member -NotePropertyName 'trustPasswordLastSet' -NotePropertyValue $lastSetText -Force
 	                }
-	                $isAdTrust = ("$type" -match 'Uplevel')
-	                $isMitTrust = ("$type" -match 'MIT')
+	                $isAdTrust = ("$type" -eq 'Active Directory')
+	                $isMitTrust = ("$type" -eq 'MIT Kerberos Realm')
 	                $encTypeProp = $trust.PSObject.Properties['msDS-SupportedEncryptionTypes']
 	                $keyTypes = @()
 	                if ($encTypeProp -and $null -ne $encTypeProp.Value) {
@@ -66109,7 +66110,7 @@ function Get-DomainTrusts {
 	                    $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' -NotePropertyValue $keyWeakness -Force
 	                } elseif ($usesRC4 -and -not $isMitTrust) {
 	                    $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-	                        -NotePropertyValue "Set, but not meaningful on a $type trust - MS-ADTS defines the RC4 attribute bit for an MIT realm trust. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+	                        -NotePropertyValue "Set, but meaningful only on an MIT realm trust - MS-ADTS defines the RC4 attribute bit for it. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
 	                }
 	                $objectClass = $verdict.Severity
 	                if ($keyWeakness) { $weakKeyTrusts++ }
@@ -91107,10 +91108,11 @@ function Collect-BHDomain {
 	        default         { 0 }
 	    }
 	    $trustTypeInt = switch ($trust.trustType) {
-	        'Windows NT (Downlevel)'      { 1 }
-	        'Active Directory (Uplevel)'  { 2 }
+	        'Windows NT'                  { 1 }
+	        'Active Directory'            { 2 }
 	        'MIT Kerberos Realm'          { 3 }
 	        'DCE'                         { 4 }
+	        'Entra ID'                    { 5 }
 	        default                       { 2 }
 	    }
 	    $attrFlags = @($trust.trustAttributes)
@@ -92315,7 +92317,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1117"
+$Script:adPEASVersion = "2.7.0+20261020-1135"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
