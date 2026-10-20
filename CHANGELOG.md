@@ -1390,6 +1390,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   in force is neutral - the domain controllers keep the OS default - where the LDAP block
   used to count it as secure.
 
+- **A policy that weakens SMB signing is shown as an object, with its OUs.**
+  `Get-SMBSigningStatus` closed with "SMB signing is weakened by: <policy names>" - the
+  names and nothing else, so a reader went back up through the policy rows for what each
+  one sets and where it is linked. Each such policy is now an object under that line:
+  `GPOName`, `GPOGUID`, `ServerSigning`, `ClientSigning` and `LinkedOUs`, coloured by its
+  values and with a card that says what an OU-linked policy does to the computers below
+  it.
+
 ---
 
 ## [2.7.0] - 2026-10-08

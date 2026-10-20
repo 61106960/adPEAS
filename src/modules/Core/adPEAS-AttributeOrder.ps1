@@ -377,6 +377,12 @@ $Script:PrimaryAttributes = @{
         'ServerSigning', 'ClientSigning', 'decidedBy'
     )
 
+    # A policy that weakens SMB signing where it reaches, and where that is
+    # (Get-SMBSigningStatus). It was a line naming the policy and nothing else.
+    SMBSigningWeakened = @(
+        'displayName', 'Name', 'ServerSigning', 'ClientSigning', 'LinkedOUs'
+    )
+
     # Outdated Computer object
     #
     # osRelease names the Windows 11 release the build identifies, which is the property
@@ -724,6 +730,7 @@ $Script:StrictAttributeTypes = @(
     'EffectiveNullSession',
     'EffectiveSMBSigning',
     'EffectiveSMBSigningMembers',
+    'SMBSigningWeakened',
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
     'DomainPasswordPolicy',
@@ -756,6 +763,7 @@ $Script:StrictAttributeTypes = @(
 $Script:AttributeLabels = @{
     GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    SMBSigningWeakened = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID' }
     LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     NullSessionGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }

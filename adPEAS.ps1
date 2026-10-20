@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 13:43:18
-    Version: 2.7.0+20261020-1343
+    Build: 2026-10-20 14:11:00
+    Version: 2.7.0+20261020-1411
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7047,6 +7047,12 @@ $Script:PrimaryAttributes = @{
         'ServerSigning', 'ClientSigning', 'decidedBy'
     )
 
+    # A policy that weakens SMB signing where it reaches, and where that is
+    # (Get-SMBSigningStatus). It was a line naming the policy and nothing else.
+    SMBSigningWeakened = @(
+        'displayName', 'Name', 'ServerSigning', 'ClientSigning', 'LinkedOUs'
+    )
+
     # Outdated Computer object
     #
     # osRelease names the Windows 11 release the build identifies, which is the property
@@ -7394,6 +7400,7 @@ $Script:StrictAttributeTypes = @(
     'EffectiveNullSession',
     'EffectiveSMBSigning',
     'EffectiveSMBSigningMembers',
+    'SMBSigningWeakened',
     'LDAPStatisticsModule',
     'LDAPStatisticsTotal',
     'DomainPasswordPolicy',
@@ -7426,6 +7433,7 @@ $Script:StrictAttributeTypes = @(
 $Script:AttributeLabels = @{
     GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    SMBSigningWeakened = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID' }
     LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     NullSessionGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
@@ -27932,6 +27940,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Not tested: the computers themselves - a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default"
         )
         SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
+    }
+
+    # A linked and enabled policy that weakens SMB signing, shown below the postures with
+    # the OUs it reaches.
+    'SMBSigningWeakened' = @{
+        TitleFormat = "SMB Signing Weakened: {Name}"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "SMB Signing Configuration"
+        Summary = "A linked and enabled policy that sets SMB server signing to Disabled or Optional, or client signing to Disabled."
+        WhyItMatters = "A policy linked to an OU applies to the computers in it ahead of a domain-wide policy, unless the domain-wide link is enforced. Server signing that is not required on those computers lets an attacker relay an NTLM authentication to their SMB service - whatever the domain-wide policy and the domain controllers require."
+        WhatWeCheck = @(
+            "ServerSigning: Disabled or Optional - the server does not require signing"
+            "ClientSigning: Disabled - the client does not sign"
+            "LinkedOUs: where the policy is linked, and so which computers it reaches"
+            "Not tested: whether an enforced domain-wide link overrides the policy on those OUs, and the computers themselves - a value set locally is not visible here"
+        )
+        SecureMessage = "No linked and enabled policy weakens SMB signing."
     }
 
     # ============================================================================
@@ -108528,23 +108554,28 @@ function Get-SMBSigningStatus {
                     Show-Object $memberPosture -Class $dcOnlyClass
                 }
 
-                # Check for insecure configurations and report findings
-                $insecureGPOs = @()
-                foreach ($gpoFinding in $reaching) {
-                    # Server: Disabled or Optional is insecure (allows relay attacks)
-                    if ($gpoFinding.ServerSigning -eq "Disabled" -or $gpoFinding.ServerSigning -eq "Optional") {
-                        $insecureGPOs += $gpoFinding.DisplayName
-                    }
-                    # Client: Only flag as insecure if explicitly Disabled
-                    elseif ($gpoFinding.ClientSigning -eq "Disabled") {
-                        $insecureGPOs += $gpoFinding.DisplayName
-                    }
-                }
+                # The policies that weaken signing where they reach: server signing Disabled
+                # or Optional (allows relay attacks), client signing only where explicitly
+                # Disabled. One object each, like the postures above - the line named the
+                # policies and nothing else, so the reader went back up through the objects
+                # for what each one sets and on which OUs.
+                $weakeningGPOs = @($reaching | Where-Object {
+                    $_.ServerSigning -in @('Disabled', 'Optional') -or $_.ClientSigning -eq 'Disabled'
+                })
 
-                if ($insecureGPOs.Count -gt 0) {
-                    # The names were collected all along and then counted. A number sends
-                    # the reader back up through the objects to work out which ones.
-                    Show-Line "SMB signing is weakened by: $($insecureGPOs -join ', ')" -Class Finding
+                if ($weakeningGPOs.Count -gt 0) {
+                    Show-Line "SMB signing is weakened by:" -Class Finding
+                    foreach ($gpoFinding in $weakeningGPOs) {
+                        $weakening = [PSCustomObject]@{
+                            displayName   = $gpoFinding.DisplayName
+                            Name          = $gpoFinding.Name
+                            ServerSigning = $gpoFinding.ServerSigning
+                            ClientSigning = $gpoFinding.ClientSigning
+                            LinkedOUs     = $gpoFinding.LinkedOUs
+                        }
+                        $weakening | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigningWeakened' -Force
+                        Show-Object $weakening -Class Finding
+                    }
                 }
 
             } else {
@@ -148767,7 +148798,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1343"
+$Script:adPEASVersion = "2.7.0+20261020-1411"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

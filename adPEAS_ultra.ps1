@@ -3593,6 +3593,9 @@ $Script:PrimaryAttributes = @{
 	EffectiveSMBSigningMembers = @(
 	    'ServerSigning', 'ClientSigning', 'decidedBy'
 	)
+	SMBSigningWeakened = @(
+	    'displayName', 'Name', 'ServerSigning', 'ClientSigning', 'LinkedOUs'
+	)
 	OutdatedComputer = @(
 	    'name', 'dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'osRelease',
 	    'eolDate', 'daysSinceEoL', 'osExtendedSecurityUpdates', 'lastLogonTimestamp'
@@ -3787,6 +3790,7 @@ $Script:StrictAttributeTypes = @(
 	'EffectiveNullSession',
 	'EffectiveSMBSigning',
 	'EffectiveSMBSigningMembers',
+	'SMBSigningWeakened',
 	'LDAPStatisticsModule',
 	'LDAPStatisticsTotal',
 	'DomainPasswordPolicy',
@@ -3798,6 +3802,7 @@ $Script:StrictAttributeTypes = @(
 $Script:AttributeLabels = @{
 	GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
 	SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+	SMBSigningWeakened = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID' }
 	LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
 	NullSessionGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
 	AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
@@ -20885,6 +20890,21 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Not tested: the computers themselves - a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default"
 	    )
 	    SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
+	}
+	'SMBSigningWeakened' = @{
+	    TitleFormat = "SMB Signing Weakened: {Name}"
+	    Module = "Domain"
+	    Category = "Domain"
+	    SectionTitle = "SMB Signing Configuration"
+	    Summary = "A linked and enabled policy that sets SMB server signing to Disabled or Optional, or client signing to Disabled."
+	    WhyItMatters = "A policy linked to an OU applies to the computers in it ahead of a domain-wide policy, unless the domain-wide link is enforced. Server signing that is not required on those computers lets an attacker relay an NTLM authentication to their SMB service - whatever the domain-wide policy and the domain controllers require."
+	    WhatWeCheck = @(
+	        "ServerSigning: Disabled or Optional - the server does not require signing"
+	        "ClientSigning: Disabled - the client does not sign"
+	        "LinkedOUs: where the policy is linked, and so which computers it reaches"
+	        "Not tested: whether an enforced domain-wide link overrides the policy on those OUs, and the computers themselves - a value set locally is not visible here"
+	    )
+	    SecureMessage = "No linked and enabled policy weakens SMB signing."
 	}
 	'DomainController' = @{
 	    TitleFormat = "Domain Controller: {Name}"
@@ -66930,17 +66950,22 @@ function Get-SMBSigningStatus {
 	                Show-Line "In force on member servers and clients:" -Class $dcOnlyClass
 	                Show-Object $memberPosture -Class $dcOnlyClass
 	            }
-	            $insecureGPOs = @()
-	            foreach ($gpoFinding in $reaching) {
-	                if ($gpoFinding.ServerSigning -eq "Disabled" -or $gpoFinding.ServerSigning -eq "Optional") {
-	                    $insecureGPOs += $gpoFinding.DisplayName
+	            $weakeningGPOs = @($reaching | Where-Object {
+	                $_.ServerSigning -in @('Disabled', 'Optional') -or $_.ClientSigning -eq 'Disabled'
+	            })
+	            if ($weakeningGPOs.Count -gt 0) {
+	                Show-Line "SMB signing is weakened by:" -Class Finding
+	                foreach ($gpoFinding in $weakeningGPOs) {
+	                    $weakening = [PSCustomObject]@{
+	                        displayName   = $gpoFinding.DisplayName
+	                        Name          = $gpoFinding.Name
+	                        ServerSigning = $gpoFinding.ServerSigning
+	                        ClientSigning = $gpoFinding.ClientSigning
+	                        LinkedOUs     = $gpoFinding.LinkedOUs
+	                    }
+	                    $weakening | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigningWeakened' -Force
+	                    Show-Object $weakening -Class Finding
 	                }
-	                elseif ($gpoFinding.ClientSigning -eq "Disabled") {
-	                    $insecureGPOs += $gpoFinding.DisplayName
-	                }
-	            }
-	            if ($insecureGPOs.Count -gt 0) {
-	                Show-Line "SMB signing is weakened by: $($insecureGPOs -join ', ')" -Class Finding
 	            }
 	        } else {
 	            Show-Line "No SMB Signing configuration found in any GPO - computers rely on OS defaults (varies by Windows version)" -Class Finding
@@ -92373,7 +92398,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1343"
+$Script:adPEASVersion = "2.7.0+20261020-1411"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

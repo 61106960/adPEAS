@@ -545,23 +545,28 @@ function Get-SMBSigningStatus {
                     Show-Object $memberPosture -Class $dcOnlyClass
                 }
 
-                # Check for insecure configurations and report findings
-                $insecureGPOs = @()
-                foreach ($gpoFinding in $reaching) {
-                    # Server: Disabled or Optional is insecure (allows relay attacks)
-                    if ($gpoFinding.ServerSigning -eq "Disabled" -or $gpoFinding.ServerSigning -eq "Optional") {
-                        $insecureGPOs += $gpoFinding.DisplayName
-                    }
-                    # Client: Only flag as insecure if explicitly Disabled
-                    elseif ($gpoFinding.ClientSigning -eq "Disabled") {
-                        $insecureGPOs += $gpoFinding.DisplayName
-                    }
-                }
+                # The policies that weaken signing where they reach: server signing Disabled
+                # or Optional (allows relay attacks), client signing only where explicitly
+                # Disabled. One object each, like the postures above - the line named the
+                # policies and nothing else, so the reader went back up through the objects
+                # for what each one sets and on which OUs.
+                $weakeningGPOs = @($reaching | Where-Object {
+                    $_.ServerSigning -in @('Disabled', 'Optional') -or $_.ClientSigning -eq 'Disabled'
+                })
 
-                if ($insecureGPOs.Count -gt 0) {
-                    # The names were collected all along and then counted. A number sends
-                    # the reader back up through the objects to work out which ones.
-                    Show-Line "SMB signing is weakened by: $($insecureGPOs -join ', ')" -Class Finding
+                if ($weakeningGPOs.Count -gt 0) {
+                    Show-Line "SMB signing is weakened by:" -Class Finding
+                    foreach ($gpoFinding in $weakeningGPOs) {
+                        $weakening = [PSCustomObject]@{
+                            displayName   = $gpoFinding.DisplayName
+                            Name          = $gpoFinding.Name
+                            ServerSigning = $gpoFinding.ServerSigning
+                            ClientSigning = $gpoFinding.ClientSigning
+                            LinkedOUs     = $gpoFinding.LinkedOUs
+                        }
+                        $weakening | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SMBSigningWeakened' -Force
+                        Show-Object $weakening -Class Finding
+                    }
                 }
 
             } else {

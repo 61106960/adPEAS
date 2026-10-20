@@ -309,6 +309,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
     }
 
+    # A linked and enabled policy that weakens SMB signing, shown below the postures with
+    # the OUs it reaches.
+    'SMBSigningWeakened' = @{
+        TitleFormat = "SMB Signing Weakened: {Name}"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "SMB Signing Configuration"
+        Summary = "A linked and enabled policy that sets SMB server signing to Disabled or Optional, or client signing to Disabled."
+        WhyItMatters = "A policy linked to an OU applies to the computers in it ahead of a domain-wide policy, unless the domain-wide link is enforced. Server signing that is not required on those computers lets an attacker relay an NTLM authentication to their SMB service - whatever the domain-wide policy and the domain controllers require."
+        WhatWeCheck = @(
+            "ServerSigning: Disabled or Optional - the server does not require signing"
+            "ClientSigning: Disabled - the client does not sign"
+            "LinkedOUs: where the policy is linked, and so which computers it reaches"
+            "Not tested: whether an enforced domain-wide link overrides the policy on those OUs, and the computers themselves - a value set locally is not visible here"
+        )
+        SecureMessage = "No linked and enabled policy weakens SMB signing."
+    }
+
     # ============================================================================
     # INFRASTRUCTURE SERVERS
     # ============================================================================
