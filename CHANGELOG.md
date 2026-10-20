@@ -1399,6 +1399,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   in force is neutral - the domain controllers keep the OS default - where the LDAP block
   used to count it as secure.
 
+- **Dangerous OU permissions show the strongest right per element.** `Get-OUPermissions`
+  tests every right of an ACE on its own, so one "Full Control on descendant user objects"
+  ACE was listed as GenericAll, GenericWrite, WriteDacl, WriteOwner and Reset Password, and
+  the two ACEs the delegation wizard writes for "Create, delete, and manage user accounts"
+  and its inetOrgPerson counterpart came out as eleven rights. `Get-DangerousOUPermissions`
+  now leaves out a right another right of the same principal on the same OU contains, on
+  an element that contains its own: GenericAll contains the rest, GenericWrite and
+  WriteProperty on all properties the attribute and validated writes, and the same right
+  on a larger class or reach the smaller one. A right that is not contained stays -
+  creating objects in the OU beside full control on its children, a reset right on every
+  class beside full control on users, or one that is the strongest on another OU. The
+  analysis itself still reports every right, for the checks that need them.
+
 - **A policy that weakens SMB signing is shown as an object, with its OUs.**
   `Get-SMBSigningStatus` closed with "SMB signing is weakened by: <policy names>" - the
   names and nothing else, so a reader went back up through the policy rows for what each

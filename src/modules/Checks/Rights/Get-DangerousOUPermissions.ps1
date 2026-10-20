@@ -251,7 +251,7 @@ function Get-DangerousOUPermissions {
                             elseif ($isPrivilegedAccount) { 'Attention' }
                             else { $finding.Severity }
 
-                        $allFindings += [PSCustomObject]@{
+                        $entry = [PSCustomObject]@{
                             OU           = $ouName
                             DistinguishedName = $ouDN
                             CheckType    = $finding.CheckType
@@ -263,6 +263,13 @@ function Get-DangerousOUPermissions {
                             IsExchangeService = $isExchangeService
                             IsPrivilegedAccount = $isPrivilegedAccount
                         }
+                        # The element the right is about, for Select-OUStrongestFinding below.
+                        foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly')) {
+                            if ($finding.PSObject.Properties[$elementField]) {
+                                $entry | Add-Member -NotePropertyName $elementField -NotePropertyValue $finding.$elementField -Force
+                            }
+                        }
+                        $allFindings += $entry
                     }
                 }
             }
@@ -333,7 +340,12 @@ function Get-DangerousOUPermissions {
                 foreach ($principalGroup in $nonExchangeFindings) {
                     $sid = $principalGroup.Name
                     $principal = $principalGroup.Group[0].Principal
-                    $ouFindings = $principalGroup.Group
+                    # The strongest right per element, OU by OU: one Full Control ACE used
+                    # to read as GenericAll, GenericWrite, WriteDacl, WriteOwner and Reset
+                    # Password. Per OU before the merge, so a right that is the strongest on
+                    # one OU is not lost to a stronger one on another.
+                    $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
+                        ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 
                     # Collect all OUs and rights for this principal
                     $affectedOUs = @()
@@ -395,7 +407,8 @@ function Get-DangerousOUPermissions {
                 foreach ($principalGroup in $exchangeFindings) {
                     $sid = $principalGroup.Name
                     $principal = $principalGroup.Group[0].Principal
-                    $ouFindings = $principalGroup.Group
+                    $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
+                        ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 
                     $affectedOUs = @()
                     $dangerousRightsList = @()
@@ -463,4 +476,103 @@ function Get-DangerousOUPermissions {
     end {
         Write-Log "[Get-DangerousOUPermissions] Analysis completed"
     }
+}
+
+<#
+.SYNOPSIS
+    Keeps the strongest right per element out of the findings of one principal on one OU.
+
+.DESCRIPTION
+    Get-OUPermissions tests every right of an ACE on its own, so one "Full Control on
+    descendant user objects" ACE came out as GenericAll, GenericWrite, WriteDacl,
+    WriteOwner and Reset Password - five rows for one grant, and eleven for a delegation
+    the ADUC wizard writes in two ACEs. A finding is dropped when another finding of the
+    set holds a right that contains it, on an element that contains its own:
+
+    - GenericAll contains every right reported here but the ownership of the OU, which is
+      no right at all.
+    - GenericWrite contains WriteProperty and Self on all properties and every attribute
+      write and validated write.
+    - WriteProperty on all properties contains every attribute write and validated write.
+
+    An element contains another when it names every class or the same class, reaches the
+    object itself and the children wherever the other one does, and is not limited to the
+    direct children unless the other one is too. The same right on a strictly larger
+    element contains the smaller one, where the check type names a single right.
+
+    Conservative by construction: a finding Get-OUPermissions did not tag with an element
+    is neither dropped nor drops anything, and a class the containing finding does not
+    name keeps the finding.
+
+.PARAMETER Finding
+    The findings of one principal on one OU.
+
+.OUTPUTS
+    The findings no other finding contains, in their original order, written one by one.
+#>
+function Select-OUStrongestFinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Finding
+    )
+
+    $attributeWrites = @('AccountControl', 'GroupMembership', 'SPNModification', 'DNSHostName',
+                         'KeyCredentialLink', 'ScriptPath', 'Delegation', 'GPOLinking')
+    # $null: every check type but Ownership.
+    $containedTypes = @{
+        GenericAll       = $null
+        GenericWrite     = @(@('WritePropertyAll', 'SelfAll') + $attributeWrites)
+        WritePropertyAll = $attributeWrites
+    }
+    # The check types that name one right each. Only for these does a finding of the same
+    # type on a larger element contain the smaller one: ObjectCreation covers every class
+    # that may be created, GPOLinking gPLink and gPOptions, and so on.
+    $singleRightTypes = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
+                          'WritePropertyAll', 'SelfAll', 'PasswordReset')
+
+    $all = @($Finding | Where-Object { $_ })
+    $kept = foreach ($candidate in $all) {
+        $isContained = $false
+        # The owner of the OU is never tagged - it is no ACE - so it is never dropped.
+        if ($candidate.PSObject.Properties['_ElementClass']) {
+            foreach ($other in $all) {
+                if ([object]::ReferenceEquals($other, $candidate)) { continue }
+                if (-not $other.PSObject.Properties['_ElementClass']) { continue }
+
+                $otherType = [string]$other.CheckType
+                $sameType = ($otherType -eq [string]$candidate.CheckType)
+                if ($sameType) {
+                    if ($singleRightTypes -notcontains $otherType) { continue }
+                } else {
+                    if (-not $containedTypes.ContainsKey($otherType)) { continue }
+                    $types = $containedTypes[$otherType]
+                    if ($null -ne $types -and $types -notcontains [string]$candidate.CheckType) { continue }
+                }
+
+                # The element of $other has to contain the element of $candidate.
+                if ($other._ElementClass -and $other._ElementClass -ne $candidate._ElementClass) { continue }
+                if ($candidate._ElementSelf -and -not $other._ElementSelf) { continue }
+                if ($candidate._ElementChildren -and -not $other._ElementChildren) { continue }
+                if ($other._ElementDirectOnly -and -not $candidate._ElementDirectOnly) { continue }
+
+                # The same right contains itself only on a strictly larger element - two
+                # equal ones would otherwise drop each other.
+                if ($sameType -and
+                    $other._ElementClass -eq $candidate._ElementClass -and
+                    [bool]$other._ElementSelf -eq [bool]$candidate._ElementSelf -and
+                    [bool]$other._ElementChildren -eq [bool]$candidate._ElementChildren -and
+                    [bool]$other._ElementDirectOnly -eq [bool]$candidate._ElementDirectOnly) { continue }
+
+                $isContained = $true
+                break
+            }
+        }
+        if (-not $isContained) { $candidate }
+    }
+    # One by one, not as one array: the caller collects them across OUs with @(), and an
+    # array written as a single object would arrive there as one element.
+    $kept
 }

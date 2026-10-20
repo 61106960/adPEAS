@@ -54265,6 +54265,7 @@ function Get-OUPermissions {
 	            elseif ($isNoPropagate) { $inheritanceNote = ' (direct children only)' }
 	            elseif (-not $AppliesToSelf) { $inheritanceNote = ' (descendants only)' }
 	            $childReachNote = if ($isNoPropagate) { ' (direct children only)' } else { '' }
+	            $aceFindingStart = @($Findings).Count
 	            if ($HasWriteProperty -and $IsAllProperties -and ($CheckType -contains 'AccountControl' -or
 	                $CheckType -contains 'GroupMembership' -or $CheckType -contains 'SPNModification' -or
 	                $CheckType -contains 'ScriptPath' -or $CheckType -contains 'Delegation' -or
@@ -54870,6 +54871,13 @@ function Get-OUPermissions {
 	                        }
 	                    }
 	                }
+	            }
+	            $elementClass = if ($IsAllObjectTypes) { '' } else { ([string]$inheritedObjectType).ToLowerInvariant() }
+	            for ($findingIndex = $aceFindingStart; $findingIndex -lt @($Findings).Count; $findingIndex++) {
+	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementClass' -NotePropertyValue $elementClass -Force
+	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementSelf' -NotePropertyValue ([bool]$AppliesToSelf) -Force
+	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementChildren' -NotePropertyValue ([bool]$AppliesToChildren) -Force
+	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementDirectOnly' -NotePropertyValue ([bool]$isNoPropagate) -Force
 	            }
 	        }
 	        $result = [PSCustomObject]@{
@@ -70819,7 +70827,7 @@ function Get-DangerousOUPermissions {
 	                    $displaySeverity = if ($isExchangeService) { 'Attention' }
 	                        elseif ($isPrivilegedAccount) { 'Attention' }
 	                        else { $finding.Severity }
-	                    $allFindings += [PSCustomObject]@{
+	                    $entry = [PSCustomObject]@{
 	                        OU           = $ouName
 	                        DistinguishedName = $ouDN
 	                        CheckType    = $finding.CheckType
@@ -70831,6 +70839,12 @@ function Get-DangerousOUPermissions {
 	                        IsExchangeService = $isExchangeService
 	                        IsPrivilegedAccount = $isPrivilegedAccount
 	                    }
+	                    foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly')) {
+	                        if ($finding.PSObject.Properties[$elementField]) {
+	                            $entry | Add-Member -NotePropertyName $elementField -NotePropertyValue $finding.$elementField -Force
+	                        }
+	                    }
+	                    $allFindings += $entry
 	                }
 	            }
 	        }
@@ -70881,7 +70895,8 @@ function Get-DangerousOUPermissions {
 	            foreach ($principalGroup in $nonExchangeFindings) {
 	                $sid = $principalGroup.Name
 	                $principal = $principalGroup.Group[0].Principal
-	                $ouFindings = $principalGroup.Group
+	                $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
+	                    ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 	                $affectedOUs = @()
 	                $dangerousRightsList = @()
 	                $inheritanceSources = @()
@@ -70935,7 +70950,8 @@ function Get-DangerousOUPermissions {
 	            foreach ($principalGroup in $exchangeFindings) {
 	                $sid = $principalGroup.Name
 	                $principal = $principalGroup.Group[0].Principal
-	                $ouFindings = $principalGroup.Group
+	                $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
+	                    ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 	                $affectedOUs = @()
 	                $dangerousRightsList = @()
 	                $inheritanceSources = @()
@@ -70988,6 +71004,56 @@ function Get-DangerousOUPermissions {
 	        Show-Line "Error during check - OU permissions could not be evaluated: $_" -Class Finding
 	    }
 	}
+}
+function Select-OUStrongestFinding {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyCollection()]
+	    [object[]]$Finding
+	)
+	$attributeWrites = @('AccountControl', 'GroupMembership', 'SPNModification', 'DNSHostName',
+	                     'KeyCredentialLink', 'ScriptPath', 'Delegation', 'GPOLinking')
+	$containedTypes = @{
+	    GenericAll       = $null
+	    GenericWrite     = @(@('WritePropertyAll', 'SelfAll') + $attributeWrites)
+	    WritePropertyAll = $attributeWrites
+	}
+	$singleRightTypes = @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
+	                      'WritePropertyAll', 'SelfAll', 'PasswordReset')
+	$all = @($Finding | Where-Object { $_ })
+	$kept = foreach ($candidate in $all) {
+	    $isContained = $false
+	    if ($candidate.PSObject.Properties['_ElementClass']) {
+	        foreach ($other in $all) {
+	            if ([object]::ReferenceEquals($other, $candidate)) { continue }
+	            if (-not $other.PSObject.Properties['_ElementClass']) { continue }
+	            $otherType = [string]$other.CheckType
+	            $sameType = ($otherType -eq [string]$candidate.CheckType)
+	            if ($sameType) {
+	                if ($singleRightTypes -notcontains $otherType) { continue }
+	            } else {
+	                if (-not $containedTypes.ContainsKey($otherType)) { continue }
+	                $types = $containedTypes[$otherType]
+	                if ($null -ne $types -and $types -notcontains [string]$candidate.CheckType) { continue }
+	            }
+	            if ($other._ElementClass -and $other._ElementClass -ne $candidate._ElementClass) { continue }
+	            if ($candidate._ElementSelf -and -not $other._ElementSelf) { continue }
+	            if ($candidate._ElementChildren -and -not $other._ElementChildren) { continue }
+	            if ($other._ElementDirectOnly -and -not $candidate._ElementDirectOnly) { continue }
+	            if ($sameType -and
+	                $other._ElementClass -eq $candidate._ElementClass -and
+	                [bool]$other._ElementSelf -eq [bool]$candidate._ElementSelf -and
+	                [bool]$other._ElementChildren -eq [bool]$candidate._ElementChildren -and
+	                [bool]$other._ElementDirectOnly -eq [bool]$candidate._ElementDirectOnly) { continue }
+	            $isContained = $true
+	            break
+	        }
+	    }
+	    if (-not $isContained) { $candidate }
+	}
+	$kept
 }
 function Get-PasswordResetRights {
 	[CmdletBinding()]
@@ -92401,7 +92467,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1434"
+$Script:adPEASVersion = "2.7.0+20261020-1508"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

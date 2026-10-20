@@ -591,6 +591,10 @@ function Get-OUPermissions {
                 elseif (-not $AppliesToSelf) { $inheritanceNote = ' (descendants only)' }
                 $childReachNote = if ($isNoPropagate) { ' (direct children only)' } else { '' }
 
+                # Every finding from here to the end of this loop body comes from this ACE;
+                # the end of the body tags them with the element they are about.
+                $aceFindingStart = @($Findings).Count
+
                 # If WriteProperty on ALL properties, create ONE generic finding instead of 6+ individual ones
                 # This prevents duplicate findings like: userAccountControl, member, SPN, scriptPath, Delegation x2, gPLink
                 if ($HasWriteProperty -and $IsAllProperties -and ($CheckType -contains 'AccountControl' -or
@@ -1510,6 +1514,18 @@ function Get-OUPermissions {
                             }
                         }
                     }
+                }
+
+                # The element each finding of this ACE is about: the class its inheritance
+                # names ('' for every class), and whether it reaches this object, its
+                # children, and only the direct ones. Select-OUStrongestFinding reads it to
+                # show the strongest right per element; the other callers ignore it.
+                $elementClass = if ($IsAllObjectTypes) { '' } else { ([string]$inheritedObjectType).ToLowerInvariant() }
+                for ($findingIndex = $aceFindingStart; $findingIndex -lt @($Findings).Count; $findingIndex++) {
+                    $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementClass' -NotePropertyValue $elementClass -Force
+                    $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementSelf' -NotePropertyValue ([bool]$AppliesToSelf) -Force
+                    $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementChildren' -NotePropertyValue ([bool]$AppliesToChildren) -Force
+                    $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementDirectOnly' -NotePropertyValue ([bool]$isNoPropagate) -Force
                 }
             }
 
