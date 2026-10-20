@@ -956,7 +956,7 @@ function Get-GPOPolicySummary {
     The policy's GUID, for its security filtering. Without it the answer is the links'.
 
 .OUTPUTS
-    [string] beginning with Yes, No or Unknown.
+    [string] beginning with Yes, No or Unknown - the Text of Get-GPODomainControllerReachDetail.
 
 .EXAMPLE
     Get-GPODomainControllerReach -Link $links
@@ -980,7 +980,48 @@ function Get-GPODomainControllerReach {
         [string]$GPOGUID
     )
 
-    if ($null -eq $Link) { return 'Unknown - the linkage could not be resolved' }
+    return (Get-GPODomainControllerReachDetail -Link $Link -Context $Context -GPOGUID $GPOGUID).Text
+}
+
+<#
+.SYNOPSIS
+    Get-GPODomainControllerReach's answer, with the links it rests on.
+
+.DESCRIPTION
+    The same reading, link by link - see Get-GPODomainControllerReach. Beside the sentence
+    it returns the links through which the policy reaches a domain controller: a link that
+    reaches one, and, where the policy's security filtering is known and narrows anything,
+    one of whose domain controllers it lets apply the policy. Add-GPODomainControllerReach
+    marks those links on a finding.
+
+.OUTPUTS
+    PSCustomObject with Text (beginning with Yes, No or Unknown) and ReachingDN (the
+    DistinguishedName of each such link; empty unless Text begins with Yes).
+#>
+function Get-GPODomainControllerReachDetail {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Link,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Context,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$GPOGUID
+    )
+
+    $answer = {
+        param([string]$Text, $ReachingDN)
+        [PSCustomObject]@{ Text = $Text; ReachingDN = @(@($ReachingDN) | Where-Object { $_ }) }
+    }
+
+    if ($null -eq $Link) { return (& $answer 'Unknown - the linkage could not be resolved') }
 
     # Every GPO check calls this from inside its SYSVOL block, and an exception escaping
     # that block marks the share as failed for the rest of the session - every later SYSVOL
@@ -991,23 +1032,25 @@ function Get-GPODomainControllerReach {
         # missing key.
         $linkItems = @(@($Link) | Where-Object { $_ })
         $records = @($linkItems | Where-Object { $_.PSObject.Properties['DistinguishedName'] })
-        if ($records.Count -ne $linkItems.Count) { return 'Unknown - the linkage could not be resolved' }
+        if ($records.Count -ne $linkItems.Count) { return (& $answer 'Unknown - the linkage could not be resolved') }
 
-        if ($records.Count -eq 0) { return 'No - the policy is linked nowhere' }
+        if ($records.Count -eq 0) { return (& $answer 'No - the policy is linked nowhere') }
 
         # A record with no LinkStatus counts as enabled, the conservative direction - the
         # same rule as Get-GPOReach.
         $activeLinks = @($records | Where-Object { $_.LinkStatus -ne 'Disabled' })
-        if ($activeLinks.Count -eq 0) { return 'No - every link is disabled' }
+        if ($activeLinks.Count -eq 0) { return (& $answer 'No - every link is disabled') }
 
         if ($null -eq $Context) { $Context = Get-DomainControllerGPOContext }
         if ($null -eq $Context -or @($Context.DomainControllers).Count -eq 0) {
-            return 'Unknown - the domain controllers could not be read'
+            return (& $answer 'Unknown - the domain controllers could not be read')
         }
 
         $reachingLabels = New-Object System.Collections.Generic.List[string]
         # Every domain controller a link reaches, for the security filtering below.
         $reachedDCs     = New-Object System.Collections.ArrayList
+        # And per link, for the links Add-GPODomainControllerReach marks.
+        $linkHits       = New-Object System.Collections.ArrayList
         $sawBlocked     = $false
         $sawUnknownSite = $false
 
@@ -1027,6 +1070,10 @@ function Get-GPODomainControllerReach {
             foreach ($hit in @($linkReach.Reached)) {
                 if (-not $reachedDCs.Contains($hit.DC)) { [void]$reachedDCs.Add($hit.DC) }
             }
+            [void]$linkHits.Add([PSCustomObject]@{
+                DN  = [string]$activeLink.DistinguishedName
+                DCs = @(@($linkReach.Reached) | ForEach-Object { $_.DC })
+            })
         }
 
         if ($reachingLabels.Count -gt 0) {
@@ -1039,28 +1086,98 @@ function Get-GPODomainControllerReach {
             $securityFilter = $null
             if ($GPOGUID) { $securityFilter = Get-GPOSecurityFilter -GPOGUID $GPOGUID }
             if ($null -eq $securityFilter -or ($securityFilter.Everyone -and @($securityFilter.DenySIDs).Count -eq 0)) {
-                return "Yes - $linkText"
+                return (& $answer "Yes - $linkText" @($linkHits | ForEach-Object { $_.DN }))
             }
 
+            # A link counts where one of its domain controllers applies the policy - not every
+            # link that reaches one, when the filtering keeps that one's out.
+            $filteredDN = @(foreach ($linkHit in $linkHits) {
+                $linkVerdicts = @(foreach ($linkDC in @($linkHit.DCs)) { Test-GPOFilterCoversComputer -Filter $securityFilter -Computer $linkDC })
+                if ($linkVerdicts -contains 'Yes') { $linkHit.DN }
+            })
+            if ($filteredDN.Count -gt 0) { return (& $answer "Yes - $linkText" $filteredDN) }
+
             $dcVerdicts = @(foreach ($reachedDC in $reachedDCs) { Test-GPOFilterCoversComputer -Filter $securityFilter -Computer $reachedDC })
-            if ($dcVerdicts -contains 'Yes') { return "Yes - $linkText" }
             $filterText = Format-GPOSecurityFilter -Filter $securityFilter
             if ($dcVerdicts -contains 'Unknown') {
-                return "Unknown - $linkText it would, but $filterText, and whether a domain controller is among them could not be read"
+                return (& $answer "Unknown - $linkText it would, but $filterText, and whether a domain controller is among them could not be read")
             }
-            return "No - $linkText it would, but $filterText"
+            return (& $answer "No - $linkText it would, but $filterText")
         }
 
         # Unknown outranks No: the site whose membership could not be read may be exactly
         # the one this policy is linked to.
-        if ($sawUnknownSite) { return 'Unknown - the site of a domain controller could not be read' }
+        if ($sawUnknownSite) { return (& $answer 'Unknown - the site of a domain controller could not be read') }
         if ($sawBlocked) {
-            return 'No - inheritance is blocked between its links and the domain controllers, and none of those links is enforced'
+            return (& $answer 'No - inheritance is blocked between its links and the domain controllers, and none of those links is enforced')
         }
-        return 'No - none of its links is above a domain controller'
+        return (& $answer 'No - none of its links is above a domain controller')
     } catch {
         Write-Log "[Get-GPODomainControllerReach] Could not evaluate the links: $_"
-        return 'Unknown - the links could not be evaluated'
+        return (& $answer 'Unknown - the links could not be evaluated')
+    }
+}
+
+<#
+.SYNOPSIS
+    Puts Get-GPODomainControllerReachDetail's answer on a GPO finding.
+
+.DESCRIPTION
+    Every link through which the policy reaches a domain controller is marked on the
+    finding's LinkedOUs - a copy of the link record with ReachesDomainController, which the
+    LinkedOUs transformer colours as a hint with the GPO_LINK_REACHES_DC card - and nothing
+    is added where no link does. A reachesDomainControllers row stood on every GPO finding
+    instead (decision 2026-10-16), mostly "No - none of its links is above a domain
+    controller"; the user decided on 2026-10-20 to mark the link instead.
+
+    The row stays where the answer could not be given - the domain controllers, the site of
+    one or the security filtering could not be read - because silence there would read as
+    "no domain controller". Not for an unresolved linkage: LinkedOUs says that already.
+
+.PARAMETER Object
+    The finding, with LinkedOUs attached.
+
+.PARAMETER Reach
+    From Get-GPODomainControllerReachDetail - once per policy, for all of its findings.
+#>
+function Add-GPODomainControllerReach {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Object,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Reach
+    )
+
+    if ($null -eq $Reach) { return }
+    $reachText = [string]$Reach.Text
+
+    if ($reachText -like 'Yes*') {
+        $linkProperty = $Object.PSObject.Properties['LinkedOUs']
+        if (-not $linkProperty) { return }
+        $reachingDN = @($Reach.ReachingDN)
+
+        # A copy, not the record: the records come out of the session's linkage cache, which
+        # every other GPO check reads as well.
+        $markedLinks = @(foreach ($linkItem in @($linkProperty.Value)) {
+            if ($linkItem -and $linkItem -isnot [string] -and $linkItem.PSObject.Properties['DistinguishedName'] -and
+                ($reachingDN -contains [string]$linkItem.DistinguishedName)) {
+                $linkCopy = [ordered]@{}
+                foreach ($linkMember in $linkItem.PSObject.Properties) { $linkCopy[$linkMember.Name] = $linkMember.Value }
+                $linkCopy['ReachesDomainController'] = $true
+                [PSCustomObject]$linkCopy
+            } else {
+                $linkItem
+            }
+        })
+        $Object | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $markedLinks -Force
+        return
+    }
+
+    if ($reachText -like 'Unknown*' -and $reachText -ne 'Unknown - the linkage could not be resolved') {
+        $Object | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $reachText -Force
     }
 }
 

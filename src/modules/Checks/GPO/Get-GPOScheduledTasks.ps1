@@ -230,9 +230,9 @@ function Get-GPOScheduledTasks {
                                     $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
 
-                                # Whether those links put a domain controller in the
-                                # policy's scope - a fact beside LinkedOUs, no verdict.
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
+                                # Which of those links put a domain controller in the
+                                # policy's scope - marked on LinkedOUs, no verdict.
+                                $gpoDCReach = Get-GPODomainControllerReachDetail -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($task in $taskFindings) {
                                     # Set unconditionally, including when the list is empty:
@@ -240,7 +240,7 @@ function Get-GPOScheduledTasks {
                                     # linked" row, and a policy that runs nowhere is a
                                     # statement rather than an absence.
                                     $task | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
-                                    $task | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPODomainControllerReach -Object $task -Reach $gpoDCReach
                                     Add-GPOConditionRow -Object $task -GPOGUID $gpoGUID
 
                                     # A task in a policy whose relevant half is switched off

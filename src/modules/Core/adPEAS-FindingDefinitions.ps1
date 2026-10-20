@@ -13941,6 +13941,30 @@ $acl.Access | Where-Object {
         )
         Tools = @("BloodHound", "PowerView")
     }
+    # A LinkedOUs entry through which the policy reaches a domain controller - marked by
+    # Add-GPODomainControllerReach and coloured by the LinkedOUs transformer. No Triggers:
+    # whether a link reaches a domain controller is not in its text.
+    'GPO_LINK_REACHES_DC' = @{
+        Title = "Policy Reaches a Domain Controller Through This Link"
+        Risk = "Hint"
+        BaseScore = 0
+        Description = "Through this link the policy applies to at least one domain controller: the link is on the Domain Controllers OU, on another container above a domain controller's computer object, on the domain root, or on the site a domain controller is in - with no container on the way that blocks inheritance, unless the link is enforced, and with security filtering that lets a domain controller apply the policy. What reaches a domain controller reaches tier 0: whoever controls this policy, or what it deploys, controls the domain. Not read: WMI filters, and whether the policy's computer half is enabled - the wmiFilter and GPOStatus rows say those."
+        Impact = @(
+            "What the policy sets, grants or runs takes effect on a domain controller"
+        )
+        Attack = @(
+            "Not an attack path on its own - it says where the finding on this policy takes effect"
+        )
+        Remediation = @(
+            "Link a policy meant for member computers to the OUs those computers are in, not above a domain controller"
+        )
+        References = @(
+            @{ Title = "Group Policy overview - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-policy/group-policy-overview" }
+        )
+        Tools = @("-")
+        MITRE = "-"
+    }
+
     # LinkedOUs (GPO linked to domain root) - only color when GPO has actual findings
     'GPO_LINKED_OUS_SEVERITY' = @{
         Title = "GPO Linked to Domain Root"

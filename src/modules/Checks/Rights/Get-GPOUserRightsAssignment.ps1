@@ -377,12 +377,13 @@ function Get-GPOUserRightsAssignment {
                             GrantedBeyondDefault = $addedNames
                             RemovedFromDefault   = $removedNames
                             LinkedOUs            = $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links })
-                            # Beside LinkedOUs, a fact without a verdict. The baseline above
-                            # keeps its own, coarser reading of where the policy applies.
-                            reachesDomainControllers = (Get-GPODomainControllerReach -Link $links -GPOGUID $gpo.Name)
                             _severity            = $severity
                         }
 
+                        # On LinkedOUs, the links that reach a domain controller - a fact
+                        # without a verdict. The baseline above keeps its own, coarser
+                        # reading of where the policy applies.
+                        Add-GPODomainControllerReach -Object $finding -Reach (Get-GPODomainControllerReachDetail -Link $links -GPOGUID $gpo.Name)
                         Add-GPOConditionRow -Object $finding -GPOGUID $gpo.Name
 
                         # A right without a documented default needs no row of its own saying

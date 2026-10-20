@@ -683,11 +683,10 @@ function Get-GPOPermissions {
                             $enrichedGPO | Add-Member -NotePropertyName "GPOOwner" -NotePropertyValue $ownerFinding.Owner -Force
                         }
                         $enrichedGPO | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
-                        # Whether those links put a domain controller in the policy's scope -
-                        # whoever can edit this policy then runs code there. A fact beside
+                        # Which of those links put a domain controller in the policy's scope -
+                        # whoever can edit this policy then runs code there. Marked on
                         # LinkedOUs, no verdict.
-                        $enrichedGPO | Add-Member -NotePropertyName "reachesDomainControllers" `
-                            -NotePropertyValue (Get-GPODomainControllerReach -Link $links -GPOGUID $gpoGUID) -Force
+                        Add-GPODomainControllerReach -Object $enrichedGPO -Reach (Get-GPODomainControllerReachDetail -Link $links -GPOGUID $gpoGUID)
                         Add-GPOConditionRow -Object $enrichedGPO -GPOGUID $gpoGUID
 
                         # The object is a copy of the GPO and already carries GPOStatus from
@@ -916,8 +915,7 @@ function Get-GPOPermissions {
                     $extraLinksDisplay = 'Unknown - linkage could not be resolved'
                 }
                 $extraCard | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $extraLinksDisplay -Force
-                $extraCard | Add-Member -NotePropertyName "reachesDomainControllers" `
-                    -NotePropertyValue (Get-GPODomainControllerReach -Link $extraLinks -GPOGUID $extraGUID) -Force
+                Add-GPODomainControllerReach -Object $extraCard -Reach (Get-GPODomainControllerReachDetail -Link $extraLinks -GPOGUID $extraGUID)
                 Add-GPOConditionRow -Object $extraCard -GPOGUID $extraGUID
 
                 $extraStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$extraGUID] -Scope 'Any' -Link $extraLinks

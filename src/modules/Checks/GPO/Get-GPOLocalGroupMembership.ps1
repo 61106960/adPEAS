@@ -220,13 +220,13 @@ function Get-GPOLocalGroupMembership {
                                     -StatusEntry $gpoStatusMap[$gpoGUID] -Scope 'Machine' `
                                     -Link $linkedOUs
 
-                                # Whether those links put a domain controller in the
-                                # policy's scope - a fact beside LinkedOUs, no verdict.
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
+                                # Which of those links put a domain controller in the
+                                # policy's scope - marked on LinkedOUs, no verdict.
+                                $gpoDCReach = Get-GPODomainControllerReachDetail -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($finding in $restrictedGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
-                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPODomainControllerReach -Object $finding -Reach $gpoDCReach
                                     Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     # Restricted Groups is a computer-side section, so the
                                     # half is Machine - stated per finding because the
@@ -293,11 +293,11 @@ function Get-GPOLocalGroupMembership {
                                     -Scope $(if ($file.FullName -match '\\Machine\\') { 'Machine' } else { 'User' }) `
                                     -Link $linkedOUs
 
-                                $gpoDCReach = Get-GPODomainControllerReach -Link $linkedOUs -GPOGUID $gpoGUID
+                                $gpoDCReach = Get-GPODomainControllerReachDetail -Link $linkedOUs -GPOGUID $gpoGUID
 
                                 foreach ($finding in $gppGroupsFindings) {
                                     $finding | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $linkedOUsDisplay -Force
-                                    $finding | Add-Member -NotePropertyName 'reachesDomainControllers' -NotePropertyValue $gpoDCReach -Force
+                                    Add-GPODomainControllerReach -Object $finding -Reach $gpoDCReach
                                     Add-GPOConditionRow -Object $finding -GPOGUID $gpoGUID
                                     # And here the file's path decides, the same way the
                                     # GPOStatus line above is computed.

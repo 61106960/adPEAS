@@ -1343,8 +1343,20 @@ function Convert-LinkedOUsToRenderValues {
         }
 
         $itemMatch = Get-TriggerMatch -Name $Name -Value $display -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
-        $renderValues += New-RenderValue -Display $display -Severity $itemMatch.Severity `
-            -FindingId $itemMatch.FindingId -RawValue $item
+        $itemSeverity = $itemMatch.Severity
+        $itemFindingId = $itemMatch.FindingId
+
+        # A link through which the policy reaches a domain controller, marked by
+        # Add-GPODomainControllerReach - not in the text, so no trigger can see it. Yellow
+        # with its card, unless a trigger has made the link red already (the domain root on
+        # a GPO finding): red stays, and the card is added where it has none.
+        if ($item -isnot [string] -and $item.PSObject.Properties['ReachesDomainController'] -and $item.ReachesDomainController -eq $true) {
+            if ($itemSeverity -ne 'Finding') { $itemSeverity = 'Hint' }
+            if (-not $itemFindingId) { $itemFindingId = 'GPO_LINK_REACHES_DC' }
+        }
+
+        $renderValues += New-RenderValue -Display $display -Severity $itemSeverity `
+            -FindingId $itemFindingId -RawValue $item
     }
 
     if ($renderValues.Count -eq 0) {

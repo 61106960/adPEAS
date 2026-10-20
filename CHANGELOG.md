@@ -60,14 +60,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   permissions are not read - Windows returns them to administrators of the file server
   only.
 
-- **GPO findings say whether the policy reaches a domain controller.** A new
-  `reachesDomainControllers` row beside `LinkedOUs` in the seven GPO checks names the
-  link that puts a domain controller in the policy's scope - the Domain Controllers OU,
-  an OU above a domain controller, the domain root or the domain controller's site - or
-  says why none does. Domain controllers are found where their computer objects are, and
-  a container that blocks inheritance stops every link above it that is not enforced.
-  The row speaks of links and security filtering only; a WMI filter the policy names is
-  shown in a row of its own. It is information and changes no severity.
+- **GPO findings say whether the policy reaches a domain controller.** In the seven GPO
+  checks, each `LinkedOUs` entry that puts a domain controller in the policy's scope - the
+  Domain Controllers OU, an OU above a domain controller, the domain root or the domain
+  controller's site - is coloured as a hint, with a card saying what that means in the
+  HTML report. Domain controllers are found where their computer objects are, and a
+  container that blocks inheritance stops every link above it that is not enforced. A
+  `reachesDomainControllers` row appears only where that could not be told - the domain
+  controllers, the site of one or the security filtering could not be read; a link that
+  reaches none is simply not coloured. The mark speaks of links and security filtering
+  only; a WMI filter the policy names is shown in a row of its own. It is information and
+  changes no severity.
 
 - **Credentials found in SYSVOL say what their account is in the directory.** A new
   `accountInAD` row on every GPP password, AutoAdminLogon and `net use` credential says
@@ -297,21 +300,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **The reach of a GPO takes its security filtering into account.** A computer applies a
   policy only if its token holds a principal granted the Apply Group Policy right on the
-  policy object and none denied it; by default Authenticated Users hold it. The
-  `reachesDomainControllers` row of the GPO checks and the `affectedComputerCount` of
+  policy object and none denied it; by default Authenticated Users hold it. The domain
+  controller reach of the GPO checks and the `affectedComputerCount` of
   `Get-GPOPermissions` read the links alone, so a policy linked at the domain root but
   filtered to a group of file servers was said to reach the domain controllers and every
   computer. Both now read who may apply the policy - one query for every policy object
   per session - and judge each computer by its own SID, its primary group, the groups it
   is in (nested ones included, and the primary groups nested into a filter group), and
-  Enterprise Domain Controllers for a domain controller. Such a policy now reads "No - by
-  its link on ... it would, but only ... may apply it", and its computer count says the
-  same in `affectedComputersNote`; a principal that cannot be read makes the answer
-  Unknown and the count a lower bound. Where the filtering is not known, the links decide
-  as before.
+  Enterprise Domain Controllers for a domain controller. Such a policy's links are not
+  marked as reaching a domain controller, and its computer count says why in
+  `affectedComputersNote`; a principal that cannot be read makes the reach Unknown and the
+  count a lower bound. Where the filtering is not known, the links decide as before.
 
-- **The signing checks and the computer count read the reach of a GPO the way the
-  reachesDomainControllers row does.** The precedence contest of `Get-LDAPConfiguration`
+- **The signing checks and the computer count read the reach of a GPO the way the GPO
+  checks' domain controller reach does.** The precedence contest of `Get-LDAPConfiguration`
   and `Get-SMBSigningStatus` filed a policy by the name of the OU it was linked to and
   left site links out; `affectedComputerCount` of `Get-GPOPermissions` took every computer
   below a link, every computer of the domain for a root link. Both now go by where the
@@ -558,7 +560,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   identity filter rather than compared against a guess.
 
 - **GPO findings name the policy's WMI filter and its loopback processing mode.** Two new
-  rows beside `reachesDomainControllers`, in the seven GPO checks: `wmiFilter` names the
+  rows beside `LinkedOUs`, in the seven GPO checks: `wmiFilter` names the
   filter and its WQL queries - a policy applies only where the query returns a result, so
   a filter can narrow it to no machine at all - or says the filter is missing from the
   directory, in which case a client applies the policy. `loopbackProcessing` says whether
