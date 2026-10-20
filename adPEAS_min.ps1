@@ -20661,7 +20661,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "Understanding the domain structure, functional levels, and key configurations provides the foundation for all security assessments. Old functional levels may indicate legacy systems with known vulnerabilities."
         WhatWeCheck = @(
             "Domain and forest names, SIDs, and functional levels"
-            "Anonymous LDAP access: 'Refused (tested)' means an anonymous bind was attempted in this session and could not read the domain object. 'Not tested' names why in brackets: LDAPS and global catalog sessions skip the test, and a bind that got no answer from the server or failed before one is no verdict either way - the log has the error"
+            "Anonymous LDAP access: 'Refused' means an anonymous bind was attempted in this session and could not read the domain object. 'Not tested' names why in brackets: LDAPS and global catalog sessions skip the test, and a bind that got no answer from the server or failed before one is no verdict either way - the log has the error"
             "What a deletion leaves behind: with the Recycle Bin, a deleted object stays restorable with all its attributes for the deleted-object lifetime, then remains as a stripped recycled object for the tombstone lifetime before it is removed for good. The tombstone lifetime also bounds the age of a backup that can still be restored. An unset deleted-object lifetime takes the tombstone lifetime"
             "Without the Recycle Bin a deleted object keeps only a few attributes and cannot be restored with its group memberships; the Recycle Bin needs forest functional level Windows Server 2008 R2"
             "Which service replicates SYSVOL: FRS is deprecated, and no domain controller from Windows Server 1709 on can be added while it still replicates SYSVOL. 'FRS and DFSR' is a migration that has not reached Eliminated, shown with its global state"
@@ -67304,7 +67304,7 @@ function Get-DomainInformation {
                 $domainInfoSeverity = "Finding"
             }
             elseif ($Script:LDAPContext['AnonymousAccessTested']) {
-                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue 'Refused (tested)' -Force
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue 'Refused' -Force
             }
             else {
                 $anonSkipReason = [string]$Script:LDAPContext['AnonymousAccessSkipReason']
@@ -95369,7 +95369,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261019-2231"
+$Script:adPEASVersion = "2.7.0+20261020-0945"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

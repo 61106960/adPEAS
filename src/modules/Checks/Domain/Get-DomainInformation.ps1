@@ -402,9 +402,9 @@ function Get-DomainInformation {
             }
             elseif ($Script:LDAPContext['AnonymousAccessTested']) {
                 # Measured and refused. This is the earned green state, and nothing used
-                # to say it out loud. "(tested)" is what sets it apart from the dsHeuristics
-                # reading; what was tried is the card's to explain.
-                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue 'Refused (tested)' -Force
+                # to say it out loud. The word alone sets it apart from the dsHeuristics
+                # reading ("Restricted"); what was tried is the card's to explain.
+                $domainInfoObj | Add-Member -NotePropertyName 'anonymousLDAPAccess' -NotePropertyValue 'Refused' -Force
             }
             else {
                 # Not asked, or asked and never answered. Neutral on purpose: this is the one

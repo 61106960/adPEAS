@@ -628,7 +628,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   create a `System.DirectoryServices.Protocols` type, the assembly was loaded only after
   it, and the error was read as a refused bind - so `Get-DomainInformation` printed a
   refused bind for a bind nobody tried. The assembly is loaded before the test now; a
-  bind that was tried and refused reads "Refused (tested)", and a test the server never
+  bind that was tried and refused reads "Refused", and a test the server never
   answered - a domain controller out of reach, a timeout, a connect error - is reported
   as "Not tested" instead of as refused, with a short reason in brackets: "(LDAPS)",
   "(global catalog)", "(no answer from the server)", "(test failed)". The error itself
