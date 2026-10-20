@@ -74060,7 +74060,8 @@ function Get-AddComputerRights {
                     }
                 }
             }
-            $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams)
+            $gpoScan = @{ Complete = $false }
+            $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN -ScanState $gpoScan @connectionParams)
             $effectiveGPO = @($gpoFindings | Where-Object {
                 $_._IsEffective -eq $true -and $_._PrecedenceScope -in @('DomainControllers', 'Domain')
             })[0]
@@ -74077,6 +74078,14 @@ function Get-AddComputerRights {
                     $grantedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "Authenticated Users" }
                     $whoCanAdd = "Any authenticated user, up to the quota"
                     $grantedBy = "GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to $grantedTo"
+                    $quotaClass = 'Hint'
+                } elseif (-not $gpoScan['Complete']) {
+                    $whoCanAdd = "Any authenticated user by default, up to the quota"
+                    $grantedBy = "Unknown - the policies in SYSVOL could not be read"
+                    $quotaClass = 'Hint'
+                } elseif (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) {
+                    $whoCanAdd = "Any authenticated user by default, up to the quota"
+                    $grantedBy = "Unknown - part of SYSVOL could not be read"
                     $quotaClass = 'Hint'
                 } else {
                     $whoCanAdd = "Any authenticated user, up to the quota"
@@ -74190,6 +74199,8 @@ function Check-GPOAddComputerRights {
     param(
         [string]$DomainFQDN,
         [Parameter(Mandatory=$false)]
+        [hashtable]$ScanState,
+        [Parameter(Mandatory=$false)]
         [string]$Domain,
         [Parameter(Mandatory=$false)]
         [string]$Server,
@@ -74202,7 +74213,10 @@ function Check-GPOAddComputerRights {
         if ($Server) { $connectionParams['Server'] = $Server }
         if ($Credential) { $connectionParams['Credential'] = $Credential }
         $gpos = Get-DomainGPO @connectionParams
-        if (-not $gpos -or @($gpos).Count -eq 0) { return @() }
+        if (-not $gpos -or @($gpos).Count -eq 0) {
+            if ($ScanState) { $ScanState['Complete'] = $true }
+            return @()
+        }
         $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
         $dcServer = $Script:LDAPContext.Server
         $domainDN = $Script:LDAPContext.DomainDN
@@ -74320,6 +74334,7 @@ function Check-GPOAddComputerRights {
             if ($totalGPOs -gt $Script:ProgressThreshold) {
                 Show-Progress -Activity "Scanning GPO user rights assignment" -Completed
             }
+            if ($ScanState) { $ScanState['Complete'] = $true }
         }
         $result = $Script:gpoAddComputerFindings
         $Script:gpoAddComputerFindings = $null
@@ -95571,7 +95586,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-1648"
+$Script:adPEASVersion = "2.7.0+20261020-1656"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -230,7 +230,11 @@ function Get-AddComputerRights {
             }
 
             # ===== Step 3: Check GPO User Rights Assignment =====
-            $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams)
+            # ScanState says whether the policies were read at all. An empty result is
+            # both "no policy sets the privilege" and "SYSVOL was never read", and the
+            # quota statement said "No policy" for either.
+            $gpoScan = @{ Complete = $false }
+            $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN -ScanState $gpoScan @connectionParams)
 
             # Which policy actually wins, and whether it hands the privilege to
             # ordinary users. Computed here rather than inside the GPO block below,
@@ -284,6 +288,18 @@ function Get-AddComputerRights {
                     $grantedTo = if (@($effectiveGPO.Accounts).Count -gt 0) { @($effectiveGPO.Accounts) -join ', ' } else { "Authenticated Users" }
                     $whoCanAdd = "Any authenticated user, up to the quota"
                     $grantedBy = "GPO '$($effectiveGPO.displayName)' grants SeMachineAccountPrivilege to $grantedTo"
+                    $quotaClass = 'Hint'
+                } elseif (-not $gpoScan['Complete']) {
+                    # SYSVOL not reached, or the scan broken off: whether a policy sets
+                    # the privilege is not known, only what the default would be.
+                    $whoCanAdd = "Any authenticated user by default, up to the quota"
+                    $grantedBy = "Unknown - the policies in SYSVOL could not be read"
+                    $quotaClass = 'Hint'
+                } elseif (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) {
+                    # Read, but not all of it - the note above names what is missing, and
+                    # the policy for the domain controllers may be among it.
+                    $whoCanAdd = "Any authenticated user by default, up to the quota"
+                    $grantedBy = "Unknown - part of SYSVOL could not be read"
                     $quotaClass = 'Hint'
                 } else {
                     $whoCanAdd = "Any authenticated user, up to the quota"
@@ -475,6 +491,12 @@ function Check-GPOAddComputerRights {
     param(
         [string]$DomainFQDN,
 
+        # Set to Complete = $true once every GptTmpl.inf was gone through. Untouched when
+        # SYSVOL was not reached, Invoke-SMBAccess skipped or broke off the scan, or this
+        # function threw - all of them return what an empty SYSVOL returns.
+        [Parameter(Mandatory=$false)]
+        [hashtable]$ScanState,
+
         [Parameter(Mandatory=$false)]
         [string]$Domain,
 
@@ -494,7 +516,11 @@ function Check-GPOAddComputerRights {
 
         $gpos = Get-DomainGPO @connectionParams
 
-        if (-not $gpos -or @($gpos).Count -eq 0) { return @() }
+        # No policy object, so no file to read: that is a complete answer.
+        if (-not $gpos -or @($gpos).Count -eq 0) {
+            if ($ScanState) { $ScanState['Complete'] = $true }
+            return @()
+        }
 
         # Indexed once for the whole check: every finding below reports the state of its
         # policy as GPOStatus, the way the other GPO checks do.
@@ -699,6 +725,10 @@ function Check-GPOAddComputerRights {
             if ($totalGPOs -gt $Script:ProgressThreshold) {
                 Show-Progress -Activity "Scanning GPO user rights assignment" -Completed
             }
+
+            # A member of the hashtable, not a variable: an assignment in this block is
+            # lost when it returns (it runs inside Invoke-SMBAccess).
+            if ($ScanState) { $ScanState['Complete'] = $true }
         }
 
         $result = $Script:gpoAddComputerFindings

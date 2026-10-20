@@ -1263,6 +1263,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   an ordinary OU is no longer rendered green as the control, and the line announcing the
   policies is a hint where none decides for the domain controllers.
 
+- **`Get-AddComputerRights` no longer says "No policy" about policies it did not read.**
+  An empty result of the SYSVOL scan was taken for "no policy sets the privilege" - also
+  where SYSVOL was not reached, where the scan broke off, and where part of SYSVOL could
+  not be read. In a real domain the report said "No policy - the Windows default grants
+  SeMachineAccountPrivilege ..." over a Default Domain Controllers Policy that carried the
+  grant. `privilegeGrantedBy` now reads "Unknown - the policies in SYSVOL could not be
+  read" or "Unknown - part of SYSVOL could not be read", with the SYSVOL coverage note
+  above it, and `whoCanAddComputers` says the default it rests on: "Any authenticated user
+  by default, up to the quota".
+
 - **A Tier-0 account in `Get-ProtectedUsersStatus` shows the groups that make it one.**
   The account object carried `tier0Groups` and, for an account the metric leaves out,
   `excludedReason`, but the Tier-0 type had no row list of its own, so the account
