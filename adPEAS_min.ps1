@@ -3521,7 +3521,7 @@ $Script:PrimaryAttributes = @{
         'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
         'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
-        'builtinAdministratorLockout', 'passwordProperties'
+        'passwordProperties'
     )
     FineGrainedPasswordPolicy = @(
         'psoName', 'precedence',
@@ -67926,7 +67926,6 @@ function Get-DomainPasswordPolicy {
             $pwdPropsNames        = @($pwdPropsSet | ForEach-Object { $_.Name })
             $complexityEnabled    = $pwdPropsNames -contains 'DOMAIN_PASSWORD_COMPLEX'
             $reversibleEncryption = $pwdPropsNames -contains 'DOMAIN_PASSWORD_STORE_CLEARTEXT'
-            $adminLockoutApplies  = $pwdPropsNames -contains 'DOMAIN_LOCKOUT_ADMINS'
             $passwordPolicyObj = [PSCustomObject]@{
                 minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
                                elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
@@ -67951,10 +67950,6 @@ function Get-DomainPasswordPolicy {
                 if ($pwdPropsDisplay.Count -gt 0) {
                     $passwordPolicyObj | Add-Member -NotePropertyName 'passwordProperties' -NotePropertyValue $pwdPropsDisplay -Force
                 }
-            }
-            if ($hasPwdProperties -and $lockoutThreshold -gt 0 -and -not $adminLockoutApplies) {
-                $passwordPolicyObj | Add-Member -NotePropertyName 'builtinAdministratorLockout' `
-                    -NotePropertyValue 'the built-in Administrator is exempt from account lockout - DOMAIN_LOCKOUT_ADMINS is not set' -Force
             }
             $policyWeaknesses = @()
             if ($hasMinPwdLength -and $minPwdLength -lt 8) { $policyWeaknesses += "short_password" }
@@ -95376,7 +95371,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-1004"
+$Script:adPEASVersion = "2.7.0+20261020-1117"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

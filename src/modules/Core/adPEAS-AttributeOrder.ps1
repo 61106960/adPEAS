@@ -225,7 +225,7 @@ $Script:PrimaryAttributes = @{
         'minPwdAge', 'maxPwdAge', 'pwdHistoryLength',
         'reversibleEncryption',
         'lockoutThreshold', 'lockoutDuration', 'lockoutObservationWindow',
-        'builtinAdministratorLockout', 'passwordProperties'
+        'passwordProperties'
     )
 
     # Fine-Grained Password Policy (PSO)
