@@ -187,6 +187,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "LDAP signing and channel binding are properly configured via GPO. All Domain Controllers require LDAP signing and enforce channel binding, blocking NTLM relay attacks against LDAP services."
     }
 
+    # The two null session settings, read in the same SYSVOL scan as LDAP signing and
+    # reported in a section of their own: they are SMB and RPC controls, not LDAP.
+    'NullSessionGPO' = @{
+        TitleFormat = "Null Session GPO: {Name}"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Null Session Configuration"
+        Summary = "Checks which GPOs set the null session controls for anonymous SAM enumeration and anonymous SID/name translation."
+        WhyItMatters = "A null session is an anonymous connection over SMB. Where anonymous enumeration of SAM accounts and shares is allowed, it lists the accounts and shares of the machine; where anonymous SID/name translation is allowed, it turns SIDs into account names and back. On a domain controller that is the account list of the domain, without a password."
+        WhatWeCheck = @(
+            "anonymousSamEnumeration - RestrictAnonymous, 'Network access: Do not allow anonymous enumeration of SAM accounts and shares': Allowed at 0"
+            "anonymousSidNameTranslation - LSAAnonymousNameLookup, 'Network access: Allow anonymous SID/Name translation': Allowed at 1"
+            "Which policy reaches the domain controllers, and which value is in force there"
+            "Not tested: anonymous LDAP, which is decided by dsHeuristics in its own section"
+        )
+        SecureMessage = "The policies in force on the domain controllers restrict anonymous SAM enumeration and anonymous SID/name translation."
+    }
+
     # dsHeuristics, read by Get-LDAPConfiguration in a section of its own ahead of the GPO
     # rows: one forest-wide string, and no GPO governs any of its characters.
     'DSHeuristics' = @{
@@ -239,6 +257,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
         )
         SecureMessage = "The policies in force on the domain controllers require LDAP signing and channel binding."
+    }
+
+    'EffectiveNullSession' = @{
+        TitleFormat = "In force on the domain controllers"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Null Session Configuration"
+        Summary = "The two null session values in force on the domain controllers, each taken from the highest-ranked policy that sets it."
+        WhyItMatters = "Group Policy precedence is per setting: a policy that leaves a value unset does not override another policy's value for it. What the domain controllers enforce is therefore assembled from several policies, and reading one policy alone gives the wrong answer."
+        WhatWeCheck = @(
+            "Every policy linked to the Domain Controllers OU or the domain root"
+            "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+            "decidedBy lists each policy with the values it decides in brackets"
+            "Not Configured: no policy that reaches the domain controllers sets the value, and they keep the OS default"
+            "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
+        )
+        SecureMessage = "The policies in force on the domain controllers restrict anonymous SAM enumeration and anonymous SID/name translation."
     }
 
     'EffectiveSMBSigning' = @{

@@ -3485,7 +3485,12 @@ $Script:PrimaryAttributes = @{
     )
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
-        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+        'LDAPSigning', 'ChannelBinding',
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
+    )
+    NullSessionGPO = @(
+        'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
+        'anonymousSamEnumeration', 'anonymousSidNameTranslation',
         'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
     DSHeuristics = @(
@@ -3596,8 +3601,11 @@ $Script:PrimaryAttributes = @{
         'siteDomainControllers'
     )
     EffectiveLDAPConfig = @(
-        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+        'LDAPSigning', 'ChannelBinding',
         'decidedBy'
+    )
+    EffectiveNullSession = @(
+        'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'decidedBy'
     )
     EffectiveSMBSigning = @(
         'ServerSigning', 'ClientSigning', 'decidedBy'
@@ -3793,8 +3801,10 @@ Remove-Variable -Name tier0AccountRows
 $Script:StrictAttributeTypes = @(
     'SMBSigning',
     'LDAPConfigGPO',
+    'NullSessionGPO',
     'AddComputerGPO',
     'EffectiveLDAPConfig',
+    'EffectiveNullSession',
     'EffectiveSMBSigning',
     'EffectiveSMBSigningMembers',
     'LDAPStatisticsModule',
@@ -3809,6 +3819,7 @@ $Script:AttributeLabels = @{
     GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    NullSessionGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
 }
 $Script:ExcludeAttributes = @(
@@ -3860,7 +3871,7 @@ function Get-ObjectTypeForOrdering {
     if ($Object.siteName -and $Object.siteSubnets) {
         return 'SitesSubnets'
     }
-    if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.anonymousSamEnumeration -and -not $Object.gPCFileSysPath) {
+    if ($Object.LDAPSigning -and $Object.ChannelBinding -and -not $Object.gPCFileSysPath) {
         return 'EffectiveLDAPConfig'
     }
     if ($Object.gPCFileSysPath -or ($Object.Name -match '^\{[0-9a-fA-F-]+\}$')) {
@@ -20788,6 +20799,21 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "LDAP signing and channel binding are properly configured via GPO. All Domain Controllers require LDAP signing and enforce channel binding, blocking NTLM relay attacks against LDAP services."
     }
+    'NullSessionGPO' = @{
+        TitleFormat = "Null Session GPO: {Name}"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Null Session Configuration"
+        Summary = "Checks which GPOs set the null session controls for anonymous SAM enumeration and anonymous SID/name translation."
+        WhyItMatters = "A null session is an anonymous connection over SMB. Where anonymous enumeration of SAM accounts and shares is allowed, it lists the accounts and shares of the machine; where anonymous SID/name translation is allowed, it turns SIDs into account names and back. On a domain controller that is the account list of the domain, without a password."
+        WhatWeCheck = @(
+            "anonymousSamEnumeration - RestrictAnonymous, 'Network access: Do not allow anonymous enumeration of SAM accounts and shares': Allowed at 0"
+            "anonymousSidNameTranslation - LSAAnonymousNameLookup, 'Network access: Allow anonymous SID/Name translation': Allowed at 1"
+            "Which policy reaches the domain controllers, and which value is in force there"
+            "Not tested: anonymous LDAP, which is decided by dsHeuristics in its own section"
+        )
+        SecureMessage = "The policies in force on the domain controllers restrict anonymous SAM enumeration and anonymous SID/name translation."
+    }
     'DSHeuristics' = @{
         TitleFormat = "Directory Service Heuristics"
         Module = "Domain"
@@ -20834,6 +20860,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
         )
         SecureMessage = "The policies in force on the domain controllers require LDAP signing and channel binding."
+    }
+    'EffectiveNullSession' = @{
+        TitleFormat = "In force on the domain controllers"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Null Session Configuration"
+        Summary = "The two null session values in force on the domain controllers, each taken from the highest-ranked policy that sets it."
+        WhyItMatters = "Group Policy precedence is per setting: a policy that leaves a value unset does not override another policy's value for it. What the domain controllers enforce is therefore assembled from several policies, and reading one policy alone gives the wrong answer."
+        WhatWeCheck = @(
+            "Every policy linked to the Domain Controllers OU or the domain root"
+            "For each value, the highest-ranked policy that sets it - enforced links first, then the Domain Controllers OU, then the domain root, then link order"
+            "decidedBy lists each policy with the values it decides in brackets"
+            "Not Configured: no policy that reaches the domain controllers sets the value, and they keep the OS default"
+            "Not tested: the registry of the domain controllers. The values are read from the policies, and a value a policy wrote can stay on a domain controller after the policy stops applying (tattooing) - the registry is the ground truth"
+        )
+        SecureMessage = "The policies in force on the domain controllers restrict anonymous SAM enumeration and anonymous SID/name translation."
     }
     'EffectiveSMBSigning' = @{
         TitleFormat = "In force on the domain controllers"
@@ -68421,6 +68463,107 @@ function Test-GPOCoversDomainControllers {
     }
     return $false
 }
+function Show-DCPolicySettingSection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [object[]]$Finding,
+        [Parameter(Mandatory=$true)]
+        [hashtable[]]$Setting,
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $GPOStatusMap,
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeInactive,
+        [Parameter(Mandatory=$true)]
+        [string]$ObjectType,
+        [Parameter(Mandatory=$true)]
+        [string]$PostureObjectType,
+        [Parameter(Mandatory=$true)]
+        [string]$FoundText,
+        [Parameter(Mandatory=$true)]
+        [string]$NoneActiveText,
+        [Parameter(Mandatory=$true)]
+        [string]$NoneFoundText,
+        [Parameter(Mandatory=$true)]
+        [string]$NoneClass,
+        [Parameter(Mandatory=$true)]
+        [hashtable]$ValueClass
+    )
+    $findings = @($Finding | Where-Object { $_ })
+    if ($findings.Count -eq 0) {
+        Show-Line $NoneFoundText -Class $NoneClass
+        return
+    }
+    $gpoLinkage = Get-GPOLinkage
+    foreach ($gpoFinding in $findings) {
+        $guid = $gpoFinding.Name.ToUpper()
+        $linksEff = $null
+        if ($null -ne $gpoLinkage) {
+            $linksEff = @()
+            if ($gpoLinkage.ContainsKey($guid)) { $linksEff = @($gpoLinkage[$guid]) }
+        }
+        $precedence = Get-GPODCPrecedence -Link $linksEff
+        $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precedence.Scope -Force
+        $gpoFinding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
+        $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
+        $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue $precedence.HasAnyLink -Force
+        $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
+    }
+    $settingWinners = Resolve-GPOSettingPrecedence -Finding $findings -Setting $Setting
+    foreach ($gpoFinding in $findings) {
+        if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site')) {
+            $winsSomething = @($Setting | Where-Object {
+                [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
+            }).Count -gt 0
+            $gpoFinding._IsEffective = $winsSomething
+            $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $Setting -Winner $settingWinners
+        } else {
+            $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -in @('OtherOU', 'Blocked'))
+            $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
+                -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
+        }
+        $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue $effectiveText -Force
+    }
+    $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $GPOStatusMap `
+        -GPOLinkage $gpoLinkage -Scope 'Machine' -GuidProperty 'Name'
+    $shown = if ($IncludeInactive) { @($findings) } else { @($split.Active) }
+    Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+        -Dormant $split.Dormant -Listed:$IncludeInactive
+    if (@($shown).Count -gt 0) {
+        Show-Line "Found $FoundText in $(@($shown).Count) GPO(s):" -Class Hint
+    } else {
+        Show-Line $NoneActiveText -Class $NoneClass
+    }
+    foreach ($gpoFinding in $shown) {
+        $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue $ObjectType -Force
+        if (@($split.Inactive) -contains $gpoFinding) {
+            Show-Object $gpoFinding -Class Note
+        } else {
+            Show-Object $gpoFinding -Class Hint
+        }
+    }
+    if ($null -ne $gpoLinkage) {
+        $postureValues = [ordered]@{}
+        foreach ($entry in $Setting) {
+            $winner = $settingWinners[$entry.Property]
+            $postureValues[$entry.Property] = if ($winner) { $winner.($entry.Property) } else { 'Not Configured' }
+        }
+        $postureValues['decidedBy'] = Get-GPOSettingPostureSource -Setting $Setting -Winner $settingWinners
+        $posture = [PSCustomObject]$postureValues
+        $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue $PostureObjectType -Force
+        $postureClasses = @(foreach ($entry in $Setting) {
+            & $ValueClass[$entry.Property] $posture.($entry.Property)
+        })
+        $postureClass = 'Secure'
+        foreach ($candidate in @('Finding', 'Hint', 'Note')) {
+            if ($postureClasses -contains $candidate) { $postureClass = $candidate; break }
+        }
+        Show-Line "In force on the domain controllers, by policy precedence:" -Class $postureClass
+        Show-Object $posture -Class $postureClass
+    }
+}
 function Get-LDAPConfiguration {
     [CmdletBinding()]
     param(
@@ -68505,6 +68648,7 @@ function Get-LDAPConfiguration {
             $domainControllers = @(Get-DomainComputer -DomainController @connectionParams)
             $dcCount = $domainControllers.Count
             $Script:gpoFindings = @()
+            $Script:nullSessionFindings = @()
             $Script:sysvolAccessible = $false
             Invoke-SMBAccess -Description "Scanning SYSVOL for LDAP configuration GPOs" -ScriptBlock {
                 $sysvolPath = "\\$dcServer\SYSVOL\$domainFQDN\Policies"
@@ -68585,8 +68729,9 @@ function Get-LDAPConfiguration {
                                 $lsaAnonymousNameLookup = [int]$Matches[1]
                             }
                         }
-                        if ($null -ne $ldapSigningValue -or $null -ne $ldapChannelBindingValue -or
-                            $null -ne $restrictAnonymous -or $null -ne $lsaAnonymousNameLookup) {
+                        $ldapConfigured = ($null -ne $ldapSigningValue -or $null -ne $ldapChannelBindingValue)
+                        $nullSessionConfigured = ($null -ne $restrictAnonymous -or $null -ne $lsaAnonymousNameLookup)
+                        if ($ldapConfigured -or $nullSessionConfigured) {
                             $signingLevel = if ($null -ne $ldapSigningValue) {
                                 switch ($ldapSigningValue) {
                                     0 { "None" }
@@ -68629,22 +68774,38 @@ function Get-LDAPConfiguration {
                                 $isDomainWide = ($null -ne $domainWide)
                                 $coversDCs = Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers
                             }
-                            $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
-                            $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-                            $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue $samEnumerationStatus -Force
-                            $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue $sidNameTranslationStatus -Force
-                            $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue $coversDCs -Force
                             $linkedOUsDisplay = $links
                             if ($null -eq $links) {
                                 $linkedOUsDisplay = 'Unknown - linkage could not be resolved'
                             }
-                            $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
                             $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $gpoStatusMap[$gpoNameUpper] `
                                 -Scope 'Machine' -Link $links
-                            if ($gpoStatus) {
-                                $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
+                            if ($ldapConfigured) {
+                                $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
+                                $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
+                                $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue $coversDCs -Force
+                                $gpo | Add-Member -NotePropertyName "LinkedOUs" -NotePropertyValue $linkedOUsDisplay -Force
+                                if ($gpoStatus) {
+                                    $gpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
+                                }
+                                $Script:gpoFindings += $gpo
                             }
-                            $Script:gpoFindings += $gpo
+                            if ($nullSessionConfigured) {
+                                $nullSessionGpo = [PSCustomObject]@{
+                                    displayName                 = $gpo.DisplayName
+                                    Name                        = $gpo.Name
+                                    distinguishedName           = $gpo.distinguishedName
+                                    gPCFileSysPath              = $gpo.gPCFileSysPath
+                                    anonymousSamEnumeration     = $samEnumerationStatus
+                                    anonymousSidNameTranslation = $sidNameTranslationStatus
+                                    CoversDCs                   = $coversDCs
+                                    LinkedOUs                   = $linkedOUsDisplay
+                                }
+                                if ($gpoStatus) {
+                                    $nullSessionGpo | Add-Member -NotePropertyName "GPOStatus" -NotePropertyValue $gpoStatus -Force
+                                }
+                                $Script:nullSessionFindings += $nullSessionGpo
+                            }
                         }
                     }
                 }
@@ -68685,8 +68846,6 @@ function Get-LDAPConfiguration {
                     $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
                     $gpo | Add-Member -NotePropertyName "LDAPSigning" -NotePropertyValue $signingLevel -Force
                     $gpo | Add-Member -NotePropertyName "ChannelBinding" -NotePropertyValue $channelBindingLevel -Force
-                    $gpo | Add-Member -NotePropertyName "anonymousSamEnumeration" -NotePropertyValue "Not Configured" -Force
-                    $gpo | Add-Member -NotePropertyName "anonymousSidNameTranslation" -NotePropertyValue "Not Configured" -Force
                     $gpo | Add-Member -NotePropertyName "CoversDCs" -NotePropertyValue (
                         Test-GPOCoversDomainControllers -ActiveLink $activeLinks -DomainController $domainControllers) -Force
                     $linkedOUsDisplay = $links
@@ -68704,6 +68863,8 @@ function Get-LDAPConfiguration {
             }
             $gpoFindings = $Script:gpoFindings
             $Script:gpoFindings = $null
+            $nullSessionFindings = $Script:nullSessionFindings
+            $Script:nullSessionFindings = $null
             $sysvolAccessible = $Script:sysvolAccessible
             $Script:sysvolAccessible = $null
             if (-not $sysvolAccessible) {
@@ -68714,83 +68875,42 @@ function Get-LDAPConfiguration {
                 }
                 return
             }
-            if ($gpoFindings -and $gpoFindings.Count -gt 0) {
-                $gpoLinkage = Get-GPOLinkage
-                foreach ($gpoFinding in $gpoFindings) {
-                    $guid = $gpoFinding.Name.ToUpper()
-                    $linksEff = $null
-                    if ($null -ne $gpoLinkage) {
-                        $linksEff = @()
-                        if ($gpoLinkage.ContainsKey($guid)) { $linksEff = @($gpoLinkage[$guid]) }
-                    }
-                    $precedence = Get-GPODCPrecedence -Link $linksEff
-                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precedence.Scope -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_HasAnyLink' -NotePropertyValue $precedence.HasAnyLink -Force
-                    $gpoFinding | Add-Member -NotePropertyName '_IsEffective' -NotePropertyValue $false -Force
+            $ldapSection = @{
+                Setting           = @(
+                    @{ Property = 'LDAPSigning';    Label = 'LDAP signing' }
+                    @{ Property = 'ChannelBinding'; Label = 'channel binding' }
+                )
+                ObjectType        = 'LDAPConfigGPO'
+                PostureObjectType = 'EffectiveLDAPConfig'
+                FoundText         = 'LDAP security configuration'
+                NoneActiveText    = "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable"
+                NoneFoundText     = "No LDAP Security configuration found in any GPO - all $dcCount DC(s) potentially vulnerable"
+                NoneClass         = 'Finding'
+                ValueClass        = @{
+                    LDAPSigning    = { param($Value) switch ($Value) { 'Required' { 'Secure' } 'Optional' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } } }
+                    ChannelBinding = { param($Value) switch ($Value) { 'Always' { 'Secure' } 'When Supported' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } } }
                 }
-                $ldapSettings = @(
-                    @{ Property = 'LDAPSigning';                 Label = 'LDAP signing' }
-                    @{ Property = 'ChannelBinding';              Label = 'channel binding' }
+            }
+            Show-DCPolicySettingSection -Finding $gpoFindings -GPOStatusMap $gpoStatusMap -IncludeInactive:$IncludeInactive @ldapSection
+            Show-SubHeader "Analyzing null session settings via GPO (SYSVOL)..." -ObjectType "NullSessionGPO"
+            $nullSessionClass = { param($Value) switch ($Value) { 'Allowed' { 'Hint' } 'Restricted' { 'Secure' } default { 'Note' } } }
+            $nullSessionSection = @{
+                Setting           = @(
                     @{ Property = 'anonymousSamEnumeration';     Label = 'anonymous SAM enumeration' }
                     @{ Property = 'anonymousSidNameTranslation'; Label = 'anonymous SID/name translation' }
                 )
-                $settingWinners = Resolve-GPOSettingPrecedence -Finding $gpoFindings -Setting $ldapSettings
-                foreach ($gpoFinding in $gpoFindings) {
-                    if ($gpoFinding._PrecedenceScope -in @('DomainControllers', 'Domain', 'Site')) {
-                        $winsSomething = @($ldapSettings | Where-Object {
-                            [object]::ReferenceEquals($settingWinners[$_.Property], $gpoFinding)
-                        }).Count -gt 0
-                        $gpoFinding._IsEffective = $winsSomething
-                        $effectiveText = Get-GPOSettingPrecedenceText -Finding $gpoFinding -Setting $ldapSettings -Winner $settingWinners
-                    } else {
-                        $gpoFinding._IsEffective = ($gpoFinding._PrecedenceScope -in @('OtherOU', 'Blocked'))
-                        $effectiveText = Get-GPOEffectiveSettingText -Scope $gpoFinding._PrecedenceScope `
-                            -IsEffective $gpoFinding._IsEffective -HasAnyLink $gpoFinding._HasAnyLink
-                    }
-                    $gpoFinding | Add-Member -NotePropertyName 'EffectiveSetting' -NotePropertyValue $effectiveText -Force
+                ObjectType        = 'NullSessionGPO'
+                PostureObjectType = 'EffectiveNullSession'
+                FoundText         = 'null session configuration'
+                NoneActiveText    = 'No null session setting is deployed by a policy that is linked and enabled - the domain controllers keep the OS defaults'
+                NoneFoundText     = 'No null session setting found in any GPO - the domain controllers keep the OS defaults'
+                NoneClass         = 'Note'
+                ValueClass        = @{
+                    anonymousSamEnumeration     = $nullSessionClass
+                    anonymousSidNameTranslation = $nullSessionClass
                 }
-                $split = Split-GPOFindingByReach -Finding $gpoFindings -GPOStatusMap $gpoStatusMap `
-                    -GPOLinkage $gpoLinkage -Scope 'Machine' -GuidProperty 'Name'
-                $shown = if ($IncludeInactive) { @($gpoFindings) } else { @($split.Active) }
-                Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
-                    -Dormant $split.Dormant -Listed:$IncludeInactive
-                if (@($shown).Count -gt 0) {
-                    Show-Line "Found LDAP security configuration in $(@($shown).Count) GPO(s):" -Class Hint
-                } else {
-                    Show-Line "No LDAP security configuration is deployed by a policy that is linked and enabled - all $dcCount DC(s) potentially vulnerable" -Class Finding
-                }
-                foreach ($gpoFinding in $shown) {
-                    $gpoFinding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LDAPConfigGPO' -Force
-                    if (@($split.Inactive) -contains $gpoFinding) {
-                        Show-Object $gpoFinding -Class Note
-                    } else {
-                        Show-Object $gpoFinding -Class Hint
-                    }
-                }
-                if ($null -ne $gpoLinkage) {
-                    $posture = [PSCustomObject]@{
-                        LDAPSigning                 = $(if ($settingWinners['LDAPSigning']) { $settingWinners['LDAPSigning'].LDAPSigning } else { 'Not Configured' })
-                        ChannelBinding              = $(if ($settingWinners['ChannelBinding']) { $settingWinners['ChannelBinding'].ChannelBinding } else { 'Not Configured' })
-                        anonymousSamEnumeration     = $(if ($settingWinners['anonymousSamEnumeration']) { $settingWinners['anonymousSamEnumeration'].anonymousSamEnumeration } else { 'Not Configured' })
-                        anonymousSidNameTranslation = $(if ($settingWinners['anonymousSidNameTranslation']) { $settingWinners['anonymousSidNameTranslation'].anonymousSidNameTranslation } else { 'Not Configured' })
-                        decidedBy                   = Get-GPOSettingPostureSource -Setting $ldapSettings -Winner $settingWinners
-                    }
-                    $posture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveLDAPConfig' -Force
-                    $postureClasses = @(
-                        $(switch ($posture.LDAPSigning) { 'Required' { 'Secure' } 'Optional' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } })
-                        $(switch ($posture.ChannelBinding) { 'Always' { 'Secure' } 'When Supported' { 'Hint' } 'Not Configured' { 'Hint' } default { 'Finding' } })
-                        $(if ($posture.anonymousSamEnumeration -eq 'Allowed') { 'Hint' } else { 'Secure' })
-                        $(if ($posture.anonymousSidNameTranslation -eq 'Allowed') { 'Hint' } else { 'Secure' })
-                    )
-                    $postureClass = if ($postureClasses -contains 'Finding') { 'Finding' } elseif ($postureClasses -contains 'Hint') { 'Hint' } else { 'Secure' }
-                    Show-Line "In force on the domain controllers, by policy precedence:" -Class $postureClass
-                    Show-Object $posture -Class $postureClass
-                }
-            } else {
-                Show-Line "No LDAP Security configuration found in any GPO - all $dcCount DC(s) potentially vulnerable" -Class Finding
             }
+            Show-DCPolicySettingSection -Finding $nullSessionFindings -GPOStatusMap $gpoStatusMap -IncludeInactive:$IncludeInactive @nullSessionSection
         } catch {
             Write-Log "[Get-LDAPConfiguration] Error: $_" -Level Error
             Show-Line "Error during check - the LDAP signing and channel binding configuration could not be evaluated: $_" -Class Finding
@@ -95309,7 +95429,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-1305"
+$Script:adPEASVersion = "2.7.0+20261020-1343"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

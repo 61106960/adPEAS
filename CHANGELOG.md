@@ -1377,6 +1377,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   a short name left a wide gap, and a name of 39 characters or more ran into its GUID with
   no gap at all - "GLOBAL_Default Domain Controllers Policy{6AC1786C-...}".
 
+- **The null session settings have a section of their own in `Get-LDAPConfiguration`.**
+  `anonymousSamEnumeration` (RestrictAnonymous) and `anonymousSidNameTranslation`
+  (LSAAnonymousNameLookup) are SMB and RPC controls, but they were rows of the LDAP
+  section: a policy that set only one of them was listed as an LDAP configuration GPO
+  with signing and channel binding "Not Configured", and the LDAP "In force on the domain
+  controllers" block could read "decidedBy: Default Domain Policy (anonymous SID/name
+  translation)" under two LDAP values nobody had set. The SYSVOL scan is shared; the two
+  values are reported in *Analyzing null session settings via GPO (SYSVOL)* with their own
+  policy rows, held-back policies and block of values in force, and the LDAP section shows
+  only the policies that set LDAP signing or channel binding. An unset null session value
+  in force is neutral - the domain controllers keep the OS default - where the LDAP block
+  used to count it as secure.
+
 ---
 
 ## [2.7.0] - 2026-10-08

@@ -169,7 +169,15 @@ $Script:PrimaryAttributes = @{
     # LDAP Configuration GPO (only LDAP-relevant attributes, no SMB)
     LDAPConfigGPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
-        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+        'LDAPSigning', 'ChannelBinding',
+        'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
+    )
+
+    # Null session settings in a GPO (Get-LDAPConfiguration). They used to be rows of
+    # LDAPConfigGPO; they are SMB and RPC controls and have a section of their own.
+    NullSessionGPO = @(
+        'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
+        'anonymousSamEnumeration', 'anonymousSidNameTranslation',
         'LinkedOUs', 'GPOStatus', 'EffectiveSetting'
     )
 
@@ -350,8 +358,13 @@ $Script:PrimaryAttributes = @{
     # Effective LDAP Security Configuration - what is in force on the domain controllers,
     # value by value, by policy precedence (Get-LDAPConfiguration)
     EffectiveLDAPConfig = @(
-        'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation',
+        'LDAPSigning', 'ChannelBinding',
         'decidedBy'
+    )
+
+    # The same for the two null session settings (Get-LDAPConfiguration)
+    EffectiveNullSession = @(
+        'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'decidedBy'
     )
 
     # The same for SMB signing (Get-SMBSigningStatus)
@@ -705,8 +718,10 @@ Remove-Variable -Name tier0AccountRows
 $Script:StrictAttributeTypes = @(
     'SMBSigning',
     'LDAPConfigGPO',
+    'NullSessionGPO',
     'AddComputerGPO',
     'EffectiveLDAPConfig',
+    'EffectiveNullSession',
     'EffectiveSMBSigning',
     'EffectiveSMBSigningMembers',
     'LDAPStatisticsModule',
@@ -742,6 +757,7 @@ $Script:AttributeLabels = @{
     GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     LDAPConfigGPO  = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
+    NullSessionGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     AddComputerGPO = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
 }
 
@@ -868,8 +884,9 @@ function Get-ObjectTypeForOrdering {
         return 'SitesSubnets'
     }
 
-    # Effective LDAP Security Configuration
-    if ($Object.LDAPSigning -and $Object.ChannelBinding -and $Object.anonymousSamEnumeration -and -not $Object.gPCFileSysPath) {
+    # Effective LDAP Security Configuration. The null session values are no rows of it any
+    # more, so they cannot be part of how it is recognised.
+    if ($Object.LDAPSigning -and $Object.ChannelBinding -and -not $Object.gPCFileSysPath) {
         return 'EffectiveLDAPConfig'
     }
 
