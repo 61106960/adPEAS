@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 12:56:44
-    Version: 2.7.0+20261020-1256
+    Build: 2026-10-20 13:05:52
+    Version: 2.7.0+20261020-1305
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -84438,7 +84438,7 @@ function Split-GPOFindingByReach {
     the name and the GUID, because the name is what a reader recognises and the GUID is the
     folder under \\<domain>\SYSVOL\<domain>\Policies\ they need in order to go and look.
 
-    Laid out as every other adPEAS row is: display name left, GUID on column 45. When both
+    Laid out as display name, a space, GUID. When both
     reasons occur the rows are grouped under a header naming the reason and its count, and
     the summary above drops the reason rather than stating it twice; one reason needs no
     header, so the summary keeps the sentence and the rows follow it directly.
@@ -84461,8 +84461,8 @@ function Split-GPOFindingByReach {
 
     Group:       Dormant policies - not linked
     Count:       2 policies
-    Policies:    Example Policy A    {11111111-1111-1111-1111-111111111111}
-                 Example Policy B    {22222222-2222-2222-2222-222222222222}
+    Policies:    Example Policy A {11111111-1111-1111-1111-111111111111}
+                 Example Policy B {22222222-2222-2222-2222-222222222222}
 #>
 function Show-GPOInactiveSummary {
     [CmdletBinding()]
@@ -84571,7 +84571,7 @@ function Show-GPOInactiveSummary {
     in full, so a card each would put back the noise the grouping removed.
 
     The policies are deduplicated and sorted by Get-GPOPolicySummary and laid into one newline-
-    joined attribute, rendered the way domainControllers is - name left, GUID on column 45.
+    joined attribute, rendered the way domainControllers is - name, a space, GUID.
 
 .PARAMETER Group
     The heading: "Dormant policies - not linked", "Assignments that only remove default holders".
@@ -84610,14 +84610,14 @@ function Show-GPOSuppressedGroup {
     $rows = @(Get-GPOPolicySummary -Finding $Policy)
     if ($rows.Count -eq 0) { return }
 
-    # Name left, GUID on column 45 - the same grid the dormant list used, built here so the
-    # policies travel as one attribute value rather than one Show-Line each. The object renderer
-    # adds the "[*] " prefix and the indent on top, so the field width is 45 minus those six.
-    $nameWidth = 45 - 4 - 2
+    # Name, a space, GUID - one line per policy, so the policies travel as one attribute value
+    # rather than one Show-Line each. The GUID used to start on column 45: GPO names vary so
+    # much in length that the column left a wide gap after a short name, and a name of 39
+    # characters or more ran straight into the GUID with no gap at all.
     $lines = foreach ($row in $rows) {
         $guid = "$($row.GPOGUID)"; if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
         $name = "$($row.GPOName)"; if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
-        $name.PadRight($nameWidth) + $guid
+        "$name $guid"
     }
 
     $card = [PSCustomObject]@{
@@ -148583,7 +148583,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1256"
+$Script:adPEASVersion = "2.7.0+20261020-1305"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

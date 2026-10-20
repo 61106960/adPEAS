@@ -54708,11 +54708,10 @@ function Show-GPOSuppressedGroup {
     )
     $rows = @(Get-GPOPolicySummary -Finding $Policy)
     if ($rows.Count -eq 0) { return }
-    $nameWidth = 45 - 4 - 2
     $lines = foreach ($row in $rows) {
         $guid = "$($row.GPOGUID)"; if ([string]::IsNullOrWhiteSpace($guid)) { $guid = '(GUID unknown)' }
         $name = "$($row.GPOName)"; if ([string]::IsNullOrWhiteSpace($name)) { $name = '(name unavailable)' }
-        $name.PadRight($nameWidth) + $guid
+        "$name $guid"
     }
     $card = [PSCustomObject]@{
         Group    = $Group
@@ -95310,7 +95309,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-1256"
+$Script:adPEASVersion = "2.7.0+20261020-1305"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

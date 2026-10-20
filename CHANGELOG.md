@@ -1372,6 +1372,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   tooltip. The sentence row `trustRisk` that repeated a finding under it is gone; the
   card of the trust type says what "within the forest" means.
 
+- **A held-back policy reads as its name, a space and its GUID.** The `Policies` row of the
+  dormant policy card put the GUID on column 45. GPO names differ so much in length that
+  a short name left a wide gap, and a name of 39 characters or more ran into its GUID with
+  no gap at all - "GLOBAL_Default Domain Controllers Policy{6AC1786C-...}".
+
 ---
 
 ## [2.7.0] - 2026-10-08
