@@ -71493,7 +71493,9 @@ function Get-AddComputerRights {
 	            }
 	        }
 	        $gpoFindings = @(Check-GPOAddComputerRights -DomainFQDN $domainFQDN @connectionParams)
-	        $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
+	        $effectiveGPO = @($gpoFindings | Where-Object {
+	            $_._IsEffective -eq $true -and $_._PrecedenceScope -in @('DomainControllers', 'Domain')
+	        })[0]
 	        $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
 	        if ($quotaValue -eq 0) {
 	            Show-Line "ms-DS-MachineAccountQuota is 0 - computer creation restricted to explicit permissions" -Class Secure
@@ -71578,7 +71580,7 @@ function Get-AddComputerRights {
 	                -Disabled @($inactiveGPOs | Where-Object { -not $_._ReachUnlinked }).Count `
 	                -Dormant $dormantGPOs `
 	                -Listed:$IncludeInactive
-	            $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+	            $lineClass = if ($effectiveIsDangerous -or -not $effectiveGPO) { "Hint" } else { "Secure" }
 	            if (@($shownGPOs).Count -gt 0) {
 	                Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
 	            } else {
@@ -71588,11 +71590,11 @@ function Get-AddComputerRights {
 	            $sortedGPOs = @($shownGPOs | Sort-Object @{Expression={$scopePriorityMap[$_._PrecedenceScope]}}, _PrecedenceOrder)
 	            foreach ($gpo in $sortedGPOs) {
 	                $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
-	                $isEffective = $gpo._IsEffective -eq $true
+	                $isWinner = $effectiveGPO -and ("$($gpo.Name)" -eq "$($effectiveGPO.Name)")
 	                $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
 	                $objectClass = if ($gpo._ReachInactive) {
 	                    'Note'
-	                } elseif ($isEffective) {
+	                } elseif ($isWinner) {
 	                    if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
 	                } else {
 	                    if ($isDangerous) { "Hint" } else { "Standard" }
@@ -92513,7 +92515,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1621"
+$Script:adPEASVersion = "2.7.0+20261020-1648"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

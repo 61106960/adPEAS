@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 16:21:03
-    Version: 2.7.0+20261020-1621
+    Build: 2026-10-20 16:48:26
+    Version: 2.7.0+20261020-1648
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -116979,7 +116979,17 @@ function Get-AddComputerRights {
             # The quota is a ceiling on a privilege, not the privilege. The finding
             # definition has said so since it was written ("This alone does not grant
             # computer creation rights - it requires the SeMachineAccountPrivilege").
-            $effectiveGPO = @($gpoFindings | Where-Object { $_._IsEffective -eq $true })[0]
+            #
+            # The winner of the contest for the domain controllers: the policies linked at
+            # the Domain Controllers OU and at the domain root. Check-GPOAddComputerRights
+            # also marks a policy linked to an ordinary OU effective - it applies there -
+            # and the first such one in SYSVOL order used to stand in for the winner. The
+            # privilege takes effect on a domain controller only, so a policy on a
+            # workstation OU that restricts it read "Only Administrators" beside a
+            # domain controllers policy that grants it to Authenticated Users.
+            $effectiveGPO = @($gpoFindings | Where-Object {
+                $_._IsEffective -eq $true -and $_._PrecedenceScope -in @('DomainControllers', 'Domain')
+            })[0]
             $effectiveIsDangerous = $effectiveGPO -and ($effectiveGPO._HasAuthenticatedUsers -or $effectiveGPO._HasEveryone)
 
             # ===== Step 4: Output findings as objects =====
@@ -117136,7 +117146,9 @@ function Get-AddComputerRights {
                     -Dormant $dormantGPOs `
                     -Listed:$IncludeInactive
 
-                $lineClass = if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
+                # Without a winner the Windows default holds on the domain controllers, and
+                # that grants the privilege to Authenticated Users.
+                $lineClass = if ($effectiveIsDangerous -or -not $effectiveGPO) { "Hint" } else { "Secure" }
                 if (@($shownGPOs).Count -gt 0) {
                     Show-Line "Found $(@($shownGPOs).Count) GPO(s) configuring SeMachineAccountPrivilege:" -Class $lineClass
                 } else {
@@ -117152,14 +117164,17 @@ function Get-AddComputerRights {
                 foreach ($gpo in $sortedGPOs) {
                     $gpo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AddComputerGPO' -Force
 
-                    $isEffective = $gpo._IsEffective -eq $true
+                    # Green or yellow as the winner only: a policy on an ordinary OU is
+                    # effective there, and restricting the privilege where it does not take
+                    # effect protects nothing.
+                    $isWinner = $effectiveGPO -and ("$($gpo.Name)" -eq "$($effectiveGPO.Name)")
                     $isDangerous = $gpo._HasAuthenticatedUsers -or $gpo._HasEveryone
                     $objectClass = if ($gpo._ReachInactive) {
                         # Grey whatever the accounts say: the privilege is granted to nobody
                         # while the policy reaches nothing, and EffectiveSetting on the row
                         # says why.
                         'Note'
-                    } elseif ($isEffective) {
+                    } elseif ($isWinner) {
                         if ($effectiveIsDangerous) { "Hint" } else { "Secure" }
                     } else {
                         if ($isDangerous) { "Hint" } else { "Standard" }
@@ -149054,7 +149069,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1621"
+$Script:adPEASVersion = "2.7.0+20261020-1648"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

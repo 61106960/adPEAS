@@ -1252,6 +1252,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `whoCanAddComputers` and `privilegeGrantedBy`: the winning policy and the accounts it
   grants or restricts the privilege to, or the Windows default when no policy sets it.
 
+- **`Get-AddComputerRights` names the policy that decides on the domain controllers.**
+  The quota statement took the first policy marked effective, and a policy linked to an
+  ordinary OU is effective there - so with one on a workstation OU that restricts
+  `SeMachineAccountPrivilege` to Administrators ahead of it in SYSVOL, the report read
+  "Only Administrators - no other account can use the quota" while the domain controllers
+  policy granted the privilege to Authenticated Users. The privilege takes effect on a
+  domain controller only, so the statement now rests on the policy that wins at the Domain
+  Controllers OU and the domain root, or on the Windows default without one. A policy on
+  an ordinary OU is no longer rendered green as the control, and the line announcing the
+  policies is a hint where none decides for the domain controllers.
+
 - **A Tier-0 account in `Get-ProtectedUsersStatus` shows the groups that make it one.**
   The account object carried `tier0Groups` and, for an account the metric leaves out,
   `excludedReason`, but the Tier-0 type had no row list of its own, so the account
