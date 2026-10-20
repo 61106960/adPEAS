@@ -35,7 +35,9 @@ function Get-TrustSIDFilteringVerdict {
     The decoded trustAttributes flags.
 
     .OUTPUTS
-    Hashtable with Status, Risk and Severity. Risk is $null when there is nothing to say.
+    Hashtable with Status and Severity. Status is the value of the sidFiltering row on the
+    trust, short on purpose: its first word carries the trigger, and what it means for the
+    domain is the card behind it.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -58,49 +60,50 @@ function Get-TrustSIDFilteringVerdict {
     # Only a trust this domain extends can be abused against this domain.
     $weTrustThem = ($Direction -eq 'Outbound' -or $Direction -eq 'Bidirectional')
 
+    # Within one forest SID history from the partner IS honoured here - whoever controls
+    # one of its domains can reach the others. That is the design rather than a setting,
+    # so the row says it neutrally and the card of the trust type explains it.
     if ($withinForest) {
         return @{
-            Status   = 'Not applicable - both domains are in one forest, which is a single security boundary'
-            Risk     = $null
+            Status   = 'Not applied - within the forest'
             Severity = 'Note'
         }
     }
 
     if (-not $weTrustThem) {
         return @{
-            Status   = "Not applicable - this domain does not trust the partner (direction: $Direction)"
-            Risk     = $null
+            Status   = 'Not applicable - this domain does not trust the partner'
             Severity = 'Note'
         }
     }
 
     if ($forestTrust) {
         if ($asExternal) {
+            # SID history naming any domain of the trusted forest is honoured here.
             return @{
-                Status   = 'Weakened - TREAT_AS_EXTERNAL downgrades the forest trust to external filtering'
-                Risk     = 'This domain trusts the partner forest and TREAT_AS_EXTERNAL is set, so SID history naming any domain of that forest is honoured here. A Domain Admin SID of this domain injected on the other side is accepted.'
+                Status   = 'Weakened - TREAT_AS_EXTERNAL'
                 Severity = 'Finding'
             }
         }
+        # A forest trust filters SIDs from outside the trusted forest by default.
         return @{
-            Status   = 'Enabled - a forest trust filters SIDs from outside the trusted forest by default'
-            Risk     = $null
+            Status   = 'Enabled - forest trust'
             Severity = 'Note'
         }
     }
 
-    # An external or realm trust. Quarantine is the default and its absence is the finding.
+    # An external or realm trust. Quarantine is the default and its absence is the
+    # finding: a principal there can carry a SID of this domain in its token, and this
+    # domain honours it.
     if (-not $quarantined) {
         return @{
-            Status   = 'DISABLED - QUARANTINED_DOMAIN is not set on an external trust'
-            Risk     = 'This domain trusts the partner and SID filtering is off, so a principal there can carry a SID of this domain in its token and this domain will honour it. Whoever controls the trusted domain controls this one.'
+            Status   = 'DISABLED - QUARANTINED_DOMAIN not set'
             Severity = 'Finding'
         }
     }
 
     return @{
-        Status   = 'Enabled - QUARANTINED_DOMAIN is set'
-        Risk     = $null
+        Status   = 'Enabled - QUARANTINED_DOMAIN set'
         Severity = 'Note'
     }
 }
@@ -126,6 +129,8 @@ function Get-DomainTrusts {
     - Which filter applies. An external trust carries QUARANTINED_DOMAIN by default and its
       absence means filtering was switched off. A forest trust filters differently, and
       TREAT_AS_EXTERNAL is what weakens it to external semantics.
+
+    The verdict is the sidFiltering row of each trust.
 
     Also reported: the encryption types Kerberos may use across each trust, read from
     msDS-SupportedEncryptionTypes on the trust object - a trust without it supports RC4 and
@@ -213,8 +218,6 @@ function Get-DomainTrusts {
                     }
                 }
 
-                $riskyTrusts = 0
-                $weakKeyTrusts = 0
                 $staleTrusts = 0
                 foreach ($trust in $trusts) {
                     # trustDirection, trustType and trustAttributes are already decoded
@@ -256,12 +259,15 @@ function Get-DomainTrusts {
                     # The verdict the attributes above exist for. Collected and never drawn
                     # until now: every trust went out as a flat list of flags, and the one
                     # combination that matters was left for the reader to spot.
+                    #
+                    # It belongs to the trust, so it is a row of the trust - on every one,
+                    # not only where it is a finding. A summary line under all trusts used
+                    # to say "No trust lets SID history from another domain reach this
+                    # one" wherever none was a finding, which is false for a trust within
+                    # the forest: there nothing is filtered. The sentence row that explained
+                    # a finding is gone too; the card behind the value says it.
                     $verdict = Get-TrustSIDFilteringVerdict -Direction $direction -AttributeFlag $attrFlags
                     $trustObject | Add-Member -NotePropertyName 'sidFiltering' -NotePropertyValue $verdict.Status -Force
-                    if ($verdict.Risk) {
-                        $riskyTrusts++
-                        $trustObject | Add-Member -NotePropertyName 'trustRisk' -NotePropertyValue $verdict.Risk -Force
-                    }
 
                     # The domain SID of the partner - the SIDs SID filtering keeps out or lets
                     # in begin with it.
@@ -351,7 +357,6 @@ function Get-DomainTrusts {
                     # The class of the object: the SID filtering verdict, raised to a hint
                     # by a key without AES or a password that is no longer changed.
                     $objectClass = $verdict.Severity
-                    if ($keyWeakness) { $weakKeyTrusts++ }
                     if ($passwordStale) { $staleTrusts++ }
                     if (($keyWeakness -or $passwordStale) -and $objectClass -ne 'Finding') { $objectClass = 'Hint' }
 
@@ -360,14 +365,8 @@ function Get-DomainTrusts {
 
                 }
 
-                if ($riskyTrusts -gt 0) {
-                    Show-Line "$riskyTrusts of them let SID history from the other side reach this domain - whoever controls that domain controls this one" -Class Finding
-                } else {
-                    Show-Line "No trust lets SID history from another domain reach this one" -Class Secure
-                }
-                if ($weakKeyTrusts -gt 0) {
-                    Show-Line "$weakKeyTrusts of them allow no AES for Kerberos across the trust" -Class Hint -FindingId 'TRUST_USES_RC4'
-                }
+                # No summary of the SID filtering verdicts or of the encryption types: each
+                # is a row of its trust, coloured there and with its card behind it.
                 if ($staleTrusts -gt 0) {
                     Show-Line "$staleTrusts of them have a trust password that has not changed for $staleTrustPasswordDays days or more" -Class Hint -FindingId 'TRUST_PASSWORD_STALE'
                 }

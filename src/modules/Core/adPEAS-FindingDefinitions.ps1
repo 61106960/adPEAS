@@ -7701,8 +7701,8 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Mimikatz", "Rubeus")
         MITRE = "T1134.005"
         Triggers = @(
-            # The verdict is on trustRisk, which Get-TrustSIDFilteringVerdict sets only
-            # where the combination is actually dangerous.
+            # The verdict is on sidFiltering, whose value Get-TrustSIDFilteringVerdict
+            # starts with DISABLED only where the combination is actually dangerous.
             #
             # It used to hang off isQuarantined being False, guarded only against a
             # within-forest trust, and that got two cases wrong in opposite directions. A
@@ -7712,18 +7712,14 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             # to skip the colour. And an inbound-only trust was reported although the
             # exposure belongs to the partner: inbound means they trust us.
             #
-            # The card, though, follows the regime rather than the risk sentence. Two
-            # combinations set trustRisk - an external trust without quarantine, and a
-            # forest trust carrying TREAT_AS_EXTERNAL - and they are undone by different
-            # commands, so a single card on trustRisk handed one of the two a remediation
-            # that cannot work on it: netdom /quarantine:yes is not the lever on a forest
-            # trust. sidFiltering states which regime applies, in a prefix
+            # The card follows the regime. Two combinations are dangerous - an external
+            # trust without quarantine, and a forest trust carrying TREAT_AS_EXTERNAL - and
+            # they are undone by different commands; a single card on a shared risk
+            # sentence (trustRisk, gone) handed one of the two a remediation that cannot
+            # work on it: netdom /quarantine:yes is not the lever on a forest trust.
+            # sidFiltering states which regime applies, in a prefix
             # Get-TrustSIDFilteringVerdict writes; the forest half is TRUST_TREAT_AS_EXTERNAL.
             @{ Attribute = 'sidFiltering'; Pattern = '^DISABLED'; Severity = 'Finding' }
-
-            # The risk sentence stays red wherever it appears and names no card of its
-            # own - the regime line above has already supplied one.
-            @{ Attribute = 'trustRisk'; Severity = 'Finding'; SeverityOnly = $true }
 
             # Filtering in force, on either kind of trust. The external case also has the
             # bit itself below, but a forest trust does not carry QUARANTINED_DOMAIN at
@@ -8073,9 +8069,9 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             # The definition used to read this flag as a hardening measure, Risk Secure
             # and "No action required - this is a recommended security configuration",
             # which is the opposite of what it does. The same module already knew: its
-            # own trustRisk line says "Weakened - TREAT_AS_EXTERNAL downgrades the forest
-            # trust to external filtering". Both appeared on the same trust object, the
-            # green one carrying the tooltip that closed the subject.
+            # own sidFiltering row says "Weakened - TREAT_AS_EXTERNAL". Both appeared on
+            # the same trust object, the green one carrying the tooltip that closed the
+            # subject.
             @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
 
             # And the verdict line, so the row naming the regime carries this card instead

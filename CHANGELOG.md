@@ -345,8 +345,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   AES is a hint - including one without the attribute, which supports RC4 and no AES
   (KB4492348); Microsoft's 2026 change to AES by default covers accounts, not trusts
   (CVE-2026-20833). The value is coloured and carries the card as its tooltip in the HTML
-  report; the sentence row `trustKeyWeakness` that repeated it under the value is gone. A
-  line counts such trusts. The RC4 attribute bit keeps its meaning on a realm trust to MIT
+  report; the sentence row `trustKeyWeakness` that repeated it under the value is gone, and
+  so is a line under all trusts counting them. The RC4 attribute bit keeps its meaning on a realm trust to MIT
   Kerberos without the attribute, where the row reads "RC4"; on any other trust the
   card says it is left over. The card *Trust Without AES for
   Kerberos* no longer claims offline cracking of an Active Directory trust key, whose
@@ -1354,6 +1354,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   constant name of what the words before it already said. It reads "Active Directory"
   and "Windows NT" now. Value 5, a partner in Entra ID (MS-ADTS 6.1.6.7.15), was shown as
   "Unknown (5)" and reads "Entra ID"; the BloodHound export maps it back to 5.
+
+- **SID filtering is a row of each trust, and no longer a claim about all of them.**
+  `Get-DomainTrusts` closed with "No trust lets SID history from another domain reach
+  this one" wherever no trust was a finding - also for a trust within the forest, where
+  nothing is filtered and SID history from the other domain is honoured. The line is gone,
+  as is its counterpart that counted the trusts where it is a finding. `sidFiltering` is
+  shown on every trust instead, with a short value - "Not applied - within the forest",
+  "DISABLED - QUARANTINED_DOMAIN not set", "Weakened - TREAT_AS_EXTERNAL", "Enabled -
+  forest trust" - coloured where it is a finding or secure, and with the card as its
+  tooltip. The sentence row `trustRisk` that repeated a finding under it is gone; the
+  card of the trust type says what "within the forest" means.
 
 ---
 

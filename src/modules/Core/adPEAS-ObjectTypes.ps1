@@ -162,7 +162,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "All inbound, outbound, and bidirectional trusts"
             "Trust type (forest, external, shortcut)"
-            "SID filtering status (quarantine)"
+            "SID filtering, per trust (sidFiltering): whether SID history from the partner is filtered here. 'Not applied - within the forest' means it is honoured - a forest is one security boundary, and whoever controls one of its domains can reach the others. On a trust this domain does not extend, the exposure is the partner's"
             "Selective authentication settings"
             "Trust transitivity"
             "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object). 'Not set' means RC4 and no AES. The USES_RC4_ENCRYPTION bit in trustAttributes is defined for a realm trust to MIT Kerberos only; on any other trust it says nothing about the key"

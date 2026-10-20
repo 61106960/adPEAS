@@ -3583,6 +3583,7 @@ $Script:PrimaryAttributes = @{
         'trustDirection',
         'trustType',
         'trustAttributes',
+        'sidFiltering',
         'trustEncryptionTypes',
         'trustPasswordLastSet'
     )
@@ -11373,7 +11374,6 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1134.005"
         Triggers = @(
             @{ Attribute = 'sidFiltering'; Pattern = '^DISABLED'; Severity = 'Finding' }
-            @{ Attribute = 'trustRisk'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'sidFiltering'; Pattern = '^Enabled'; Severity = 'Secure'; SeverityOnly = $true }
             @{ Attribute = 'isQuarantined'; Pattern = '^True$'; Severity = 'Secure'; SeverityOnly = $true }
         )
@@ -20762,7 +20762,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "All inbound, outbound, and bidirectional trusts"
             "Trust type (forest, external, shortcut)"
-            "SID filtering status (quarantine)"
+            "SID filtering, per trust (sidFiltering): whether SID history from the partner is filtered here. 'Not applied - within the forest' means it is honoured - a forest is one security boundary, and whoever controls one of its domains can reach the others. On a trust this domain does not extend, the exposure is the partner's"
             "Selective authentication settings"
             "Trust transitivity"
             "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object). 'Not set' means RC4 and no AES. The USES_RC4_ENCRYPTION bit in trustAttributes is defined for a realm trust to MIT Kerberos only; on any other trust it says nothing about the key"
@@ -68216,42 +68216,36 @@ function Get-TrustSIDFilteringVerdict {
     $weTrustThem = ($Direction -eq 'Outbound' -or $Direction -eq 'Bidirectional')
     if ($withinForest) {
         return @{
-            Status   = 'Not applicable - both domains are in one forest, which is a single security boundary'
-            Risk     = $null
+            Status   = 'Not applied - within the forest'
             Severity = 'Note'
         }
     }
     if (-not $weTrustThem) {
         return @{
-            Status   = "Not applicable - this domain does not trust the partner (direction: $Direction)"
-            Risk     = $null
+            Status   = 'Not applicable - this domain does not trust the partner'
             Severity = 'Note'
         }
     }
     if ($forestTrust) {
         if ($asExternal) {
             return @{
-                Status   = 'Weakened - TREAT_AS_EXTERNAL downgrades the forest trust to external filtering'
-                Risk     = 'This domain trusts the partner forest and TREAT_AS_EXTERNAL is set, so SID history naming any domain of that forest is honoured here. A Domain Admin SID of this domain injected on the other side is accepted.'
+                Status   = 'Weakened - TREAT_AS_EXTERNAL'
                 Severity = 'Finding'
             }
         }
         return @{
-            Status   = 'Enabled - a forest trust filters SIDs from outside the trusted forest by default'
-            Risk     = $null
+            Status   = 'Enabled - forest trust'
             Severity = 'Note'
         }
     }
     if (-not $quarantined) {
         return @{
-            Status   = 'DISABLED - QUARANTINED_DOMAIN is not set on an external trust'
-            Risk     = 'This domain trusts the partner and SID filtering is off, so a principal there can carry a SID of this domain in its token and this domain will honour it. Whoever controls the trusted domain controls this one.'
+            Status   = 'DISABLED - QUARANTINED_DOMAIN not set'
             Severity = 'Finding'
         }
     }
     return @{
-        Status   = 'Enabled - QUARANTINED_DOMAIN is set'
-        Risk     = $null
+        Status   = 'Enabled - QUARANTINED_DOMAIN set'
         Severity = 'Note'
     }
 }
@@ -68293,8 +68287,6 @@ function Get-DomainTrusts {
                         $trustAccounts = $null
                     }
                 }
-                $riskyTrusts = 0
-                $weakKeyTrusts = 0
                 $staleTrusts = 0
                 foreach ($trust in $trusts) {
                     $direction = $trust.trustDirection
@@ -68326,10 +68318,6 @@ function Get-DomainTrusts {
                     }
                     $verdict = Get-TrustSIDFilteringVerdict -Direction $direction -AttributeFlag $attrFlags
                     $trustObject | Add-Member -NotePropertyName 'sidFiltering' -NotePropertyValue $verdict.Status -Force
-                    if ($verdict.Risk) {
-                        $riskyTrusts++
-                        $trustObject | Add-Member -NotePropertyName 'trustRisk' -NotePropertyValue $verdict.Risk -Force
-                    }
                     if ($trust.securityIdentifier) {
                         $trustObject | Add-Member -NotePropertyName 'partnerDomainSID' -NotePropertyValue ([string]$trust.securityIdentifier) -Force
                     }
@@ -68381,19 +68369,10 @@ function Get-DomainTrusts {
                         $keyWeakness = $true
                     }
                     $objectClass = $verdict.Severity
-                    if ($keyWeakness) { $weakKeyTrusts++ }
                     if ($passwordStale) { $staleTrusts++ }
                     if (($keyWeakness -or $passwordStale) -and $objectClass -ne 'Finding') { $objectClass = 'Hint' }
                     $trustObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DomainTrust' -Force
                     Show-Object $trustObject -Class $objectClass
-                }
-                if ($riskyTrusts -gt 0) {
-                    Show-Line "$riskyTrusts of them let SID history from the other side reach this domain - whoever controls that domain controls this one" -Class Finding
-                } else {
-                    Show-Line "No trust lets SID history from another domain reach this one" -Class Secure
-                }
-                if ($weakKeyTrusts -gt 0) {
-                    Show-Line "$weakKeyTrusts of them allow no AES for Kerberos across the trust" -Class Hint -FindingId 'TRUST_USES_RC4'
                 }
                 if ($staleTrusts -gt 0) {
                     Show-Line "$staleTrusts of them have a trust password that has not changed for $staleTrustPasswordDays days or more" -Class Hint -FindingId 'TRUST_PASSWORD_STALE'
@@ -95362,7 +95341,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-1159"
+$Script:adPEASVersion = "2.7.0+20261020-1230"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

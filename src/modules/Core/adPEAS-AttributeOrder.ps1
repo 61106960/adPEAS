@@ -327,6 +327,10 @@ $Script:PrimaryAttributes = @{
         'trustDirection',
         'trustType',
         'trustAttributes',
+        # On every trust, not only where it is coloured: "Not applied - within the
+        # forest" is the answer a reader of a child-domain trust needs as much as a red
+        # one, and a summary line under all trusts said the opposite.
+        'sidFiltering',
         'trustEncryptionTypes',
         'trustPasswordLastSet'
     )
