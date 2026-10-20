@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 14:11:00
-    Version: 2.7.0+20261020-1411
+    Build: 2026-10-20 14:34:24
+    Version: 2.7.0+20261020-1434
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -2794,8 +2794,15 @@ function Test-IsWellKnownServiceSID {
 $Script:SecurityScopes = @{
     # ===== DCSync Scope =====
     # Who SHOULD have DCSync rights (DS-Replication-Get-Changes-All)?
-    # Note: Domain Admins CAN have DCSync but should still be flagged
-    # because custom accounts with DCSync are the real risk.
+    #
+    # The built-in Administrator, Domain Admins and Enterprise Admins as well. They used
+    # to be left out on purpose - "should still be flagged because custom accounts with
+    # DCSync are the real risk" - and that put Domain Admins under "Found 1 non-privileged
+    # account(s) with DCSync rights" in a real domain, for an All Extended Rights ACE on
+    # the domain root. All three are members of BUILTIN\Administrators, which holds the
+    # pair by default (Enterprise Admins in every domain of the forest), so an ACE naming
+    # them grants nothing they lack. The real risk the old note named stays a finding: an
+    # ordinary account or group with the rights, whoever its members are.
     'DCSync' = @{
         Description = "Identities that legitimately need DCSync (replication) rights"
         ExpectedSIDs = @(
@@ -2804,7 +2811,10 @@ $Script:SecurityScopes = @{
             'S-1-5-9'         # Enterprise Domain Controllers
         )
         ExpectedRIDSuffixes = @(
-            '-516'    # Domain Controllers
+            '-500',   # Built-in Administrator
+            '-512',   # Domain Admins
+            '-516',   # Domain Controllers
+            '-519'    # Enterprise Admins
         )
         # Read-only domain controllers, by the rights they hold by default and not by
         # SID alone. An RODC needs DS-Replication-Get-Changes on every naming context it
@@ -59178,8 +59188,8 @@ function Test-IsExpectedACLIdentity {
     Returns detailed object instead of just severity string.
 
 .EXAMPLE
-    Test-IsExpectedInScope -Identity "S-1-5-21-xxx-512" -Scope "DCSync"
-    Returns "Finding" - Domain Admins should be flagged for DCSync (even if they have it).
+    Test-IsExpectedInScope -Identity "S-1-5-21-xxx-1105" -Scope "DCSync"
+    Returns "Finding" - an ordinary account holding replication rights is the DCSync case.
 
 .EXAMPLE
     Test-IsExpectedInScope -Identity "S-1-5-18" -Scope "DCSync"
@@ -148798,7 +148808,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1411"
+$Script:adPEASVersion = "2.7.0+20261020-1434"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

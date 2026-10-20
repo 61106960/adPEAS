@@ -670,8 +670,15 @@ function Test-IsWellKnownServiceSID {
 $Script:SecurityScopes = @{
     # ===== DCSync Scope =====
     # Who SHOULD have DCSync rights (DS-Replication-Get-Changes-All)?
-    # Note: Domain Admins CAN have DCSync but should still be flagged
-    # because custom accounts with DCSync are the real risk.
+    #
+    # The built-in Administrator, Domain Admins and Enterprise Admins as well. They used
+    # to be left out on purpose - "should still be flagged because custom accounts with
+    # DCSync are the real risk" - and that put Domain Admins under "Found 1 non-privileged
+    # account(s) with DCSync rights" in a real domain, for an All Extended Rights ACE on
+    # the domain root. All three are members of BUILTIN\Administrators, which holds the
+    # pair by default (Enterprise Admins in every domain of the forest), so an ACE naming
+    # them grants nothing they lack. The real risk the old note named stays a finding: an
+    # ordinary account or group with the rights, whoever its members are.
     'DCSync' = @{
         Description = "Identities that legitimately need DCSync (replication) rights"
         ExpectedSIDs = @(
@@ -680,7 +687,10 @@ $Script:SecurityScopes = @{
             'S-1-5-9'         # Enterprise Domain Controllers
         )
         ExpectedRIDSuffixes = @(
-            '-516'    # Domain Controllers
+            '-500',   # Built-in Administrator
+            '-512',   # Domain Admins
+            '-516',   # Domain Controllers
+            '-519'    # Enterprise Admins
         )
         # Read-only domain controllers, by the rights they hold by default and not by
         # SID alone. An RODC needs DS-Replication-Get-Changes on every naming context it

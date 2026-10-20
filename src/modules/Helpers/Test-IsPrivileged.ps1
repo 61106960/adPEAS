@@ -1279,8 +1279,8 @@ function Test-IsExpectedACLIdentity {
     Returns detailed object instead of just severity string.
 
 .EXAMPLE
-    Test-IsExpectedInScope -Identity "S-1-5-21-xxx-512" -Scope "DCSync"
-    Returns "Finding" - Domain Admins should be flagged for DCSync (even if they have it).
+    Test-IsExpectedInScope -Identity "S-1-5-21-xxx-1105" -Scope "DCSync"
+    Returns "Finding" - an ordinary account holding replication rights is the DCSync case.
 
 .EXAMPLE
     Test-IsExpectedInScope -Identity "S-1-5-18" -Scope "DCSync"

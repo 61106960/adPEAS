@@ -1105,7 +1105,10 @@ $Script:SecurityScopes = @{
 	        'S-1-5-9'
 	    )
 	    ExpectedRIDSuffixes = @(
-	        '-516'
+	        '-500',
+	        '-512',
+	        '-516',
+	        '-519'
 	    )
 	    DefaultRightHolders = @{
 	        '-498' = @('DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-In-Filtered-Set')
@@ -92398,7 +92401,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1411"
+$Script:adPEASVersion = "2.7.0+20261020-1434"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

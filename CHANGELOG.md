@@ -658,6 +658,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   so a second `Connect-adPEAS -License` in the same window connected without it, and the
   report carried the default disclaimer. The license is read after the cleanup now.
 
+- **Domain Admins are no "non-privileged account with DCSync rights".** The DCSync scope
+  of `Get-DangerousACLs` left Domain Admins out of its expected identities on purpose,
+  so an All Extended Rights ACE for them on the domain root came out as "Found 1
+  non-privileged account(s) with DCSync rights". The built-in Administrator, Domain
+  Admins and Enterprise Admins are members of BUILTIN\Administrators, which holds the
+  replication pair by default, so an ACE naming them grants nothing they lack; they are
+  expected now, by RID as on the domain root ACL, and shown with `-IncludePrivileged`.
+  An ordinary account or group with the rights stays a finding.
+
 - **The Exchange permissions model no longer reads a class-scoped ACE as PrivExchange.**
   Exchange setup gives Exchange Trusted Subsystem full control on the domain object
   scoped to the `msExchDynamicDistributionList` class - the right to create and delete
