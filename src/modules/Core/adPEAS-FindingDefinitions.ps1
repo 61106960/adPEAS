@@ -5143,6 +5143,9 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         MITRE = "T1087.002"
         Triggers = @(
             @{ Attribute = 'anonymousNSPIAccess'; Pattern = '^ENABLED'; Severity = 'Finding' }
+            # The secure value of the row, coloured like the one of anonymousLDAPAccess
+            # beside it. It replaced a green sentence line per heuristic.
+            @{ Attribute = 'anonymousNSPIAccess'; Pattern = '^Restricted$'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
@@ -5188,6 +5191,7 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         MITRE = "T1098"
         Triggers = @(
             @{ Attribute = 'adminSDHolderExclusion'; Pattern = ' - not protected by AdminSDHolder$'; Severity = 'Finding' }
+            @{ Attribute = 'adminSDHolderExclusion'; Pattern = '^None$'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
@@ -5239,6 +5243,7 @@ Set-ADComputer -Identity 'TIER0_COMPUTER$' -Replace @{ 'msDS-SupportedEncryption
         MITRE = "T1557"
         Triggers = @(
             @{ Attribute = 'principalNameUniqueness'; Pattern = '^Not checked: '; Severity = 'Finding' }
+            @{ Attribute = 'principalNameUniqueness'; Pattern = '^Checked$'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 

@@ -164,63 +164,22 @@ function Get-LDAPConfiguration {
 
                     if (-not $dirService) {
                         Show-Line "The Directory Service object could not be read - dsHeuristics, which decides $unreadHeuristics, is unknown" -Class Note
-                    } elseif ([string]::IsNullOrWhiteSpace($dsHeuristics)) {
-                        # An unset attribute is the default, and the default of every
-                        # heuristic read here is its secure value.
-                        Show-Line "dsHeuristics is not set - the secure default for anonymous LDAP and NSPI access, AdminSDHolder and UPN/SPN uniqueness" -Class Secure
                     } else {
+                        # One object with a row per heuristic, set or not - an unset
+                        # attribute is the default, and the default of every heuristic read
+                        # here is its secure value. A sentence line per heuristic used to
+                        # stand above the object and say what its rows say; the values carry
+                        # the colour and the card now, and the card of the type says which
+                        # character each row reads.
                         $heuristics = ConvertFrom-DSHeuristics -Value $dsHeuristics
-                        $hasFinding = $false
-                        $hasUnknown = $false
-
-                        # Character 7. What an unauthenticated client can then read is the
-                        # card's job.
-                        if ($heuristics.AnonymousLDAP) {
-                            $hasFinding = $true
-                            Show-Line "Anonymous LDAP operations are ENABLED - dsHeuristics character 7 is 2" -Class Finding -FindingId 'LDAP_ANONYMOUS_BINDING_ALLOWED'
-                        } else {
-                            Show-Line "Anonymous LDAP operations are blocked - dsHeuristics character 7 is '$($heuristics.AnonymousLDAPCharacter)', not 2" -Class Secure
-                        }
-
-                        # Character 8.
-                        if ($heuristics.AnonymousNSPI) {
-                            $hasFinding = $true
-                            Show-Line "Anonymous NSPI access is ENABLED - dsHeuristics character 8 is '$($heuristics.AnonymousNSPICharacter)', not 0" -Class Finding -FindingId 'DSHEURISTICS_ANONYMOUS_NSPI'
-                        } else {
-                            Show-Line "Anonymous NSPI access is blocked - dsHeuristics character 8 is 0" -Class Secure
-                        }
-
-                        # Character 16.
                         $excludedNames = @($heuristics.AdminSDExcludedGroups | ForEach-Object { $_.Name })
-                        if ($null -eq $heuristics.AdminSDExMask) {
-                            $hasUnknown = $true
-                            Show-Line "dsHeuristics character 16 is '$($heuristics.AdminSDExMaskCharacter)', which is not a hex digit - whether AdminSDHolder excludes an operator group is unknown" -Class Note
-                        } elseif ($excludedNames.Count -gt 0) {
-                            $hasFinding = $true
-                            Show-Line "AdminSDHolder does not protect $($excludedNames -join ', ') or their members - dsHeuristics character 16 is '$($heuristics.AdminSDExMaskCharacter)'" -Class Finding -FindingId 'DSHEURISTICS_ADMINSDHOLDER_EXCLUSION'
-                        } else {
-                            Show-Line "AdminSDHolder protects every operator group - dsHeuristics character 16 is 0" -Class Secure
-                        }
-
-                        # Character 21.
                         $unchecked = @($heuristics.UncheckedUniqueness)
-                        if ($null -eq $heuristics.UniquenessMask) {
-                            $hasUnknown = $true
-                            Show-Line "dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)', outside its values 0 to 7 - whether UPN and SPN uniqueness is checked is unknown" -Class Note
-                        } elseif ($unchecked.Count -gt 0) {
-                            $hasFinding = $true
-                            $checkText = if ($unchecked.Count -eq 1) {
-                                "The $($unchecked[0]) uniqueness check is"
-                            } else {
-                                "The $(($unchecked[0..($unchecked.Count - 2)]) -join ', ') and $($unchecked[-1]) uniqueness checks are"
-                            }
-                            Show-Line "$checkText switched off - dsHeuristics character 21 is '$($heuristics.UniquenessCharacter)'" -Class Finding -FindingId 'DSHEURISTICS_UNIQUENESS_DISABLED'
-                        } else {
-                            Show-Line "UPN and SPN values are checked for uniqueness - dsHeuristics character 21 is 0" -Class Secure
-                        }
+                        $hasFinding = $heuristics.AnonymousLDAP -or $heuristics.AnonymousNSPI -or
+                                      ($excludedNames.Count -gt 0) -or ($unchecked.Count -gt 0)
+                        $hasUnknown = ($null -eq $heuristics.AdminSDExMask) -or ($null -eq $heuristics.UniquenessMask)
 
                         $heuristicsObj = [PSCustomObject]@{
-                            dSHeuristics            = $dsHeuristics
+                            dSHeuristics            = if ([string]::IsNullOrWhiteSpace($dsHeuristics)) { 'Not set' } else { $dsHeuristics }
                             anonymousLDAPAccess     = if ($heuristics.AnonymousLDAP) { 'ENABLED - Security Risk!' } else { 'Restricted' }
                             anonymousNSPIAccess     = if ($heuristics.AnonymousNSPI) { 'ENABLED' } else { 'Restricted' }
                             adminSDHolderExclusion  = if ($null -eq $heuristics.AdminSDExMask) {
@@ -240,6 +199,7 @@ function Get-LDAPConfiguration {
                         }
                         $heuristicsObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DSHeuristics' -Force
                         $objectClass = if ($hasFinding) { 'Finding' } elseif ($hasUnknown) { 'Note' } else { 'Secure' }
+                        Show-Line "Found directory service heuristics:" -Class $objectClass
                         Show-Object $heuristicsObj -Class $objectClass
                     }
                 } catch {

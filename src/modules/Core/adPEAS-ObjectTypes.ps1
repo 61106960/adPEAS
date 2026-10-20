@@ -197,10 +197,11 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Reads the characters of dsHeuristics that switch a protection off for the whole forest."
         WhyItMatters = "dsHeuristics is one string on CN=Directory Service in the configuration partition, and each of its characters changes how every domain controller of the forest behaves. Four of them switch a protection off: anonymous LDAP operations, anonymous calls to the NSPI address book, AdminSDHolder protection of the operator groups, and the uniqueness checks on UPN and SPN values. None of them is on by default, and no GPO governs them."
         WhatWeCheck = @(
-            "Character 7 (fLDAPBlockAnonOps): anonymous LDAP operations beyond rootDSE"
-            "Character 8 (fAllowAnonNSPI): anonymous calls to the NSPI address book interface"
-            "Character 16 (dwAdminSDExMask): operator groups excluded from AdminSDHolder protection"
-            "Character 21 (DoNotVerifyUPNAndOrSPNUniqueness): UPN and SPN uniqueness checks switched off"
+            "anonymousLDAPAccess - character 7 (fLDAPBlockAnonOps): anonymous LDAP operations beyond rootDSE, allowed at 2"
+            "anonymousNSPIAccess - character 8 (fAllowAnonNSPI): anonymous calls to the NSPI address book interface, allowed at anything but 0"
+            "adminSDHolderExclusion - character 16 (dwAdminSDExMask): operator groups excluded from AdminSDHolder protection, one bit each"
+            "principalNameUniqueness - character 21 (DoNotVerifyUPNAndOrSPNUniqueness): UPN and SPN uniqueness checks switched off, one bit each"
+            "dSHeuristics 'Not set' is the default, in which every one of them is at its secure value"
         )
         SecureMessage = "dsHeuristics leaves every protection it governs in place: anonymous LDAP and NSPI access are blocked, AdminSDHolder protects every operator group, and the domain controllers check UPN and SPN values for uniqueness."
     }
