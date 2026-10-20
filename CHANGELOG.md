@@ -635,6 +635,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   goes to the log. The finding pattern for an enabled anonymous bind is anchored, so no
   reason can colour the row.
 
+- **A failed `Connect-adPEAS` leaves no session behind.** The connection creates its
+  session context before the first network call and kept it when the attempt failed -
+  with the credential it was trying, and with a connection already bound when only the
+  check after the bind failed. Every check takes any context for a session, so a check run
+  after a domain controller out of reach went ahead and failed with "The argument cannot
+  be bound to the parameter DomainDN because it is an empty string" instead of saying
+  there is no session. A failed attempt now disposes the connection, removes the hosts
+  file entries it wrote and clears the context, as a disconnect does.
+
 - **The Exchange permissions model no longer reads a class-scoped ACE as PrivExchange.**
   Exchange setup gives Exchange Trusted Subsystem full control on the domain object
   scoped to the `msExchDynamicDistributionList` class - the right to create and delete

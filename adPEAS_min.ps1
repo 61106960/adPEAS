@@ -25108,10 +25108,11 @@ function Connect-adPEAS {
                 Write-Warning "[Connect-adPEAS] License file not found: $License"
             }
         }
-        $existingSession = $Script:LDAPContext -or $Script:LdapConnection -or
-                          ($Script:NTLMTokenHandle -and $Script:NTLMTokenHandle -ne [IntPtr]::Zero)
-        if ($existingSession) {
-            Write-Log "[Connect-adPEAS] Existing session detected - performing automatic cleanup..."
+        function Remove-ConnectSessionState {
+            $existingSession = $Script:LDAPContext -or $Script:LdapConnection -or
+                              ($Script:NTLMTokenHandle -and $Script:NTLMTokenHandle -ne [IntPtr]::Zero)
+            if (-not $existingSession) { return }
+            Write-Log "[Connect-adPEAS] Existing session state detected - performing automatic cleanup..."
             if ($Script:NTLMTokenHandle -and $Script:NTLMTokenHandle -ne [IntPtr]::Zero) {
                 Write-Log "[Connect-adPEAS] Reverting existing NTLM impersonation..."
                 try {
@@ -25144,8 +25145,9 @@ function Connect-adPEAS {
                 }
             }
             Clear-SessionState
-            Write-Log "[Connect-adPEAS] Previous session cleanup completed"
+            Write-Log "[Connect-adPEAS] Session state cleanup completed"
         }
+        Remove-ConnectSessionState
         $ParamSetDisplay = switch ($PSCmdlet.ParameterSetName) {
             'PSCredential' { 'PSCredential Object' }
             'UsernamePassword' { 'Username/Password' }
@@ -25161,6 +25163,7 @@ function Connect-adPEAS {
         Write-Log "[Connect-adPEAS] Parameter Set: $ParamSetDisplay"
     }
     process {
+        $sessionEstablished = $false
         try {
             if ($Host.Name -eq 'Windows PowerShell ISE Host') {
                 Write-Warning "PowerShell ISE is deprecated and not supported by adPEAS. Console output may be garbled. Use powershell.exe or VS Code instead."
@@ -26323,6 +26326,7 @@ function Connect-adPEAS {
                     Write-Log "[Connect-adPEAS] Stored DC IP for SMB access: $($Script:LDAPContext['ServerIP'])"
                 }
             }
+            $sessionEstablished = $true
             Write-Log "[Connect-adPEAS] CONNECTION SUCCESSFUL"
             Write-Log "[Connect-adPEAS] Domain: $($Connection.Domain)"
             Write-Log "[Connect-adPEAS] Server: $($Connection.Server)"
@@ -26388,6 +26392,9 @@ function Connect-adPEAS {
             Write-Log "[Connect-adPEAS] ConnectionState: $Script:ConnectionState"
             Show-ConnectionError -ErrorType "GenericError" -Details $ErrorDetail -NoThrow
             return $null
+        }
+        finally {
+            if (-not $sessionEstablished) { Remove-ConnectSessionState }
         }
     }
     end {
@@ -95369,7 +95376,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-0945"
+$Script:adPEASVersion = "2.7.0+20261020-0959"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

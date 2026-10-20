@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 09:45:31
-    Version: 2.7.0+20261020-0945
+    Build: 2026-10-20 09:59:43
+    Version: 2.7.0+20261020-0959
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -35053,11 +35053,13 @@ function Connect-adPEAS {
         # Clean up any existing session BEFORE establishing a new one.
         # This is critical for NTLM impersonation which creates a security context that persists until explicitly reverted.
         # Without cleanup, subsequent Connect-adPEAS calls would still run in the old impersonated context.
-        $existingSession = $Script:LDAPContext -or $Script:LdapConnection -or
-                          ($Script:NTLMTokenHandle -and $Script:NTLMTokenHandle -ne [IntPtr]::Zero)
+        # process{} calls it again when the new session cannot be built.
+        function Remove-ConnectSessionState {
+            $existingSession = $Script:LDAPContext -or $Script:LdapConnection -or
+                              ($Script:NTLMTokenHandle -and $Script:NTLMTokenHandle -ne [IntPtr]::Zero)
+            if (-not $existingSession) { return }
 
-        if ($existingSession) {
-            Write-Log "[Connect-adPEAS] Existing session detected - performing automatic cleanup..."
+            Write-Log "[Connect-adPEAS] Existing session state detected - performing automatic cleanup..."
 
             # Step 1: Revert NTLM impersonation (MUST be done first!)
             if ($Script:NTLMTokenHandle -and $Script:NTLMTokenHandle -ne [IntPtr]::Zero) {
@@ -35102,8 +35104,10 @@ function Connect-adPEAS {
             # is reset before the new session starts.
             Clear-SessionState
 
-            Write-Log "[Connect-adPEAS] Previous session cleanup completed"
+            Write-Log "[Connect-adPEAS] Session state cleanup completed"
         }
+
+        Remove-ConnectSessionState
 
         # Create readable parameter set name for verbose output
         $ParamSetDisplay = switch ($PSCmdlet.ParameterSetName) {
@@ -35122,6 +35126,7 @@ function Connect-adPEAS {
     }
 
     process {
+        $sessionEstablished = $false
         try {
             # ===== ISE Compatibility Warning =====
             if ($Host.Name -eq 'Windows PowerShell ISE Host') {
@@ -36726,6 +36731,8 @@ function Connect-adPEAS {
                 }
             }
 
+            $sessionEstablished = $true
+
             # ===== Success Output (Verbose) =====
             Write-Log "[Connect-adPEAS] CONNECTION SUCCESSFUL"
             Write-Log "[Connect-adPEAS] Domain: $($Connection.Domain)"
@@ -36807,6 +36814,14 @@ function Connect-adPEAS {
             # Show error to user (Show-ConnectionError may not have been called for all error types)
             Show-ConnectionError -ErrorType "GenericError" -Details $ErrorDetail -NoThrow
             return $null
+        }
+        finally {
+            # A failed attempt leaves no session behind. The context is created before
+            # the first network call and can hold the credential, the connection can be
+            # bound when a later step fails, and Ensure-LDAPConnection takes any context
+            # for a session: a check run after a failed connect got past it and failed on
+            # an empty DomainDN instead of saying there is no session.
+            if (-not $sessionEstablished) { Remove-ConnectSessionState }
         }
     }
 
@@ -148610,7 +148625,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-0945"
+$Script:adPEASVersion = "2.7.0+20261020-0959"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
