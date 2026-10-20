@@ -25099,15 +25099,6 @@ function Connect-adPEAS {
     )
     begin {
         Write-Log "[Connect-adPEAS] Starting authentication process..."
-        if ($PSBoundParameters.ContainsKey('License') -and $License) {
-            if (Test-Path $License -ErrorAction SilentlyContinue) {
-                $Script:RuntimeLicense = Get-Content $License -Raw -Encoding UTF8
-                Write-Log "[Connect-adPEAS] Loaded runtime license from: $License"
-            }
-            else {
-                Write-Warning "[Connect-adPEAS] License file not found: $License"
-            }
-        }
         function Remove-ConnectSessionState {
             $existingSession = $Script:LDAPContext -or $Script:LdapConnection -or
                               ($Script:NTLMTokenHandle -and $Script:NTLMTokenHandle -ne [IntPtr]::Zero)
@@ -25148,6 +25139,15 @@ function Connect-adPEAS {
             Write-Log "[Connect-adPEAS] Session state cleanup completed"
         }
         Remove-ConnectSessionState
+        if ($PSBoundParameters.ContainsKey('License') -and $License) {
+            if (Test-Path $License -ErrorAction SilentlyContinue) {
+                $Script:RuntimeLicense = Get-Content $License -Raw -Encoding UTF8
+                Write-Log "[Connect-adPEAS] Loaded runtime license from: $License"
+            }
+            else {
+                Write-Warning "[Connect-adPEAS] License file not found: $License"
+            }
+        }
         $ParamSetDisplay = switch ($PSCmdlet.ParameterSetName) {
             'PSCredential' { 'PSCredential Object' }
             'UsernamePassword' { 'Username/Password' }
@@ -95376,7 +95376,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-0959"
+$Script:adPEASVersion = "2.7.0+20261020-1004"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

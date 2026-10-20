@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 09:59:43
-    Version: 2.7.0+20261020-0959
+    Build: 2026-10-20 10:04:26
+    Version: 2.7.0+20261020-1004
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -35037,18 +35037,6 @@ function Connect-adPEAS {
     begin {
         Write-Log "[Connect-adPEAS] Starting authentication process..."
 
-        # ===== License Loading =====
-        # Store license JSON for later use by Invoke-adPEAS disclaimer display
-        if ($PSBoundParameters.ContainsKey('License') -and $License) {
-            if (Test-Path $License -ErrorAction SilentlyContinue) {
-                $Script:RuntimeLicense = Get-Content $License -Raw -Encoding UTF8
-                Write-Log "[Connect-adPEAS] Loaded runtime license from: $License"
-            }
-            else {
-                Write-Warning "[Connect-adPEAS] License file not found: $License"
-            }
-        }
-
         # ===== Automatic Session Cleanup =====
         # Clean up any existing session BEFORE establishing a new one.
         # This is critical for NTLM impersonation which creates a security context that persists until explicitly reverted.
@@ -35108,6 +35096,20 @@ function Connect-adPEAS {
         }
 
         Remove-ConnectSessionState
+
+        # ===== License Loading =====
+        # Store license JSON for later use by Invoke-adPEAS disclaimer display.
+        # After the cleanup, which clears the license of the previous session: loaded
+        # before it, a reconnect lost the license it had just been given.
+        if ($PSBoundParameters.ContainsKey('License') -and $License) {
+            if (Test-Path $License -ErrorAction SilentlyContinue) {
+                $Script:RuntimeLicense = Get-Content $License -Raw -Encoding UTF8
+                Write-Log "[Connect-adPEAS] Loaded runtime license from: $License"
+            }
+            else {
+                Write-Warning "[Connect-adPEAS] License file not found: $License"
+            }
+        }
 
         # Create readable parameter set name for verbose output
         $ParamSetDisplay = switch ($PSCmdlet.ParameterSetName) {
@@ -148625,7 +148627,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-0959"
+$Script:adPEASVersion = "2.7.0+20261020-1004"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

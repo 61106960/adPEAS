@@ -644,6 +644,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   there is no session. A failed attempt now disposes the connection, removes the hosts
   file entries it wrote and clears the context, as a disconnect does.
 
+- **`Connect-adPEAS -License` keeps the license on a reconnect.** The license file was
+  read before the previous session was cleaned up, and that cleanup clears the license -
+  so a second `Connect-adPEAS -License` in the same window connected without it, and the
+  report carried the default disclaimer. The license is read after the cleanup now.
+
 - **The Exchange permissions model no longer reads a class-scoped ACE as PrivExchange.**
   Exchange setup gives Exchange Trusted Subsystem full control on the domain object
   scoped to the `msExchDynamicDistributionList` class - the right to create and delete
