@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 15:08:54
-    Version: 2.7.0+20261020-1508
+    Build: 2026-10-20 16:01:31
+    Version: 2.7.0+20261020-1601
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -86758,7 +86758,13 @@ function Format-OUContainerCount {
 .DESCRIPTION
     Traces the parent container chain to find where an inherited ACE was originally set.
     Loads parent ACLs via Invoke-LDAPSearch (reuses existing LdapConnection).
-    Returns the distinguished name of the source container (e.g., domain root).
+
+    The source is the nearest parent with an explicit, inheritable Allow ACE for the same
+    trustee that grants at least the rights of the inherited one, for the same object
+    type and the same inheritance class, and that reaches this far down. The match used to
+    be the trustee and an inheritance flag only, so another explicit ACE of the same
+    trustee on a nearer parent was named as the source; and where nothing matched, the
+    domain root was named anyway.
 
 .PARAMETER DistinguishedName
     The DN of the object with the inherited ACE.
@@ -86767,7 +86773,8 @@ function Format-OUContainerCount {
     The ACE to trace.
 
 .OUTPUTS
-    String: Distinguished name of the inheritance source, or "Inherited" if source cannot be determined.
+    PSCustomObject with DN (the source container, $null when not found) and Display
+    ("OU=Corp (OU=Corp,DC=...)", "Domain Root (DC=...)", or "Unknown - ..." when not found).
 #>
 function Get-ACEInheritanceSource {
     [CmdletBinding()]
@@ -86805,13 +86812,28 @@ function Get-ACEInheritanceSource {
         # ACE.IdentityReference is always a SecurityIdentifier (from GetAccessRules with [SecurityIdentifier])
         $aceIdentitySID = $ACE.IdentityReference.Value
 
+        # What the inherited copy carries over from its source unchanged: object type and
+        # inheritance class. The empty GUID and no GUID are the same "none".
+        $normalizeGuid = {
+            param($Value)
+            if (-not $Value -or [string]$Value -eq [string][GUID]::Empty) { '' } else { ([string]$Value).ToLowerInvariant() }
+        }
+        $aceObjType = & $normalizeGuid $ACE.ObjectType
+        $aceInheritedType = & $normalizeGuid $ACE.InheritedObjectType
+        # Generic bits expanded: the inherited copy carries the mapped rights of a GA in
+        # its source, or the GA itself.
+        $aceRights = ConvertTo-ExpandedADRightsValue -Rights $ACE.ActiveDirectoryRights
+
         # Session-level cache for parent ACLs (parent ACLs are identical across all child OUs)
         if (-not $Script:InheritanceACLCache) {
             $Script:InheritanceACLCache = @{}
         }
 
         # Check each parent starting from immediate parent
+        $isImmediateParent = $true
         foreach ($parentDN in $parents) {
+            $parentIsImmediate = $isImmediateParent
+            $isImmediateParent = $false
             try {
                 # Load parent ACL - use cache to avoid redundant LDAP queries
                 # Parent ACLs are shared by all child OUs, so caching is highly effective
@@ -86835,8 +86857,7 @@ function Get-ACEInheritanceSource {
                     continue
                 }
 
-                # Look for matching explicit ACE on parent
-                # We use relaxed matching: same identity + explicit + similar rights
+                # Look for the explicit ACE on the parent the inherited one is a copy of
                 foreach ($parentACE in $parentAccessRules) {
                     # Must be explicit (not inherited) and Allow
                     if ($parentACE.IsInherited) { continue }
@@ -86845,10 +86866,6 @@ function Get-ACEInheritanceSource {
                     # Match by SID (both are SecurityIdentifier - direct string comparison)
                     if ($parentACE.IdentityReference.Value -ne $aceIdentitySID) { continue }
 
-                    # Relaxed matching: Check if the parent ACE could be the source
-                    # The inherited ACE may have different rights due to inheritance flags
-                    # Key indicators: same identity + explicit + inheritable
-
                     # Check inheritance flags - must be set to inherit to children
                     $inheritFlags = $parentACE.InheritanceFlags
                     $canInherit = ($inheritFlags -band [System.Security.AccessControl.InheritanceFlags]::ContainerInherit) -or
@@ -86856,29 +86873,25 @@ function Get-ACEInheritanceSource {
 
                     if (-not $canInherit) { continue }
 
-                    # Additional check: ObjectType should match (the right being granted)
-                    # Skip this check if either ObjectType is Empty GUID (means "all properties/rights")
-                    # GUID::Empty is truthy in PowerShell, so we must check explicitly
-                    $aceObjType = $ACE.ObjectType
-                    $parentObjType = $parentACE.ObjectType
-                    if ($aceObjType -and $aceObjType -ne [GUID]::Empty -and
-                        $parentObjType -and $parentObjType -ne [GUID]::Empty) {
-                        if ($aceObjType -ne $parentObjType) { continue }
-                    }
+                    # NoPropagateInherit stops the copy at the direct children.
+                    if (-not $parentIsImmediate -and ([string]$parentACE.PropagationFlags) -match 'NoPropagateInherit') { continue }
+
+                    # The copy keeps object type and inheritance class, and its rights are
+                    # the source's.
+                    if ((& $normalizeGuid $parentACE.ObjectType) -ne $aceObjType) { continue }
+                    if ((& $normalizeGuid $parentACE.InheritedObjectType) -ne $aceInheritedType) { continue }
+                    if (-not (Test-ADRightsMask -Rights $parentACE.ActiveDirectoryRights -Has $aceRights)) { continue }
 
                     # Found the source - return a friendly name
                     if ($parentDN -eq $domainDN) {
-                        return "Domain Root ($domainDN)"
-                    } else {
-                        # Extract the first RDN for display (e.g., "OU=Corp" -> "Corp")
-                        $rdnMatch = $parentDN -match '^([^=]+)=([^,]+)'
-                        if ($rdnMatch) {
-                            $rdnType = $Matches[1]
-                            $rdnValue = $Matches[2]
-                            return "$rdnType=$rdnValue ($parentDN)"
-                        }
-                        return $parentDN
+                        return [PSCustomObject]@{ DN = $parentDN; Display = "Domain Root ($domainDN)" }
                     }
+                    # Extract the first RDN for display (e.g., "OU=Corp" -> "Corp")
+                    $display = $parentDN
+                    if ($parentDN -match '^([^=]+)=([^,]+)') {
+                        $display = "$($Matches[1])=$($Matches[2]) ($parentDN)"
+                    }
+                    return [PSCustomObject]@{ DN = $parentDN; Display = $display }
                 }
 
             } catch {
@@ -86887,18 +86900,14 @@ function Get-ACEInheritanceSource {
             }
         }
 
-        # Couldn't determine exact source - but if the ACE is inherited,
-        # it MUST come from somewhere in the parent chain
-        # Default to domain root as the most common source for domain-wide delegations
-        if ($parents -contains $domainDN) {
-            return "Domain Root ($domainDN)"
-        }
-
-        return "Inherited"
+        # Not found: a parent ACL that could not be read, or a source outside the chain.
+        # The domain root used to be named here anyway, as "the most common source" - a
+        # guess presented as a fact.
+        return [PSCustomObject]@{ DN = $null; Display = 'Unknown - no matching explicit ACE above' }
 
     } catch {
         Write-Log "[Get-ACEInheritanceSource] Error: $_"
-        return "Inherited"
+        return [PSCustomObject]@{ DN = $null; Display = 'Unknown - no matching explicit ACE above' }
     }
 }
 
@@ -87272,11 +87281,16 @@ function Get-OUPermissions {
                 # 1. Direct parent OU/container
                 # 2. Domain root (most common for domain-wide delegations)
                 $InheritedFrom = $null
+                # Where the ACE is set: this object for an explicit one, the source found
+                # above for an inherited one, $null where none was found.
+                $aceSourceDN = $DistinguishedName
                 if ($ACE.IsInherited) {
                     # Determine the inheritance source by checking the propagation
                     # Inherited ACEs on OUs typically come from the domain root or parent OUs
                     # We'll trace back to find the source
-                    $InheritedFrom = Get-ACEInheritanceSource -DistinguishedName $DistinguishedName -ACE $ACE
+                    $inheritanceSource = Get-ACEInheritanceSource -DistinguishedName $DistinguishedName -ACE $ACE
+                    $InheritedFrom = $inheritanceSource.Display
+                    $aceSourceDN = $inheritanceSource.DN
                 }
 
                 # Get ObjectType and InheritedObjectType for scope checking
@@ -88272,9 +88286,12 @@ function Get-OUPermissions {
                 # The element each finding of this ACE is about: the class its inheritance
                 # names ('' for every class), and whether it reaches this object, its
                 # children, and only the direct ones. Select-OUStrongestFinding reads it to
-                # show the strongest right per element; the other callers ignore it.
+                # show the strongest right per element; the other callers ignore it. And
+                # where the ACE is set, which Get-DangerousOUPermissions reads to name the
+                # places a right is set instead of every OU that inherits it.
                 $elementClass = if ($IsAllObjectTypes) { '' } else { ([string]$inheritedObjectType).ToLowerInvariant() }
                 for ($findingIndex = $aceFindingStart; $findingIndex -lt @($Findings).Count; $findingIndex++) {
+                    $Findings[$findingIndex] | Add-Member -NotePropertyName '_SourceDN' -NotePropertyValue $aceSourceDN -Force
                     $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementClass' -NotePropertyValue $elementClass -Force
                     $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementSelf' -NotePropertyValue ([bool]$AppliesToSelf) -Force
                     $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementChildren' -NotePropertyValue ([bool]$AppliesToChildren) -Force
@@ -115749,8 +115766,9 @@ function Get-DangerousOUPermissions {
                             IsExchangeService = $isExchangeService
                             IsPrivilegedAccount = $isPrivilegedAccount
                         }
-                        # The element the right is about, for Select-OUStrongestFinding below.
-                        foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly')) {
+                        # The element the right is about, for Select-OUStrongestFinding below,
+                        # and where it is set, for Format-OUPermissionLocation.
+                        foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly', '_SourceDN')) {
                             if ($finding.PSObject.Properties[$elementField]) {
                                 $entry | Add-Member -NotePropertyName $elementField -NotePropertyValue $finding.$elementField -Force
                             }
@@ -115833,22 +115851,17 @@ function Get-DangerousOUPermissions {
                     $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
                         ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 
-                    # Collect all OUs and rights for this principal
-                    $affectedOUs = @()
+                    # Collect all rights for this principal, and the places they are set:
+                    # every OU used to be listed, the one an ACE is set on and every OU that
+                    # inherits it alike, with the sources in a separate row at the end.
                     $dangerousRightsList = @()
-                    $inheritanceSources = @()
                     foreach ($finding in $ouFindings) {
-                        $ouEntry = $finding.DistinguishedName
-                        if ($affectedOUs -notcontains $ouEntry) {
-                            $affectedOUs += $ouEntry
-                        }
                         if ($dangerousRightsList -notcontains $finding.Right) {
                             $dangerousRightsList += $finding.Right
                         }
-                        if ($finding.InheritedFrom -and $inheritanceSources -notcontains $finding.InheritedFrom) {
-                            $inheritanceSources += $finding.InheritedFrom
-                        }
                     }
+                    $affectedOUs = @(Format-OUPermissionLocation -Finding $ouFindings -DomainDN $Script:LDAPContext.DomainDN)
+                    $inheritanceSources = @(Get-UntaggedInheritanceSource -Finding $ouFindings)
 
                     $isWellKnownSID = $sid -match '^S-1-5-\d+$'
                     $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
@@ -115896,21 +115909,14 @@ function Get-DangerousOUPermissions {
                     $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
                         ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 
-                    $affectedOUs = @()
                     $dangerousRightsList = @()
-                    $inheritanceSources = @()
                     foreach ($finding in $ouFindings) {
-                        $ouEntry = $finding.DistinguishedName
-                        if ($affectedOUs -notcontains $ouEntry) {
-                            $affectedOUs += $ouEntry
-                        }
                         if ($dangerousRightsList -notcontains $finding.Right) {
                             $dangerousRightsList += $finding.Right
                         }
-                        if ($finding.InheritedFrom -and $inheritanceSources -notcontains $finding.InheritedFrom) {
-                            $inheritanceSources += $finding.InheritedFrom
-                        }
                     }
+                    $affectedOUs = @(Format-OUPermissionLocation -Finding $ouFindings -DomainDN $Script:LDAPContext.DomainDN)
+                    $inheritanceSources = @(Get-UntaggedInheritanceSource -Finding $ouFindings)
 
                     $isWellKnownSID = $sid -match '^S-1-5-\d+$'
                     $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
@@ -116063,6 +116069,119 @@ function Select-OUStrongestFinding {
     $kept
 }
 
+<#
+.SYNOPSIS
+    Names the places a principal's OU rights are set, with how many objects inherit each.
+
+.DESCRIPTION
+    affectedOUs used to list every OU a right turned up in, so one delegation on an OU
+    high in the tree came out as every OU below it - hundreds of lines, with the place it
+    is set lost among them and named only in a separate inheritedFrom row at the end.
+
+    Get-OUPermissions tags each finding with _SourceDN: the object an explicit ACE is set
+    on, the source Get-ACEInheritanceSource found for an inherited one, or $null where it
+    found none. One line per source, then:
+
+    - "<DN> (set here)", or "(set here, inherited by N OU(s) below)" with the objects that
+      inherit it - counted by Format-OUContainerCount, so a container is not called an OU;
+    - "<DN> (domain root, inherited by N OU(s))" for a right set on the domain object;
+    - "<DN> (inherited, source not found)" for an inherited right without a source.
+
+    A finding without the tag - the owner of an OU, which is no ACE - is listed by the DN
+    it was found on, as before.
+
+.PARAMETER Finding
+    The findings of one principal, OU by OU.
+
+.PARAMETER DomainDN
+    The DN of the domain object.
+
+.OUTPUTS
+    The lines, one by one.
+#>
+function Format-OUPermissionLocation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Finding,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$DomainDN
+    )
+
+    $sources = [ordered]@{}
+    $unknown = @()
+    $plain = @()
+    foreach ($item in @($Finding | Where-Object { $_ })) {
+        $foundOn = [string]$item.DistinguishedName
+        if (-not $item.PSObject.Properties['_SourceDN']) {
+            if ($plain -notcontains $foundOn) { $plain += $foundOn }
+            continue
+        }
+        $sourceDN = [string]$item._SourceDN
+        if (-not $sourceDN) {
+            if ($unknown -notcontains $foundOn) { $unknown += $foundOn }
+            continue
+        }
+        if (-not $sources.Contains($sourceDN)) { $sources[$sourceDN] = @() }
+        if ($sources[$sourceDN] -notcontains $foundOn) { $sources[$sourceDN] += $foundOn }
+    }
+
+    foreach ($sourceDN in @($sources.Keys)) {
+        $inheritors = @($sources[$sourceDN] | Where-Object { $_ -ne $sourceDN })
+        if ($DomainDN -and $sourceDN -eq $DomainDN) {
+            "$sourceDN (domain root, inherited by $(Format-OUContainerCount -DistinguishedName $inheritors))"
+        } elseif ($inheritors.Count -gt 0) {
+            "$sourceDN (set here, inherited by $(Format-OUContainerCount -DistinguishedName $inheritors) below)"
+        } else {
+            "$sourceDN (set here)"
+        }
+    }
+    foreach ($foundOn in $unknown) {
+        "$foundOn (inherited, source not found)"
+    }
+    foreach ($foundOn in $plain) {
+        if (-not $sources.Contains($foundOn)) { $foundOn }
+    }
+}
+
+<#
+.SYNOPSIS
+    The inheritance sources of the findings that carry no source DN.
+
+.DESCRIPTION
+    The inheritedFrom row, kept for findings Get-OUPermissions did not tag with _SourceDN.
+    For tagged ones Format-OUPermissionLocation names the source on the affectedOUs line,
+    and a separate row would say it a second time.
+
+.PARAMETER Finding
+    The findings of one principal.
+
+.OUTPUTS
+    The distinct InheritedFrom texts, one by one.
+#>
+function Get-UntaggedInheritanceSource {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Finding
+    )
+
+    $seen = @()
+    foreach ($item in @($Finding | Where-Object { $_ })) {
+        if ($item.PSObject.Properties['_SourceDN']) { continue }
+        if ($item.InheritedFrom -and $seen -notcontains $item.InheritedFrom) {
+            $seen += $item.InheritedFrom
+            $item.InheritedFrom
+        }
+    }
+}
 
 
 # ----- Get-PasswordResetRights.ps1 -----
@@ -148936,7 +149055,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1508"
+$Script:adPEASVersion = "2.7.0+20261020-1601"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -5,7 +5,13 @@
 .DESCRIPTION
     Traces the parent container chain to find where an inherited ACE was originally set.
     Loads parent ACLs via Invoke-LDAPSearch (reuses existing LdapConnection).
-    Returns the distinguished name of the source container (e.g., domain root).
+
+    The source is the nearest parent with an explicit, inheritable Allow ACE for the same
+    trustee that grants at least the rights of the inherited one, for the same object
+    type and the same inheritance class, and that reaches this far down. The match used to
+    be the trustee and an inheritance flag only, so another explicit ACE of the same
+    trustee on a nearer parent was named as the source; and where nothing matched, the
+    domain root was named anyway.
 
 .PARAMETER DistinguishedName
     The DN of the object with the inherited ACE.
@@ -14,7 +20,8 @@
     The ACE to trace.
 
 .OUTPUTS
-    String: Distinguished name of the inheritance source, or "Inherited" if source cannot be determined.
+    PSCustomObject with DN (the source container, $null when not found) and Display
+    ("OU=Corp (OU=Corp,DC=...)", "Domain Root (DC=...)", or "Unknown - ..." when not found).
 #>
 function Get-ACEInheritanceSource {
     [CmdletBinding()]
@@ -52,13 +59,28 @@ function Get-ACEInheritanceSource {
         # ACE.IdentityReference is always a SecurityIdentifier (from GetAccessRules with [SecurityIdentifier])
         $aceIdentitySID = $ACE.IdentityReference.Value
 
+        # What the inherited copy carries over from its source unchanged: object type and
+        # inheritance class. The empty GUID and no GUID are the same "none".
+        $normalizeGuid = {
+            param($Value)
+            if (-not $Value -or [string]$Value -eq [string][GUID]::Empty) { '' } else { ([string]$Value).ToLowerInvariant() }
+        }
+        $aceObjType = & $normalizeGuid $ACE.ObjectType
+        $aceInheritedType = & $normalizeGuid $ACE.InheritedObjectType
+        # Generic bits expanded: the inherited copy carries the mapped rights of a GA in
+        # its source, or the GA itself.
+        $aceRights = ConvertTo-ExpandedADRightsValue -Rights $ACE.ActiveDirectoryRights
+
         # Session-level cache for parent ACLs (parent ACLs are identical across all child OUs)
         if (-not $Script:InheritanceACLCache) {
             $Script:InheritanceACLCache = @{}
         }
 
         # Check each parent starting from immediate parent
+        $isImmediateParent = $true
         foreach ($parentDN in $parents) {
+            $parentIsImmediate = $isImmediateParent
+            $isImmediateParent = $false
             try {
                 # Load parent ACL - use cache to avoid redundant LDAP queries
                 # Parent ACLs are shared by all child OUs, so caching is highly effective
@@ -82,8 +104,7 @@ function Get-ACEInheritanceSource {
                     continue
                 }
 
-                # Look for matching explicit ACE on parent
-                # We use relaxed matching: same identity + explicit + similar rights
+                # Look for the explicit ACE on the parent the inherited one is a copy of
                 foreach ($parentACE in $parentAccessRules) {
                     # Must be explicit (not inherited) and Allow
                     if ($parentACE.IsInherited) { continue }
@@ -92,10 +113,6 @@ function Get-ACEInheritanceSource {
                     # Match by SID (both are SecurityIdentifier - direct string comparison)
                     if ($parentACE.IdentityReference.Value -ne $aceIdentitySID) { continue }
 
-                    # Relaxed matching: Check if the parent ACE could be the source
-                    # The inherited ACE may have different rights due to inheritance flags
-                    # Key indicators: same identity + explicit + inheritable
-
                     # Check inheritance flags - must be set to inherit to children
                     $inheritFlags = $parentACE.InheritanceFlags
                     $canInherit = ($inheritFlags -band [System.Security.AccessControl.InheritanceFlags]::ContainerInherit) -or
@@ -103,29 +120,25 @@ function Get-ACEInheritanceSource {
 
                     if (-not $canInherit) { continue }
 
-                    # Additional check: ObjectType should match (the right being granted)
-                    # Skip this check if either ObjectType is Empty GUID (means "all properties/rights")
-                    # GUID::Empty is truthy in PowerShell, so we must check explicitly
-                    $aceObjType = $ACE.ObjectType
-                    $parentObjType = $parentACE.ObjectType
-                    if ($aceObjType -and $aceObjType -ne [GUID]::Empty -and
-                        $parentObjType -and $parentObjType -ne [GUID]::Empty) {
-                        if ($aceObjType -ne $parentObjType) { continue }
-                    }
+                    # NoPropagateInherit stops the copy at the direct children.
+                    if (-not $parentIsImmediate -and ([string]$parentACE.PropagationFlags) -match 'NoPropagateInherit') { continue }
+
+                    # The copy keeps object type and inheritance class, and its rights are
+                    # the source's.
+                    if ((& $normalizeGuid $parentACE.ObjectType) -ne $aceObjType) { continue }
+                    if ((& $normalizeGuid $parentACE.InheritedObjectType) -ne $aceInheritedType) { continue }
+                    if (-not (Test-ADRightsMask -Rights $parentACE.ActiveDirectoryRights -Has $aceRights)) { continue }
 
                     # Found the source - return a friendly name
                     if ($parentDN -eq $domainDN) {
-                        return "Domain Root ($domainDN)"
-                    } else {
-                        # Extract the first RDN for display (e.g., "OU=Corp" -> "Corp")
-                        $rdnMatch = $parentDN -match '^([^=]+)=([^,]+)'
-                        if ($rdnMatch) {
-                            $rdnType = $Matches[1]
-                            $rdnValue = $Matches[2]
-                            return "$rdnType=$rdnValue ($parentDN)"
-                        }
-                        return $parentDN
+                        return [PSCustomObject]@{ DN = $parentDN; Display = "Domain Root ($domainDN)" }
                     }
+                    # Extract the first RDN for display (e.g., "OU=Corp" -> "Corp")
+                    $display = $parentDN
+                    if ($parentDN -match '^([^=]+)=([^,]+)') {
+                        $display = "$($Matches[1])=$($Matches[2]) ($parentDN)"
+                    }
+                    return [PSCustomObject]@{ DN = $parentDN; Display = $display }
                 }
 
             } catch {
@@ -134,18 +147,14 @@ function Get-ACEInheritanceSource {
             }
         }
 
-        # Couldn't determine exact source - but if the ACE is inherited,
-        # it MUST come from somewhere in the parent chain
-        # Default to domain root as the most common source for domain-wide delegations
-        if ($parents -contains $domainDN) {
-            return "Domain Root ($domainDN)"
-        }
-
-        return "Inherited"
+        # Not found: a parent ACL that could not be read, or a source outside the chain.
+        # The domain root used to be named here anyway, as "the most common source" - a
+        # guess presented as a fact.
+        return [PSCustomObject]@{ DN = $null; Display = 'Unknown - no matching explicit ACE above' }
 
     } catch {
         Write-Log "[Get-ACEInheritanceSource] Error: $_"
-        return "Inherited"
+        return [PSCustomObject]@{ DN = $null; Display = 'Unknown - no matching explicit ACE above' }
     }
 }
 
@@ -519,11 +528,16 @@ function Get-OUPermissions {
                 # 1. Direct parent OU/container
                 # 2. Domain root (most common for domain-wide delegations)
                 $InheritedFrom = $null
+                # Where the ACE is set: this object for an explicit one, the source found
+                # above for an inherited one, $null where none was found.
+                $aceSourceDN = $DistinguishedName
                 if ($ACE.IsInherited) {
                     # Determine the inheritance source by checking the propagation
                     # Inherited ACEs on OUs typically come from the domain root or parent OUs
                     # We'll trace back to find the source
-                    $InheritedFrom = Get-ACEInheritanceSource -DistinguishedName $DistinguishedName -ACE $ACE
+                    $inheritanceSource = Get-ACEInheritanceSource -DistinguishedName $DistinguishedName -ACE $ACE
+                    $InheritedFrom = $inheritanceSource.Display
+                    $aceSourceDN = $inheritanceSource.DN
                 }
 
                 # Get ObjectType and InheritedObjectType for scope checking
@@ -1519,9 +1533,12 @@ function Get-OUPermissions {
                 # The element each finding of this ACE is about: the class its inheritance
                 # names ('' for every class), and whether it reaches this object, its
                 # children, and only the direct ones. Select-OUStrongestFinding reads it to
-                # show the strongest right per element; the other callers ignore it.
+                # show the strongest right per element; the other callers ignore it. And
+                # where the ACE is set, which Get-DangerousOUPermissions reads to name the
+                # places a right is set instead of every OU that inherits it.
                 $elementClass = if ($IsAllObjectTypes) { '' } else { ([string]$inheritedObjectType).ToLowerInvariant() }
                 for ($findingIndex = $aceFindingStart; $findingIndex -lt @($Findings).Count; $findingIndex++) {
+                    $Findings[$findingIndex] | Add-Member -NotePropertyName '_SourceDN' -NotePropertyValue $aceSourceDN -Force
                     $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementClass' -NotePropertyValue $elementClass -Force
                     $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementSelf' -NotePropertyValue ([bool]$AppliesToSelf) -Force
                     $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementChildren' -NotePropertyValue ([bool]$AppliesToChildren) -Force

@@ -54028,10 +54028,20 @@ function Get-ACEInheritanceSource {
 	        }
 	    }
 	    $aceIdentitySID = $ACE.IdentityReference.Value
+	    $normalizeGuid = {
+	        param($Value)
+	        if (-not $Value -or [string]$Value -eq [string][GUID]::Empty) { '' } else { ([string]$Value).ToLowerInvariant() }
+	    }
+	    $aceObjType = & $normalizeGuid $ACE.ObjectType
+	    $aceInheritedType = & $normalizeGuid $ACE.InheritedObjectType
+	    $aceRights = ConvertTo-ExpandedADRightsValue -Rights $ACE.ActiveDirectoryRights
 	    if (-not $Script:InheritanceACLCache) {
 	        $Script:InheritanceACLCache = @{}
 	    }
+	    $isImmediateParent = $true
 	    foreach ($parentDN in $parents) {
+	        $parentIsImmediate = $isImmediateParent
+	        $isImmediateParent = $false
 	        try {
 	            $cacheKey = $parentDN.ToLowerInvariant()
 	            $parentAccessRules = $null
@@ -54058,34 +54068,26 @@ function Get-ACEInheritanceSource {
 	                $canInherit = ($inheritFlags -band [System.Security.AccessControl.InheritanceFlags]::ContainerInherit) -or
 	                              ($inheritFlags -band [System.Security.AccessControl.InheritanceFlags]::ObjectInherit)
 	                if (-not $canInherit) { continue }
-	                $aceObjType = $ACE.ObjectType
-	                $parentObjType = $parentACE.ObjectType
-	                if ($aceObjType -and $aceObjType -ne [GUID]::Empty -and
-	                    $parentObjType -and $parentObjType -ne [GUID]::Empty) {
-	                    if ($aceObjType -ne $parentObjType) { continue }
-	                }
+	                if (-not $parentIsImmediate -and ([string]$parentACE.PropagationFlags) -match 'NoPropagateInherit') { continue }
+	                if ((& $normalizeGuid $parentACE.ObjectType) -ne $aceObjType) { continue }
+	                if ((& $normalizeGuid $parentACE.InheritedObjectType) -ne $aceInheritedType) { continue }
+	                if (-not (Test-ADRightsMask -Rights $parentACE.ActiveDirectoryRights -Has $aceRights)) { continue }
 	                if ($parentDN -eq $domainDN) {
-	                    return "Domain Root ($domainDN)"
-	                } else {
-	                    $rdnMatch = $parentDN -match '^([^=]+)=([^,]+)'
-	                    if ($rdnMatch) {
-	                        $rdnType = $Matches[1]
-	                        $rdnValue = $Matches[2]
-	                        return "$rdnType=$rdnValue ($parentDN)"
-	                    }
-	                    return $parentDN
+	                    return [PSCustomObject]@{ DN = $parentDN; Display = "Domain Root ($domainDN)" }
 	                }
+	                $display = $parentDN
+	                if ($parentDN -match '^([^=]+)=([^,]+)') {
+	                    $display = "$($Matches[1])=$($Matches[2]) ($parentDN)"
+	                }
+	                return [PSCustomObject]@{ DN = $parentDN; Display = $display }
 	            }
 	        } catch {
 	            continue
 	        }
 	    }
-	    if ($parents -contains $domainDN) {
-	        return "Domain Root ($domainDN)"
-	    }
-	    return "Inherited"
+	    return [PSCustomObject]@{ DN = $null; Display = 'Unknown - no matching explicit ACE above' }
 	} catch {
-	    return "Inherited"
+	    return [PSCustomObject]@{ DN = $null; Display = 'Unknown - no matching explicit ACE above' }
 	}
 }
 function Test-ACEFullyDenied {
@@ -54244,8 +54246,11 @@ function Get-OUPermissions {
 	            }
 	            $IsPrivileged = (Test-IsPrivileged -Identity $identityObject).IsPrivileged
 	            $InheritedFrom = $null
+	            $aceSourceDN = $DistinguishedName
 	            if ($ACE.IsInherited) {
-	                $InheritedFrom = Get-ACEInheritanceSource -DistinguishedName $DistinguishedName -ACE $ACE
+	                $inheritanceSource = Get-ACEInheritanceSource -DistinguishedName $DistinguishedName -ACE $ACE
+	                $InheritedFrom = $inheritanceSource.Display
+	                $aceSourceDN = $inheritanceSource.DN
 	            }
 	            $objectType = $ACE.ObjectType
 	            $inheritedObjectType = $ACE.InheritedObjectType
@@ -54874,6 +54879,7 @@ function Get-OUPermissions {
 	            }
 	            $elementClass = if ($IsAllObjectTypes) { '' } else { ([string]$inheritedObjectType).ToLowerInvariant() }
 	            for ($findingIndex = $aceFindingStart; $findingIndex -lt @($Findings).Count; $findingIndex++) {
+	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_SourceDN' -NotePropertyValue $aceSourceDN -Force
 	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementClass' -NotePropertyValue $elementClass -Force
 	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementSelf' -NotePropertyValue ([bool]$AppliesToSelf) -Force
 	                $Findings[$findingIndex] | Add-Member -NotePropertyName '_ElementChildren' -NotePropertyValue ([bool]$AppliesToChildren) -Force
@@ -70839,7 +70845,7 @@ function Get-DangerousOUPermissions {
 	                        IsExchangeService = $isExchangeService
 	                        IsPrivilegedAccount = $isPrivilegedAccount
 	                    }
-	                    foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly')) {
+	                    foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly', '_SourceDN')) {
 	                        if ($finding.PSObject.Properties[$elementField]) {
 	                            $entry | Add-Member -NotePropertyName $elementField -NotePropertyValue $finding.$elementField -Force
 	                        }
@@ -70897,21 +70903,14 @@ function Get-DangerousOUPermissions {
 	                $principal = $principalGroup.Group[0].Principal
 	                $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
 	                    ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
-	                $affectedOUs = @()
 	                $dangerousRightsList = @()
-	                $inheritanceSources = @()
 	                foreach ($finding in $ouFindings) {
-	                    $ouEntry = $finding.DistinguishedName
-	                    if ($affectedOUs -notcontains $ouEntry) {
-	                        $affectedOUs += $ouEntry
-	                    }
 	                    if ($dangerousRightsList -notcontains $finding.Right) {
 	                        $dangerousRightsList += $finding.Right
 	                    }
-	                    if ($finding.InheritedFrom -and $inheritanceSources -notcontains $finding.InheritedFrom) {
-	                        $inheritanceSources += $finding.InheritedFrom
-	                    }
 	                }
+	                $affectedOUs = @(Format-OUPermissionLocation -Finding $ouFindings -DomainDN $Script:LDAPContext.DomainDN)
+	                $inheritanceSources = @(Get-UntaggedInheritanceSource -Finding $ouFindings)
 	                $isWellKnownSID = $sid -match '^S-1-5-\d+$'
 	                $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
 	                $isPriv = $ouFindings[0].IsPrivilegedAccount
@@ -70952,21 +70951,14 @@ function Get-DangerousOUPermissions {
 	                $principal = $principalGroup.Group[0].Principal
 	                $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
 	                    ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
-	                $affectedOUs = @()
 	                $dangerousRightsList = @()
-	                $inheritanceSources = @()
 	                foreach ($finding in $ouFindings) {
-	                    $ouEntry = $finding.DistinguishedName
-	                    if ($affectedOUs -notcontains $ouEntry) {
-	                        $affectedOUs += $ouEntry
-	                    }
 	                    if ($dangerousRightsList -notcontains $finding.Right) {
 	                        $dangerousRightsList += $finding.Right
 	                    }
-	                    if ($finding.InheritedFrom -and $inheritanceSources -notcontains $finding.InheritedFrom) {
-	                        $inheritanceSources += $finding.InheritedFrom
-	                    }
 	                }
+	                $affectedOUs = @(Format-OUPermissionLocation -Finding $ouFindings -DomainDN $Script:LDAPContext.DomainDN)
+	                $inheritanceSources = @(Get-UntaggedInheritanceSource -Finding $ouFindings)
 	                $isWellKnownSID = $sid -match '^S-1-5-\d+$'
 	                $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
 	                if ($adObject) {
@@ -71054,6 +71046,69 @@ function Select-OUStrongestFinding {
 	    if (-not $isContained) { $candidate }
 	}
 	$kept
+}
+function Format-OUPermissionLocation {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyCollection()]
+	    [object[]]$Finding,
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$DomainDN
+	)
+	$sources = [ordered]@{}
+	$unknown = @()
+	$plain = @()
+	foreach ($item in @($Finding | Where-Object { $_ })) {
+	    $foundOn = [string]$item.DistinguishedName
+	    if (-not $item.PSObject.Properties['_SourceDN']) {
+	        if ($plain -notcontains $foundOn) { $plain += $foundOn }
+	        continue
+	    }
+	    $sourceDN = [string]$item._SourceDN
+	    if (-not $sourceDN) {
+	        if ($unknown -notcontains $foundOn) { $unknown += $foundOn }
+	        continue
+	    }
+	    if (-not $sources.Contains($sourceDN)) { $sources[$sourceDN] = @() }
+	    if ($sources[$sourceDN] -notcontains $foundOn) { $sources[$sourceDN] += $foundOn }
+	}
+	foreach ($sourceDN in @($sources.Keys)) {
+	    $inheritors = @($sources[$sourceDN] | Where-Object { $_ -ne $sourceDN })
+	    if ($DomainDN -and $sourceDN -eq $DomainDN) {
+	        "$sourceDN (domain root, inherited by $(Format-OUContainerCount -DistinguishedName $inheritors))"
+	    } elseif ($inheritors.Count -gt 0) {
+	        "$sourceDN (set here, inherited by $(Format-OUContainerCount -DistinguishedName $inheritors) below)"
+	    } else {
+	        "$sourceDN (set here)"
+	    }
+	}
+	foreach ($foundOn in $unknown) {
+	    "$foundOn (inherited, source not found)"
+	}
+	foreach ($foundOn in $plain) {
+	    if (-not $sources.Contains($foundOn)) { $foundOn }
+	}
+}
+function Get-UntaggedInheritanceSource {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyCollection()]
+	    [object[]]$Finding
+	)
+	$seen = @()
+	foreach ($item in @($Finding | Where-Object { $_ })) {
+	    if ($item.PSObject.Properties['_SourceDN']) { continue }
+	    if ($item.InheritedFrom -and $seen -notcontains $item.InheritedFrom) {
+	        $seen += $item.InheritedFrom
+	        $item.InheritedFrom
+	    }
+	}
 }
 function Get-PasswordResetRights {
 	[CmdletBinding()]
@@ -92467,7 +92522,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1508"
+$Script:adPEASVersion = "2.7.0+20261020-1601"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

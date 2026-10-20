@@ -1412,6 +1412,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   class beside full control on users, or one that is the strongest on another OU. The
   analysis itself still reports every right, for the checks that need them.
 
+- **Dangerous OU permissions name where a right is set, not every OU it reaches.**
+  `affectedOUs` listed every OU a right turned up in, so one delegation high in the tree
+  came out as every OU below it, with the place it was made in an `inheritedFrom` row at
+  the end of the list. Each place is now one line: "(set here)", "(set here, inherited by
+  N OU(s) below)", "(domain root, inherited by N OU(s))", or "(inherited, source not
+  found)" for an OU whose inherited right has no source; the `inheritedFrom` row is gone
+  where the source is known. The headline still counts every OU the right reaches. The
+  source of an inherited ACE is the nearest parent with an explicit Allow ACE of the same
+  trustee, the same object type and inheritance class, at least its rights and a reach
+  this far down - the match used to be trustee and inheritance flag alone, so another
+  delegation of the same trustee on a nearer OU was named. Where no source is found the
+  domain root is no longer named in its place.
+
 - **A policy that weakens SMB signing is shown as an object, with its OUs.**
   `Get-SMBSigningStatus` closed with "SMB signing is weakened by: <policy names>" - the
   names and nothing else, so a reader went back up through the policy rows for what each

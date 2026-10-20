@@ -263,8 +263,9 @@ function Get-DangerousOUPermissions {
                             IsExchangeService = $isExchangeService
                             IsPrivilegedAccount = $isPrivilegedAccount
                         }
-                        # The element the right is about, for Select-OUStrongestFinding below.
-                        foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly')) {
+                        # The element the right is about, for Select-OUStrongestFinding below,
+                        # and where it is set, for Format-OUPermissionLocation.
+                        foreach ($elementField in @('_ElementClass', '_ElementSelf', '_ElementChildren', '_ElementDirectOnly', '_SourceDN')) {
                             if ($finding.PSObject.Properties[$elementField]) {
                                 $entry | Add-Member -NotePropertyName $elementField -NotePropertyValue $finding.$elementField -Force
                             }
@@ -347,22 +348,17 @@ function Get-DangerousOUPermissions {
                     $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
                         ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 
-                    # Collect all OUs and rights for this principal
-                    $affectedOUs = @()
+                    # Collect all rights for this principal, and the places they are set:
+                    # every OU used to be listed, the one an ACE is set on and every OU that
+                    # inherits it alike, with the sources in a separate row at the end.
                     $dangerousRightsList = @()
-                    $inheritanceSources = @()
                     foreach ($finding in $ouFindings) {
-                        $ouEntry = $finding.DistinguishedName
-                        if ($affectedOUs -notcontains $ouEntry) {
-                            $affectedOUs += $ouEntry
-                        }
                         if ($dangerousRightsList -notcontains $finding.Right) {
                             $dangerousRightsList += $finding.Right
                         }
-                        if ($finding.InheritedFrom -and $inheritanceSources -notcontains $finding.InheritedFrom) {
-                            $inheritanceSources += $finding.InheritedFrom
-                        }
                     }
+                    $affectedOUs = @(Format-OUPermissionLocation -Finding $ouFindings -DomainDN $Script:LDAPContext.DomainDN)
+                    $inheritanceSources = @(Get-UntaggedInheritanceSource -Finding $ouFindings)
 
                     $isWellKnownSID = $sid -match '^S-1-5-\d+$'
                     $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
@@ -410,21 +406,14 @@ function Get-DangerousOUPermissions {
                     $ouFindings = @($principalGroup.Group | Group-Object -Property DistinguishedName |
                         ForEach-Object { Select-OUStrongestFinding -Finding $_.Group })
 
-                    $affectedOUs = @()
                     $dangerousRightsList = @()
-                    $inheritanceSources = @()
                     foreach ($finding in $ouFindings) {
-                        $ouEntry = $finding.DistinguishedName
-                        if ($affectedOUs -notcontains $ouEntry) {
-                            $affectedOUs += $ouEntry
-                        }
                         if ($dangerousRightsList -notcontains $finding.Right) {
                             $dangerousRightsList += $finding.Right
                         }
-                        if ($finding.InheritedFrom -and $inheritanceSources -notcontains $finding.InheritedFrom) {
-                            $inheritanceSources += $finding.InheritedFrom
-                        }
                     }
+                    $affectedOUs = @(Format-OUPermissionLocation -Finding $ouFindings -DomainDN $Script:LDAPContext.DomainDN)
+                    $inheritanceSources = @(Get-UntaggedInheritanceSource -Finding $ouFindings)
 
                     $isWellKnownSID = $sid -match '^S-1-5-\d+$'
                     $adObject = if ($sidObjectMap.ContainsKey($sid)) { $sidObjectMap[$sid] } else { $null }
@@ -575,4 +564,118 @@ function Select-OUStrongestFinding {
     # One by one, not as one array: the caller collects them across OUs with @(), and an
     # array written as a single object would arrive there as one element.
     $kept
+}
+
+<#
+.SYNOPSIS
+    Names the places a principal's OU rights are set, with how many objects inherit each.
+
+.DESCRIPTION
+    affectedOUs used to list every OU a right turned up in, so one delegation on an OU
+    high in the tree came out as every OU below it - hundreds of lines, with the place it
+    is set lost among them and named only in a separate inheritedFrom row at the end.
+
+    Get-OUPermissions tags each finding with _SourceDN: the object an explicit ACE is set
+    on, the source Get-ACEInheritanceSource found for an inherited one, or $null where it
+    found none. One line per source, then:
+
+    - "<DN> (set here)", or "(set here, inherited by N OU(s) below)" with the objects that
+      inherit it - counted by Format-OUContainerCount, so a container is not called an OU;
+    - "<DN> (domain root, inherited by N OU(s))" for a right set on the domain object;
+    - "<DN> (inherited, source not found)" for an inherited right without a source.
+
+    A finding without the tag - the owner of an OU, which is no ACE - is listed by the DN
+    it was found on, as before.
+
+.PARAMETER Finding
+    The findings of one principal, OU by OU.
+
+.PARAMETER DomainDN
+    The DN of the domain object.
+
+.OUTPUTS
+    The lines, one by one.
+#>
+function Format-OUPermissionLocation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Finding,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$DomainDN
+    )
+
+    $sources = [ordered]@{}
+    $unknown = @()
+    $plain = @()
+    foreach ($item in @($Finding | Where-Object { $_ })) {
+        $foundOn = [string]$item.DistinguishedName
+        if (-not $item.PSObject.Properties['_SourceDN']) {
+            if ($plain -notcontains $foundOn) { $plain += $foundOn }
+            continue
+        }
+        $sourceDN = [string]$item._SourceDN
+        if (-not $sourceDN) {
+            if ($unknown -notcontains $foundOn) { $unknown += $foundOn }
+            continue
+        }
+        if (-not $sources.Contains($sourceDN)) { $sources[$sourceDN] = @() }
+        if ($sources[$sourceDN] -notcontains $foundOn) { $sources[$sourceDN] += $foundOn }
+    }
+
+    foreach ($sourceDN in @($sources.Keys)) {
+        $inheritors = @($sources[$sourceDN] | Where-Object { $_ -ne $sourceDN })
+        if ($DomainDN -and $sourceDN -eq $DomainDN) {
+            "$sourceDN (domain root, inherited by $(Format-OUContainerCount -DistinguishedName $inheritors))"
+        } elseif ($inheritors.Count -gt 0) {
+            "$sourceDN (set here, inherited by $(Format-OUContainerCount -DistinguishedName $inheritors) below)"
+        } else {
+            "$sourceDN (set here)"
+        }
+    }
+    foreach ($foundOn in $unknown) {
+        "$foundOn (inherited, source not found)"
+    }
+    foreach ($foundOn in $plain) {
+        if (-not $sources.Contains($foundOn)) { $foundOn }
+    }
+}
+
+<#
+.SYNOPSIS
+    The inheritance sources of the findings that carry no source DN.
+
+.DESCRIPTION
+    The inheritedFrom row, kept for findings Get-OUPermissions did not tag with _SourceDN.
+    For tagged ones Format-OUPermissionLocation names the source on the affectedOUs line,
+    and a separate row would say it a second time.
+
+.PARAMETER Finding
+    The findings of one principal.
+
+.OUTPUTS
+    The distinct InheritedFrom texts, one by one.
+#>
+function Get-UntaggedInheritanceSource {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Finding
+    )
+
+    $seen = @()
+    foreach ($item in @($Finding | Where-Object { $_ })) {
+        if ($item.PSObject.Properties['_SourceDN']) { continue }
+        if ($item.InheritedFrom -and $seen -notcontains $item.InheritedFrom) {
+            $seen += $item.InheritedFrom
+            $item.InheritedFrom
+        }
+    }
 }
