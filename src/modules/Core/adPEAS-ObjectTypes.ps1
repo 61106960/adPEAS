@@ -165,7 +165,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "SID filtering status (quarantine)"
             "Selective authentication settings"
             "Trust transitivity"
-            "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object)"
+            "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object). 'Not set' means RC4 and no AES. The USES_RC4_ENCRYPTION bit in trustAttributes is defined for a realm trust to MIT Kerberos only; on any other trust it says nothing about the key"
             "The domain SID of the partner, and on an inbound trust when the password of its interdomain trust account was last changed"
         )
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."

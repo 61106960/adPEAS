@@ -311,6 +311,11 @@ function Get-DomainTrusts {
                     # RC4 is weaker than AES, and on a realm trust to MIT Kerberos the trust
                     # password is one an administrator typed - but it is not on its own a
                     # way in, so it stays a hint.
+                    #
+                    # The verdict has no row of its own. trustEncryptionTypes is coloured by
+                    # the TRUST_USES_RC4 trigger wherever it names no AES, and that card is
+                    # the explanation - the HTML tooltip of the value. A sentence row said
+                    # it again on the console, two rows under the value it explained.
                     $isAdTrust = ("$type" -eq 'Active Directory')
                     $isMitTrust = ("$type" -eq 'MIT Kerberos Realm')
                     $encTypeProp = $trust.PSObject.Properties['msDS-SupportedEncryptionTypes']
@@ -321,37 +326,27 @@ function Get-DomainTrusts {
                         })
                     }
                     $hasAES = (@($keyTypes | Where-Object { $_ -like 'AES*' }).Count -gt 0)
-                    $hasRC4 = (@($keyTypes | Where-Object { $_ -like 'RC4*' }).Count -gt 0)
 
-                    $keyWeakness = $null
+                    $keyWeakness = $false
                     if ($isAdTrust -or ($isMitTrust -and $keyTypes.Count -gt 0)) {
                         if ($keyTypes.Count -eq 0) {
                             $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue 'Not set' -Force
-                            $keyWeakness = "RC4 - msDS-SupportedEncryptionTypes is not set on the trust, and a trust without it supports RC4 and no AES. The 2026 change to AES by default covers accounts, not trusts."
+                            $keyWeakness = $true
                         } else {
+                            # Without AES the key is RC4, or DES, which Windows has refused
+                            # by default since Windows 7 and Server 2008 R2.
                             $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue ($keyTypes -join ', ') -Force
-                            if (-not $hasAES -and $hasRC4) {
-                                $keyWeakness = 'RC4 - the trust supports RC4 and no AES'
-                            } elseif (-not $hasAES) {
-                                $keyWeakness = 'DES - the trust supports DES and neither RC4 nor AES; Windows has disabled DES by default since Windows 7 and Server 2008 R2'
-                            }
+                            $keyWeakness = (-not $hasAES)
                         }
                     } elseif ($isMitTrust -and $usesRC4) {
                         # No msDS-SupportedEncryptionTypes on a realm trust: the attribute
                         # bit is what MS-ADTS defines for it.
-                        $keyWeakness = 'RC4 - the trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.'
+                        $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue 'RC4' -Force
+                        $keyWeakness = $true
                     }
-
-                    if ($keyWeakness) {
-                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' -NotePropertyValue $keyWeakness -Force
-                    } elseif ($usesRC4 -and -not $isMitTrust) {
-                        # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm
-                        # trust; on any other trust it is left over. Reported as a red finding
-                        # on every trust that carried it, it said something about the key that
-                        # the bit cannot say.
-                        $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-                            -NotePropertyValue "Set, but meaningful only on an MIT realm trust - MS-ADTS defines the RC4 attribute bit for it. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
-                    }
+                    # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm
+                    # trust; on any other trust it is left over and says nothing about the
+                    # key. trustAttributes still names it, and the card says what it means.
 
                     # The class of the object: the SID filtering verdict, raised to a hint
                     # by a key without AES or a password that is no longer changed.

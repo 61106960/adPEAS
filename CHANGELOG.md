@@ -344,8 +344,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   nowhere. A new `trustEncryptionTypes` row names the types, and a trust that allows no
   AES is a hint - including one without the attribute, which supports RC4 and no AES
   (KB4492348); Microsoft's 2026 change to AES by default covers accounts, not trusts
-  (CVE-2026-20833). A line counts such trusts. The RC4 attribute bit keeps its meaning on
-  a realm trust to MIT Kerberos without the attribute. The card *Trust Without AES for
+  (CVE-2026-20833). The value is coloured and carries the card as its tooltip in the HTML
+  report; the sentence row `trustKeyWeakness` that repeated it under the value is gone. A
+  line counts such trusts. The RC4 attribute bit keeps its meaning on a realm trust to MIT
+  Kerberos without the attribute, where the row reads "RC4"; on any other trust the
+  card says it is left over. The card *Trust Without AES for
   Kerberos* no longer claims offline cracking of an Active Directory trust key, whose
   password the domain controllers generate, nor that the trust has to be re-created: AES
   is switched on at the trust object.
@@ -1350,9 +1353,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   "Active Directory (Uplevel)" and "Windows NT (Downlevel)" - the bracket repeated the
   constant name of what the words before it already said. It reads "Active Directory"
   and "Windows NT" now. Value 5, a partner in Entra ID (MS-ADTS 6.1.6.7.15), was shown as
-  "Unknown (5)" and reads "Entra ID"; the BloodHound export maps it back to 5. The RC4
-  bit on a trust other than an MIT realm reads "Set, but meaningful only on an MIT realm
-  trust" instead of naming the type with a wrong article.
+  "Unknown (5)" and reads "Entra ID"; the BloodHound export maps it back to 5.
 
 ---
 

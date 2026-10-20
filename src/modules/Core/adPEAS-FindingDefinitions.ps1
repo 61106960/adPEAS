@@ -7877,19 +7877,20 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Tools = @("Rubeus", "Hashcat")
         MITRE = "T1558"
         Triggers = @(
-            # On trustKeyWeakness, not on the raw usesRC4 boolean.
+            # On trustEncryptionTypes, not on the raw usesRC4 boolean.
             #
             # MS-ADTS defines TRUST_ATTRIBUTE_USES_RC4_ENCRYPTION for an MIT realm trust
             # only, so on an Active Directory trust the bit says nothing about the key -
             # and a trigger on the bare True made it a red finding worth 40 points on
-            # every trust that happened to carry it. Get-DomainTrusts writes the
-            # attribute now only where the bit means something, and the severity is the
-            # one the module has always stated in its own comment: a weaker key is not
-            # on its own a way in.
-            @{ Attribute = 'trustKeyWeakness'; Pattern = '^RC4'; Severity = 'Hint' }
-            # A trust with DES and nothing stronger: no AES either, and Windows refuses
-            # DES by default.
-            @{ Attribute = 'trustKeyWeakness'; Pattern = '^DES'; Severity = 'Hint' }
+            # every trust that happened to carry it. Get-DomainTrusts writes the bit into
+            # trustEncryptionTypes only on a realm trust without the attribute, and the
+            # severity is the one the module states: a weaker key is not on its own a
+            # way in.
+            #
+            # Every value without AES: "Not set" (RC4 and no AES), RC4 alone, and DES
+            # alone, which Windows refuses by default. The values are only ever these
+            # and lists of RC4, AES and DES names.
+            @{ Attribute = 'trustEncryptionTypes'; Pattern = '^(?!.*AES)'; Severity = 'Hint' }
         )
     }
 

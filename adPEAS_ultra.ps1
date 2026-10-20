@@ -11488,8 +11488,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Tools = @("Rubeus", "Hashcat")
 	    MITRE = "T1558"
 	    Triggers = @(
-	        @{ Attribute = 'trustKeyWeakness'; Pattern = '^RC4'; Severity = 'Hint' }
-	        @{ Attribute = 'trustKeyWeakness'; Pattern = '^DES'; Severity = 'Hint' }
+	        @{ Attribute = 'trustEncryptionTypes'; Pattern = '^(?!.*AES)'; Severity = 'Hint' }
 	    )
 	}
 	'TRUST_PASSWORD_STALE' = @{
@@ -20746,7 +20745,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "SID filtering status (quarantine)"
 	        "Selective authentication settings"
 	        "Trust transitivity"
-	        "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object)"
+	        "The Kerberos encryption types allowed across the trust (msDS-SupportedEncryptionTypes on the trust object). 'Not set' means RC4 and no AES. The USES_RC4_ENCRYPTION bit in trustAttributes is defined for a realm trust to MIT Kerberos only; on any other trust it says nothing about the key"
 	        "The domain SID of the partner, and on an inbound trust when the password of its interdomain trust account was last changed"
 	    )
 	    SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
@@ -66089,28 +66088,18 @@ function Get-DomainTrusts {
 	                    })
 	                }
 	                $hasAES = (@($keyTypes | Where-Object { $_ -like 'AES*' }).Count -gt 0)
-	                $hasRC4 = (@($keyTypes | Where-Object { $_ -like 'RC4*' }).Count -gt 0)
-	                $keyWeakness = $null
+	                $keyWeakness = $false
 	                if ($isAdTrust -or ($isMitTrust -and $keyTypes.Count -gt 0)) {
 	                    if ($keyTypes.Count -eq 0) {
 	                        $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue 'Not set' -Force
-	                        $keyWeakness = "RC4 - msDS-SupportedEncryptionTypes is not set on the trust, and a trust without it supports RC4 and no AES. The 2026 change to AES by default covers accounts, not trusts."
+	                        $keyWeakness = $true
 	                    } else {
 	                        $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue ($keyTypes -join ', ') -Force
-	                        if (-not $hasAES -and $hasRC4) {
-	                            $keyWeakness = 'RC4 - the trust supports RC4 and no AES'
-	                        } elseif (-not $hasAES) {
-	                            $keyWeakness = 'DES - the trust supports DES and neither RC4 nor AES; Windows has disabled DES by default since Windows 7 and Server 2008 R2'
-	                        }
+	                        $keyWeakness = (-not $hasAES)
 	                    }
 	                } elseif ($isMitTrust -and $usesRC4) {
-	                    $keyWeakness = 'RC4 - the trust key is RC4 rather than AES. Weaker to crack, and it is the key an inter-realm ticket would be forged with.'
-	                }
-	                if ($keyWeakness) {
-	                    $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' -NotePropertyValue $keyWeakness -Force
-	                } elseif ($usesRC4 -and -not $isMitTrust) {
-	                    $trustObject | Add-Member -NotePropertyName 'trustKeyWeakness' `
-	                        -NotePropertyValue "Set, but meaningful only on an MIT realm trust - MS-ADTS defines the RC4 attribute bit for it. What this trust key uses is decided by msDS-SupportedEncryptionTypes." -Force
+	                    $trustObject | Add-Member -NotePropertyName 'trustEncryptionTypes' -NotePropertyValue 'RC4' -Force
+	                    $keyWeakness = $true
 	                }
 	                $objectClass = $verdict.Severity
 	                if ($keyWeakness) { $weakKeyTrusts++ }
@@ -92317,7 +92306,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261020-1135"
+$Script:adPEASVersion = "2.7.0+20261020-1159"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
