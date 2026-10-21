@@ -883,8 +883,10 @@ function Convert-MembersAddedToRenderValues {
     if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts']) {
         $verdicts = @($sourceObject._memberVerdicts)
     }
+    # Never Note: a Note value is green, and a member that gains a group's rights is no
+    # secure state, whatever the group is worth.
     $memberSeverity = [string]$sourceObject._groupBaseSeverity
-    if ($memberSeverity -notin @('Finding', 'Hint', 'Note')) { $memberSeverity = 'Hint' }
+    if ($memberSeverity -notin @('Finding', 'Hint')) { $memberSeverity = 'Hint' }
 
     $renderValues = @()
     for ($memberIndex = 0; $memberIndex -lt $members.Count; $memberIndex++) {
@@ -932,8 +934,9 @@ function Convert-TargetGroupToRenderValues {
     $severity = 'Standard'
     if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts'] -and
         @($sourceObject._memberVerdicts | Where-Object { $_ -and $_ -ne 'Privileged' }).Count -gt 0) {
+        # Never Note, which is green - see the member renderer above.
         $severity = [string]$sourceObject._groupBaseSeverity
-        if ($severity -notin @('Finding', 'Hint', 'Note')) { $severity = 'Hint' }
+        if ($severity -notin @('Finding', 'Hint')) { $severity = 'Hint' }
     }
 
     return @{

@@ -113,7 +113,11 @@ function Get-GPOLocalGroupMembership {
             'S-1-5-32-574' = @{ Severity = "Hint"; Risk = "Domain accounts added to Certificate Service DCOM Access - permits requesting certificates from the enterprise CA over DCOM" }
             'S-1-5-32-578' = @{ Severity = "Hint"; Risk = "Domain accounts added to Hyper-V Administrators - full control over every virtual machine on the host, which includes its disks" }
             'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
-            'S-1-5-32-547' = @{ Severity = "Note"; Risk = "Domain accounts added to Power Users" }
+            # A Hint like the other Users groups (decided 2026-10-21). It was a Note - the
+            # group grants nothing beyond Users since Windows Vista - and a Note is green,
+            # which read as a secure state once the target group and its members were
+            # coloured.
+            'S-1-5-32-547' = @{ Severity = "Hint"; Risk = "Domain accounts added to Power Users" }
         }
     }
 
@@ -361,7 +365,7 @@ function Get-GPOLocalGroupMembership {
 
                 # The headline takes the most severe assignment that applies, not Finding
                 # whatever the rows say. Three assignments to Power Users, each rated Note by
-                # this check itself, were announced in red as "vulnerable" - and the HTML
+                # this check at the time, were announced in red as "vulnerable" - and the HTML
                 # card takes its colour from that line.
                 $severityRank = @{ 'Note' = 1; 'Hint' = 2; 'Finding' = 3 }
                 $headlineClass = 'Note'

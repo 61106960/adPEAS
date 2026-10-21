@@ -1098,8 +1098,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   by Group Policy*. `TargetGroup` is coloured too - red for Administrators and the three
   operator groups, yellow for Backup Operators, Remote Desktop Users and the like - where
   such a member is added. An assignment that adds Tier 0 principals only is a note, unless
-  it empties the group first. `Type` is no longer printed on the console - `Mode` says which
-  mechanism wrote the assignment - and stays on the HTML card.
+  it empties the group first. Power Users is rated like the other Users groups - a hint,
+  and a finding with a broad member in it - rather than as a note, which is green and read
+  as a secure state once its members were coloured. `Type` is no longer printed on the
+  console - `Mode` says which mechanism wrote the assignment - and stays on the HTML card.
 
 - **No GPO check prints `SourceFile` on the console any more.** The file inside the policy
   a finding was read from - `Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf`,

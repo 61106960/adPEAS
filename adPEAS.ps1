@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 12:38:05
-    Version: 2.7.0+20261021-1238
+    Build: 2026-10-21 12:41:51
+    Version: 2.7.0+20261021-1241
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -26417,8 +26417,10 @@ function Convert-MembersAddedToRenderValues {
     if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts']) {
         $verdicts = @($sourceObject._memberVerdicts)
     }
+    # Never Note: a Note value is green, and a member that gains a group's rights is no
+    # secure state, whatever the group is worth.
     $memberSeverity = [string]$sourceObject._groupBaseSeverity
-    if ($memberSeverity -notin @('Finding', 'Hint', 'Note')) { $memberSeverity = 'Hint' }
+    if ($memberSeverity -notin @('Finding', 'Hint')) { $memberSeverity = 'Hint' }
 
     $renderValues = @()
     for ($memberIndex = 0; $memberIndex -lt $members.Count; $memberIndex++) {
@@ -26466,8 +26468,9 @@ function Convert-TargetGroupToRenderValues {
     $severity = 'Standard'
     if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts'] -and
         @($sourceObject._memberVerdicts | Where-Object { $_ -and $_ -ne 'Privileged' }).Count -gt 0) {
+        # Never Note, which is green - see the member renderer above.
         $severity = [string]$sourceObject._groupBaseSeverity
-        if ($severity -notin @('Finding', 'Hint', 'Note')) { $severity = 'Hint' }
+        if ($severity -notin @('Finding', 'Hint')) { $severity = 'Hint' }
     }
 
     return @{
@@ -123071,7 +123074,11 @@ function Get-GPOLocalGroupMembership {
             'S-1-5-32-574' = @{ Severity = "Hint"; Risk = "Domain accounts added to Certificate Service DCOM Access - permits requesting certificates from the enterprise CA over DCOM" }
             'S-1-5-32-578' = @{ Severity = "Hint"; Risk = "Domain accounts added to Hyper-V Administrators - full control over every virtual machine on the host, which includes its disks" }
             'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
-            'S-1-5-32-547' = @{ Severity = "Note"; Risk = "Domain accounts added to Power Users" }
+            # A Hint like the other Users groups (decided 2026-10-21). It was a Note - the
+            # group grants nothing beyond Users since Windows Vista - and a Note is green,
+            # which read as a secure state once the target group and its members were
+            # coloured.
+            'S-1-5-32-547' = @{ Severity = "Hint"; Risk = "Domain accounts added to Power Users" }
         }
     }
 
@@ -123319,7 +123326,7 @@ function Get-GPOLocalGroupMembership {
 
                 # The headline takes the most severe assignment that applies, not Finding
                 # whatever the rows say. Three assignments to Power Users, each rated Note by
-                # this check itself, were announced in red as "vulnerable" - and the HTML
+                # this check at the time, were announced in red as "vulnerable" - and the HTML
                 # card takes its colour from that line.
                 $severityRank = @{ 'Note' = 1; 'Hint' = 2; 'Finding' = 3 }
                 $headlineClass = 'Note'
@@ -149720,7 +149727,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1238"
+$Script:adPEASVersion = "2.7.0+20261021-1241"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

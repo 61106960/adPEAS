@@ -19856,7 +19856,7 @@ function Convert-MembersAddedToRenderValues {
         $verdicts = @($sourceObject._memberVerdicts)
     }
     $memberSeverity = [string]$sourceObject._groupBaseSeverity
-    if ($memberSeverity -notin @('Finding', 'Hint', 'Note')) { $memberSeverity = 'Hint' }
+    if ($memberSeverity -notin @('Finding', 'Hint')) { $memberSeverity = 'Hint' }
     $renderValues = @()
     for ($memberIndex = 0; $memberIndex -lt $members.Count; $memberIndex++) {
         $member = $members[$memberIndex]
@@ -19892,7 +19892,7 @@ function Convert-TargetGroupToRenderValues {
     if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts'] -and
         @($sourceObject._memberVerdicts | Where-Object { $_ -and $_ -ne 'Privileged' }).Count -gt 0) {
         $severity = [string]$sourceObject._groupBaseSeverity
-        if ($severity -notin @('Finding', 'Hint', 'Note')) { $severity = 'Hint' }
+        if ($severity -notin @('Finding', 'Hint')) { $severity = 'Hint' }
     }
     return @{
         RowType             = 'SingleValue'
@@ -77340,7 +77340,7 @@ function Get-GPOLocalGroupMembership {
             'S-1-5-32-574' = @{ Severity = "Hint"; Risk = "Domain accounts added to Certificate Service DCOM Access - permits requesting certificates from the enterprise CA over DCOM" }
             'S-1-5-32-578' = @{ Severity = "Hint"; Risk = "Domain accounts added to Hyper-V Administrators - full control over every virtual machine on the host, which includes its disks" }
             'S-1-5-32-580' = @{ Severity = "Hint"; Risk = "Domain accounts added to Remote Management Users" }
-            'S-1-5-32-547' = @{ Severity = "Note"; Risk = "Domain accounts added to Power Users" }
+            'S-1-5-32-547' = @{ Severity = "Hint"; Risk = "Domain accounts added to Power Users" }
         }
     }
     process {
@@ -95905,7 +95905,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1238"
+$Script:adPEASVersion = "2.7.0+20261021-1241"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
