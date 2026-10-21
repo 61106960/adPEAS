@@ -10667,9 +10667,10 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
             # On the statement Get-GPOScheduledTasks writes only when cmd.exe is handed such
             # a path. Where the truncated program would have to go into the root of the
             # system drive, ordinary users cannot create it by Windows default (measured),
-            # and the row is a note; anywhere else it is a hint.
-            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create files'; Severity = 'Note' }
-            @{ Attribute = 'gpoTaskCmdUnquotedPath'; ExcludePattern = 'only administrators can create files'; Severity = 'Hint' }
+            # and the row is a note; anywhere else it is a hint. The pattern trigger is the more
+            # specific of the two and wins the note case (Get-TriggerMatch's tie-break).
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create it'; Severity = 'Note' }
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Severity = 'Hint' }
         )
     }
 

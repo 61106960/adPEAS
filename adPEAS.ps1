@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 13:43:11
-    Version: 2.7.0+20261021-1343
+    Build: 2026-10-21 13:54:40
+    Version: 2.7.0+20261021-1354
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -19188,9 +19188,10 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
             # On the statement Get-GPOScheduledTasks writes only when cmd.exe is handed such
             # a path. Where the truncated program would have to go into the root of the
             # system drive, ordinary users cannot create it by Windows default (measured),
-            # and the row is a note; anywhere else it is a hint.
-            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create files'; Severity = 'Note' }
-            @{ Attribute = 'gpoTaskCmdUnquotedPath'; ExcludePattern = 'only administrators can create files'; Severity = 'Hint' }
+            # and the row is a note; anywhere else it is a hint. The pattern trigger is the more
+            # specific of the two and wins the note case (Get-TriggerMatch's tie-break).
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create it'; Severity = 'Note' }
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Severity = 'Hint' }
         )
     }
 
@@ -124987,16 +124988,20 @@ function Parse-ScheduledTasksXML {
             # whatever the severity ladder chose as the headline, like the statement above,
             # and with the right a user holds where the truncated program would have to go -
             # GPO_TASK_CMD_UNQUOTED_PATH reads the colour off that wording.
+            #
+            # Short, as a row on the console: the program is on the Command row above, and the
+            # right is the Windows default of the directory - the card says so. It was a
+            # sentence of two lines that repeated the program path.
             if ($cmdTruncation) {
-                $cmdWhere = "who may create files in $($cmdTruncation.Directory) was not checked"
+                $cmdWhere = 'who may create it was not checked'
                 if ($cmdTruncationAccess -eq 'None') {
-                    $cmdWhere = "only administrators can create files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'only administrators can create it'
                 } elseif ($cmdTruncationAccess -eq 'Change') {
-                    $cmdWhere = "every user may change files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'every user may change files there'
                 } elseif ($cmdTruncationAccess -eq 'Add') {
-                    $cmdWhere = "every user may add files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'every user may add files there'
                 }
-                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe is handed $($cmdTruncation.Program) without quotes and splits it at the first space: it starts $($cmdTruncation.Candidate).exe, .bat or .cmd if one exists - $cmdWhere"
+                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe splits the path at the space: $($cmdTruncation.Candidate).exe/.bat/.cmd runs if present - $cmdWhere"
             }
 
             $task = [PSCustomObject]$taskProps
@@ -149920,7 +149925,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1343"
+$Script:adPEASVersion = "2.7.0+20261021-1354"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

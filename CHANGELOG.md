@@ -1119,7 +1119,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   and so was `gpoTaskCmdUnquotedPath` where only administrators can create the file
   cmd.exe would start instead. Both are notes that say the shape is harmless here; they
   stay on the card, with their colour and write-up. `gpoTaskCmdUnquotedPath` is still on
-  the console where it is a hint or a finding.
+  the console where it is a hint or a finding, shortened from a sentence of two lines that
+  repeated the program to "cmd.exe splits the path at the space: D:\Apps\My.exe/.bat/.cmd
+  runs if present - who may create it was not checked".
 
 - **`Get-GPOScheduledTasks` no longer reports a task item that deletes its task.** An item
   with the action D removes the task it names from the computers in scope - nothing runs,

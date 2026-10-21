@@ -848,16 +848,20 @@ function Parse-ScheduledTasksXML {
             # whatever the severity ladder chose as the headline, like the statement above,
             # and with the right a user holds where the truncated program would have to go -
             # GPO_TASK_CMD_UNQUOTED_PATH reads the colour off that wording.
+            #
+            # Short, as a row on the console: the program is on the Command row above, and the
+            # right is the Windows default of the directory - the card says so. It was a
+            # sentence of two lines that repeated the program path.
             if ($cmdTruncation) {
-                $cmdWhere = "who may create files in $($cmdTruncation.Directory) was not checked"
+                $cmdWhere = 'who may create it was not checked'
                 if ($cmdTruncationAccess -eq 'None') {
-                    $cmdWhere = "only administrators can create files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'only administrators can create it'
                 } elseif ($cmdTruncationAccess -eq 'Change') {
-                    $cmdWhere = "every user may change files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'every user may change files there'
                 } elseif ($cmdTruncationAccess -eq 'Add') {
-                    $cmdWhere = "every user may add files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'every user may add files there'
                 }
-                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe is handed $($cmdTruncation.Program) without quotes and splits it at the first space: it starts $($cmdTruncation.Candidate).exe, .bat or .cmd if one exists - $cmdWhere"
+                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe splits the path at the space: $($cmdTruncation.Candidate).exe/.bat/.cmd runs if present - $cmdWhere"
             }
 
             $task = [PSCustomObject]$taskProps

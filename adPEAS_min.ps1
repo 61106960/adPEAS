@@ -14113,8 +14113,8 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("GPO analysis")
         MITRE = "T1574.009"
         Triggers = @(
-            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create files'; Severity = 'Note' }
-            @{ Attribute = 'gpoTaskCmdUnquotedPath'; ExcludePattern = 'only administrators can create files'; Severity = 'Hint' }
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Pattern = 'only administrators can create it'; Severity = 'Note' }
+            @{ Attribute = 'gpoTaskCmdUnquotedPath'; Severity = 'Hint' }
         )
     }
     'ESC15_SCHEMA_V1_ENROLLEE_SUBJECT' = @{
@@ -78413,15 +78413,15 @@ function Parse-ScheduledTasksXML {
                 $taskProps['gpoTaskUnquotedPath'] = 'The program path contains a space and is not quoted. The Task Scheduler quotes the program path itself when it starts the task, so this is not the truncation hijack of an unquoted service ImagePath - it only matters where the same string is handed to a shell, for example copied into a cmd.exe command line or a service definition'
             }
             if ($cmdTruncation) {
-                $cmdWhere = "who may create files in $($cmdTruncation.Directory) was not checked"
+                $cmdWhere = 'who may create it was not checked'
                 if ($cmdTruncationAccess -eq 'None') {
-                    $cmdWhere = "only administrators can create files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'only administrators can create it'
                 } elseif ($cmdTruncationAccess -eq 'Change') {
-                    $cmdWhere = "every user may change files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'every user may change files there'
                 } elseif ($cmdTruncationAccess -eq 'Add') {
-                    $cmdWhere = "every user may add files in $($cmdTruncation.Directory) by Windows default"
+                    $cmdWhere = 'every user may add files there'
                 }
-                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe is handed $($cmdTruncation.Program) without quotes and splits it at the first space: it starts $($cmdTruncation.Candidate).exe, .bat or .cmd if one exists - $cmdWhere"
+                $taskProps['gpoTaskCmdUnquotedPath'] = "cmd.exe splits the path at the space: $($cmdTruncation.Candidate).exe/.bat/.cmd runs if present - $cmdWhere"
             }
             $task = [PSCustomObject]$taskProps
             $tasks += $task
@@ -96021,7 +96021,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1343"
+$Script:adPEASVersion = "2.7.0+20261021-1354"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
