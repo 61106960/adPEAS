@@ -1797,7 +1797,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "GPO scheduled tasks run with specified privileges on target systems. Tasks running as SYSTEM from writable paths or UNC shares enable privilege escalation."
         WhatWeCheck = @(
             "Scheduled tasks in GPO configurations, every Exec action of each"
-            "Execution context (SYSTEM, a privileged account, any other account)"
+            "Execution context (SYSTEM, a Tier 0 account, an operator account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs - who may write the share is not read"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"

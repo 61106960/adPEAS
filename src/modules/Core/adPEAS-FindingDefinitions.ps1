@@ -10524,9 +10524,9 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
 
     'GPO_TASK_SYSTEM_UNC_PATH' = @{
         Title = "GPO Scheduled Task Runs as SYSTEM or a Privileged Account from UNC Path"
-        Risk = "Finding"
-        BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM or as a privileged account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read who may write the share: check the NTFS permissions of the file and of the folder it is in, and the share permissions, on the file server."
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A GPO-deployed scheduled task runs as SYSTEM, an operator account or a Tier 0 account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read who may write the share, so this is a hint: check the NTFS permissions of the file and of the folder it is in, and the share permissions, on the file server. A task that runs as a Tier 0 account is a finding for the account itself."
         Impact = @(
             "Task runs with SYSTEM privileges, or as a privileged domain account"
             "What it runs is loaded from a network share at every run"
@@ -10572,11 +10572,12 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("SharpGPOAbuse", "PowerView", "GPO analysis")
         MITRE = "T1053.005"
         Triggers = @(
-            # On the program path of a task that runs from a share as SYSTEM or a privileged
-            # account (_UNCFinding). The card sat on RiskReason, whose sentence repeated RunAs
-            # and Command on the console; RiskReason stays on the HTML card. The colour is
-            # GPO_TASK_FIELD_SEVERITY's: every program path is yellow (decided 2026-10-21).
-            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_finding'; Severity = 'Finding' }
+            # On the program path of a task that runs from a share as SYSTEM, an operator or a
+            # Tier 0 account (_UNCCard). The card sat on RiskReason, whose sentence repeated
+            # RunAs and Command on the console; RiskReason stays on the HTML card. The colour
+            # is GPO_TASK_FIELD_SEVERITY's, whose severity-only triggers take priority; the card's
+            # Risk is its severity for the report.
+            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_card' }
         )
     }
 
@@ -13981,14 +13982,17 @@ $acl.Access | Where-Object {
     }
 
     # The two rows of a scheduled task a reader looks at first, coloured without a card of
-    # their own (decided 2026-10-21): the program path always yellow - the UNC card sits on
-    # it where it applies - and the account by its privilege. A deleted task runs nothing.
+    # their own (decided 2026-10-21): the program path yellow - red where a directory every
+    # user may write by Windows default makes the task a finding, the UNC card sits on it
+    # where it applies - and the account by its privilege. Every finding shows a red row. A
+    # deleted task runs nothing.
     'GPO_TASK_FIELD_SEVERITY' = @{
         Title = "Scheduled Task Field Classification"
         Risk = "Hint"
         BaseScore = 0
         Description = "Colours the program path and the account of a GPO scheduled task."
         Triggers = @(
+            @{ Attribute = 'Command'; Custom = 'gpo_task_command_finding'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'Command'; Custom = 'gpo_task_command'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'RunAs'; Custom = 'gpo_task_runas_finding'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'RunAs'; Custom = 'gpo_task_runas_hint'; Severity = 'Hint'; SeverityOnly = $true }
@@ -16740,11 +16744,18 @@ function Test-CustomTrigger {
         }
 
         # Get-GPOScheduledTasks, on its own objects only: a task that runs from a share as
-        # SYSTEM or a privileged account, any task that runs (the program path is always
-        # yellow), and the colour of the account a task runs as.
-        'gpo_task_unc_finding' {
+        # SYSTEM, an operator or a Tier 0 account, the program path red where it is the
+        # finding and yellow on any other task that runs - the red trigger stands first in
+        # GPO_TASK_FIELD_SEVERITY, and the first severity-only match wins - and the colour of
+        # the account a task runs as.
+        'gpo_task_unc_card' {
             return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
-                [bool]$SourceObject._UNCFinding)
+                [bool]$SourceObject._UNCCard)
+        }
+
+        'gpo_task_command_finding' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
+                [string]$SourceObject._CommandSeverity -eq 'Finding')
         }
 
         'gpo_task_command' {

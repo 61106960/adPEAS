@@ -867,9 +867,10 @@ $Script:ExcludeAttributes = @(
     # instead of partitioning. Internal bookkeeping, never a row.
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
     # A scheduled task item that only deletes its task (Get-GPOScheduledTasks holds it back),
-    # whether a task runs from a share as SYSTEM or a privileged account, and the colour of
-    # the account it runs as (read by the gpo_task_* predicates).
-    '_DeletesTask', '_UNCFinding', '_RunAsSeverity',
+    # whether a task runs from a share as SYSTEM, an operator or a Tier 0 account, and the
+    # colours of its program path and of the account it runs as (read by the gpo_task_*
+    # predicates).
+    '_DeletesTask', '_UNCCard', '_CommandSeverity', '_RunAsSeverity',
     # Roamed credential material. These hold DPAPI master keys and DPAPI-protected private
     # keys, and Get-CredentialRoaming deliberately never retrieves them - presence comes
     # from an LDAP filter instead. Excluded here as well so that another check fetching a

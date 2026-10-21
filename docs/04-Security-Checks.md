@@ -1292,13 +1292,14 @@ Get-GPOLocalGroupMembership
 - Every Exec action of a task - regular and immediate tasks, both file formats - and the account it runs as, from the Preferences item or from the task's own principal
 - Tasks running as SYSTEM, LOCAL SERVICE, NETWORK SERVICE or a privileged account
 - Programs started from a directory in which every user may change files (`C:\Temp`, `C:\Users\Public`, ...) or add files (`C:\ProgramData`, `C:\Windows\Temp`, ...) by Windows default
-- UNC paths: whoever can write the share, or answer for its server name, controls what the task runs. A task that runs from a share as SYSTEM or a privileged account is a finding, with any other account a hint. Who may write the share is not read: a task's command line names shares as programs, arguments, copy sources and wildcards, and the read broke on too many of them
+- UNC paths: whoever can write the share, or answer for its server name, controls what the task runs. Who may write the share is not read - a task's command line names shares as programs, arguments, copy sources and wildcards, and the read broke on too many of them - so a task on a share is a hint, unless its account makes it a finding
+- A task that runs as a Tier 0 account is a finding. SYSTEM and the operator accounts make a task a finding where its program lies in a directory every user may write by Windows default; otherwise they make it a hint
 - `cmd.exe /c` lines with an unquoted program path containing a space, which cmd.exe splits at the first space. The program field of a task is not affected: the Task Scheduler quotes it itself
 - Tasks of policies that are not linked or not enabled are held back and summarized, and so are task items with the action Delete: they remove the task they name, nothing runs
 
 A password stored in a task (`cpassword`) is reported by `Get-CredentialExposure`.
 
-**Console colours**: The program path (`Command`) is yellow on every task that runs, and carries the card of a task that runs from a share as SYSTEM or a privileged account. The account (`RunAs`) is red for a Tier 0 account, and yellow for an operator account and for SYSTEM, LOCAL SERVICE and NETWORK SERVICE. The full sentence (`RiskReason`) is on the HTML card only.
+**Console colours**: The program path (`Command`) is yellow on every task that runs, and red where a directory every user may write by Windows default makes the task a finding; it carries the card of a task that runs from a share as SYSTEM, an operator or a Tier 0 account. The account (`RunAs`) is red for a Tier 0 account, and yellow for an operator account and for SYSTEM, LOCAL SERVICE and NETWORK SERVICE. Every task rated a finding shows one of the two in red, so the headline is red only above a red row. The full sentence (`RiskReason`) is on the HTML card only.
 
 **Security Impact**: A task runs on every computer the policy reaches. Whoever can replace what a SYSTEM task starts runs code as SYSTEM on all of them; for a task that runs as a privileged domain account, as that account - for a domain administrator, that is the domain.
 

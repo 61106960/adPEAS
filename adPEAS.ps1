@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 14:28:10
-    Version: 2.7.0+20261021-1428
+    Build: 2026-10-21 14:55:14
+    Version: 2.7.0+20261021-1455
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7562,9 +7562,10 @@ $Script:ExcludeAttributes = @(
     # instead of partitioning. Internal bookkeeping, never a row.
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
     # A scheduled task item that only deletes its task (Get-GPOScheduledTasks holds it back),
-    # whether a task runs from a share as SYSTEM or a privileged account, and the colour of
-    # the account it runs as (read by the gpo_task_* predicates).
-    '_DeletesTask', '_UNCFinding', '_RunAsSeverity',
+    # whether a task runs from a share as SYSTEM, an operator or a Tier 0 account, and the
+    # colours of its program path and of the account it runs as (read by the gpo_task_*
+    # predicates).
+    '_DeletesTask', '_UNCCard', '_CommandSeverity', '_RunAsSeverity',
     # Roamed credential material. These hold DPAPI master keys and DPAPI-protected private
     # keys, and Get-CredentialRoaming deliberately never retrieves them - presence comes
     # from an LDAP filter instead. Excluded here as well so that another check fetching a
@@ -19045,9 +19046,9 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
 
     'GPO_TASK_SYSTEM_UNC_PATH' = @{
         Title = "GPO Scheduled Task Runs as SYSTEM or a Privileged Account from UNC Path"
-        Risk = "Finding"
-        BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM or as a privileged account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read who may write the share: check the NTFS permissions of the file and of the folder it is in, and the share permissions, on the file server."
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A GPO-deployed scheduled task runs as SYSTEM, an operator account or a Tier 0 account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read who may write the share, so this is a hint: check the NTFS permissions of the file and of the folder it is in, and the share permissions, on the file server. A task that runs as a Tier 0 account is a finding for the account itself."
         Impact = @(
             "Task runs with SYSTEM privileges, or as a privileged domain account"
             "What it runs is loaded from a network share at every run"
@@ -19093,11 +19094,12 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("SharpGPOAbuse", "PowerView", "GPO analysis")
         MITRE = "T1053.005"
         Triggers = @(
-            # On the program path of a task that runs from a share as SYSTEM or a privileged
-            # account (_UNCFinding). The card sat on RiskReason, whose sentence repeated RunAs
-            # and Command on the console; RiskReason stays on the HTML card. The colour is
-            # GPO_TASK_FIELD_SEVERITY's: every program path is yellow (decided 2026-10-21).
-            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_finding'; Severity = 'Finding' }
+            # On the program path of a task that runs from a share as SYSTEM, an operator or a
+            # Tier 0 account (_UNCCard). The card sat on RiskReason, whose sentence repeated
+            # RunAs and Command on the console; RiskReason stays on the HTML card. The colour
+            # is GPO_TASK_FIELD_SEVERITY's, whose severity-only triggers take priority; the card's
+            # Risk is its severity for the report.
+            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_card' }
         )
     }
 
@@ -22502,14 +22504,17 @@ $acl.Access | Where-Object {
     }
 
     # The two rows of a scheduled task a reader looks at first, coloured without a card of
-    # their own (decided 2026-10-21): the program path always yellow - the UNC card sits on
-    # it where it applies - and the account by its privilege. A deleted task runs nothing.
+    # their own (decided 2026-10-21): the program path yellow - red where a directory every
+    # user may write by Windows default makes the task a finding, the UNC card sits on it
+    # where it applies - and the account by its privilege. Every finding shows a red row. A
+    # deleted task runs nothing.
     'GPO_TASK_FIELD_SEVERITY' = @{
         Title = "Scheduled Task Field Classification"
         Risk = "Hint"
         BaseScore = 0
         Description = "Colours the program path and the account of a GPO scheduled task."
         Triggers = @(
+            @{ Attribute = 'Command'; Custom = 'gpo_task_command_finding'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'Command'; Custom = 'gpo_task_command'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'RunAs'; Custom = 'gpo_task_runas_finding'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'RunAs'; Custom = 'gpo_task_runas_hint'; Severity = 'Hint'; SeverityOnly = $true }
@@ -25261,11 +25266,18 @@ function Test-CustomTrigger {
         }
 
         # Get-GPOScheduledTasks, on its own objects only: a task that runs from a share as
-        # SYSTEM or a privileged account, any task that runs (the program path is always
-        # yellow), and the colour of the account a task runs as.
-        'gpo_task_unc_finding' {
+        # SYSTEM, an operator or a Tier 0 account, the program path red where it is the
+        # finding and yellow on any other task that runs - the red trigger stands first in
+        # GPO_TASK_FIELD_SEVERITY, and the first severity-only match wins - and the colour of
+        # the account a task runs as.
+        'gpo_task_unc_card' {
             return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
-                [bool]$SourceObject._UNCFinding)
+                [bool]$SourceObject._UNCCard)
+        }
+
+        'gpo_task_command_finding' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
+                [string]$SourceObject._CommandSeverity -eq 'Finding')
         }
 
         'gpo_task_command' {
@@ -29750,7 +29762,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "GPO scheduled tasks run with specified privileges on target systems. Tasks running as SYSTEM from writable paths or UNC shares enable privilege escalation."
         WhatWeCheck = @(
             "Scheduled tasks in GPO configurations, every Exec action of each"
-            "Execution context (SYSTEM, a privileged account, any other account)"
+            "Execution context (SYSTEM, a Tier 0 account, an operator account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs - who may write the share is not read"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
@@ -124761,16 +124773,26 @@ function Parse-ScheduledTasksXML {
             # Who may write a share a task starts from is not read. The read - NTFS over SMB,
             # on the host the path names - broke on host names, tickets, wildcards and copy
             # sources in too many places to be worth its connections (user decision
-            # 2026-10-21). A task that runs as SYSTEM or a privileged account from a share is
-            # the finding it was before the read.
+            # 2026-10-21).
             #
-            # Who the share's content runs as, in the words the UNC verdict below uses.
-            $uncTaskSubject = 'SYSTEM'
-            $uncRunsAs = 'SYSTEM'
+            # A Tier 0 account is a finding of its own; SYSTEM and the operator accounts make
+            # a task a finding only where something every user may write by Windows default
+            # decides what runs. Every finding shows a red row - RunAs for the account,
+            # Command for the directory - so that the headline is never red over yellow rows
+            # (user decision 2026-10-21).
+            $isTier0Account = $runAsCategory -eq 'Privileged'
+            $isElevatedAccount = $isSystemAccount -or $isPrivilegedAccount
+            $riskyPathFinding = $isElevatedAccount -and $riskyPathApplies
+
+            # Who the task runs as, in the words the verdicts below use.
+            $accountSubject = 'SYSTEM'
+            $accountRunsAs = 'SYSTEM'
             if (-not $isSystemAccount) {
-                $uncTaskSubject = "the privileged account $runAsLabel"
-                $uncRunsAs = 'that account'
+                $accountSubject = "the operator account $runAsLabel"
+                if ($isTier0Account) { $accountSubject = "the privileged account $runAsLabel" }
+                $accountRunsAs = 'that account'
             }
+            $uncRisk = "Task runs as $accountSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $accountRunsAs on every computer in scope. Who may write there was not checked"
 
             $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
 
@@ -124778,27 +124800,28 @@ function Parse-ScheduledTasksXML {
             $isScript = $scriptPrograms.Count -gt 0
 
             # Severity Determination (using standard adPEAS severity values)
-            #
-            # $uncFinding marks the task whose program path carries GPO_TASK_SYSTEM_UNC_PATH:
-            # one that runs as SYSTEM or a privileged account from a share.
-            $uncFinding = $false
-            if (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath) {
+            if ($riskyPathFinding) {
+                # Ahead of the share and of the plain Tier 0 case, which would otherwise take
+                # the headline and leave the way in unsaid: the directory is read off the
+                # Windows default, the share is not read at all.
                 $severity = "Finding"
-                $uncFinding = $true
-                $risk = "Task runs as $uncTaskSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $uncRunsAs on every computer in scope. Who may write there was not checked"
-            } elseif ($isSystemAccount -and $riskyPathApplies) {
+                $risk = "Task runs as $accountSubject $riskyPathText as $accountRunsAs"
+            } elseif ($isTier0Account -and $hasUNCPath) {
                 $severity = "Finding"
-                $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
-            } elseif ($isPrivilegedAccount -and $riskyPathApplies) {
-                # Ahead of the plain privileged case, which would otherwise take the headline
-                # and leave the way in unsaid.
+                $risk = $uncRisk
+            } elseif ($isTier0Account) {
                 $severity = "Finding"
-                $risk = "Task runs as the privileged account $runAsLabel $riskyPathText as that account"
+                $risk = "Task runs as privileged account"
+            } elseif ($isElevatedAccount -and $hasUNCPath) {
+                # A hint (user decision 2026-10-21): who may write the share is not read, as
+                # the permissions of a local script below are not.
+                $severity = "Hint"
+                $risk = $uncRisk
             } elseif ($isSystemAccount -and $isScript) {
                 # A hint, by user decision 2026-10-16: the risk is real but unread. Who may
                 # change a local script sits in the file system of every computer in scope,
-                # which the directory does not show - and the risky directories and UNC paths
-                # this check can judge are rated above.
+                # which the directory does not show - and the risky directories this check can
+                # judge are rated above.
                 $severity = "Hint"
                 $risk = "Task runs a script as SYSTEM - whoever can change the script controls what runs as SYSTEM on every computer in scope. Its permissions on those computers were not checked"
             } elseif ($isSystemAccount -and $isPowerShell) {
@@ -124808,8 +124831,10 @@ function Parse-ScheduledTasksXML {
                 $severity = "Hint"
                 $risk = "Task runs PowerShell as SYSTEM - whoever can change a script it loads controls what runs as SYSTEM on every computer in scope. That was not checked"
             } elseif ($isPrivilegedAccount) {
-                $severity = "Finding"
-                $risk = "Task runs as privileged account"
+                # An operator account: a hint, as an operator is elsewhere (user decision
+                # 2026-10-21).
+                $severity = "Hint"
+                $risk = "Task runs as $accountSubject"
             } elseif ($riskyPathApplies) {
                 # Any other account. A task running as a named account out of C:\Temp fell
                 # through every branch to a Note with an empty reason, although whoever puts
@@ -124865,16 +124890,18 @@ function Parse-ScheduledTasksXML {
                 _Risk      = $risk
             }
 
-            # The program path carries the UNC card where the task runs as SYSTEM or a
-            # privileged account from a share (gpo_task_unc_finding); every program path is
-            # yellow (GPO_TASK_FIELD_SEVERITY).
-            if ($uncFinding) { $taskProps['_UNCFinding'] = $true }
+            # The program path carries the UNC card where the task runs as SYSTEM, an operator
+            # or a Tier 0 account from a share (gpo_task_unc_card). It is yellow on every task
+            # (GPO_TASK_FIELD_SEVERITY), and red where a directory every user may write by
+            # Windows default makes the task a finding (gpo_task_command_finding).
+            if ($isElevatedAccount -and $hasUNCPath) { $taskProps['_UNCCard'] = $true }
+            if ($riskyPathFinding) { $taskProps['_CommandSeverity'] = 'Finding' }
 
             # The account the task runs as, coloured by its privilege, as an identity is
             # elsewhere: a Tier 0 account red, an operator account and the machine's own
             # accounts - SYSTEM, LOCAL SERVICE, NETWORK SERVICE - yellow, anything else not at
             # all (gpo_task_runas_*).
-            if ($runAsCategory -eq 'Privileged') {
+            if ($isTier0Account) {
                 $taskProps['_RunAsSeverity'] = 'Finding'
             } elseif ($runAsCategory -eq 'Operator' -or $isSystemAccount) {
                 $taskProps['_RunAsSeverity'] = 'Hint'
@@ -149838,7 +149865,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1428"
+$Script:adPEASVersion = "2.7.0+20261021-1455"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

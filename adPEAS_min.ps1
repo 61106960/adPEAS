@@ -3862,7 +3862,7 @@ $Script:ExcludeAttributes = @(
     '_gmsaReaderVerdicts',
     '_IsEffective', '_HasAnyLink',
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
-    '_DeletesTask', '_UNCFinding', '_RunAsSeverity',
+    '_DeletesTask', '_UNCCard', '_CommandSeverity', '_RunAsSeverity',
     'msPKIAccountCredentials', 'msPKIDPAPIMasterKeys',
     '_IsFinding',
     'Risk', 'Severity', 'ConsoleClass',
@@ -13988,9 +13988,9 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
     }
     'GPO_TASK_SYSTEM_UNC_PATH' = @{
         Title = "GPO Scheduled Task Runs as SYSTEM or a Privileged Account from UNC Path"
-        Risk = "Finding"
-        BaseScore = 45
-        Description = "A GPO-deployed scheduled task runs as SYSTEM or as a privileged account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read who may write the share: check the NTFS permissions of the file and of the folder it is in, and the share permissions, on the file server."
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A GPO-deployed scheduled task runs as SYSTEM, an operator account or a Tier 0 account and names a UNC network path on its command line - as the program it starts, or as a script or file handed to that program. Whoever can write that share controls what runs in that account on every computer the policy reaches, and so does whoever can answer for the server name where name resolution or unsigned SMB leave room for it. adPEAS does not read who may write the share, so this is a hint: check the NTFS permissions of the file and of the folder it is in, and the share permissions, on the file server. A task that runs as a Tier 0 account is a finding for the account itself."
         Impact = @(
             "Task runs with SYSTEM privileges, or as a privileged domain account"
             "What it runs is loaded from a network share at every run"
@@ -14036,7 +14036,7 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("SharpGPOAbuse", "PowerView", "GPO analysis")
         MITRE = "T1053.005"
         Triggers = @(
-            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_finding'; Severity = 'Finding' }
+            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_card' }
         )
     }
     'GPO_TASK_UNQUOTED_PATH' = @{
@@ -17027,6 +17027,7 @@ $acl.Access | Where-Object {
         BaseScore = 0
         Description = "Colours the program path and the account of a GPO scheduled task."
         Triggers = @(
+            @{ Attribute = 'Command'; Custom = 'gpo_task_command_finding'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'Command'; Custom = 'gpo_task_command'; Severity = 'Hint'; SeverityOnly = $true }
             @{ Attribute = 'RunAs'; Custom = 'gpo_task_runas_finding'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'RunAs'; Custom = 'gpo_task_runas_hint'; Severity = 'Hint'; SeverityOnly = $true }
@@ -19105,9 +19106,13 @@ function Test-CustomTrigger {
             }
             return $true
         }
-        'gpo_task_unc_finding' {
+        'gpo_task_unc_card' {
             return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
-                [bool]$SourceObject._UNCFinding)
+                [bool]$SourceObject._UNCCard)
+        }
+        'gpo_task_command_finding' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
+                [string]$SourceObject._CommandSeverity -eq 'Finding')
         }
         'gpo_task_command' {
             return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
@@ -22430,7 +22435,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "GPO scheduled tasks run with specified privileges on target systems. Tasks running as SYSTEM from writable paths or UNC shares enable privilege escalation."
         WhatWeCheck = @(
             "Scheduled tasks in GPO configurations, every Exec action of each"
-            "Execution context (SYSTEM, a privileged account, any other account)"
+            "Execution context (SYSTEM, a Tier 0 account, an operator account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs - who may write the share is not read"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
@@ -78288,26 +78293,32 @@ function Parse-ScheduledTasksXML {
                     }
                 }
             }
-            $uncTaskSubject = 'SYSTEM'
-            $uncRunsAs = 'SYSTEM'
+            $isTier0Account = $runAsCategory -eq 'Privileged'
+            $isElevatedAccount = $isSystemAccount -or $isPrivilegedAccount
+            $riskyPathFinding = $isElevatedAccount -and $riskyPathApplies
+            $accountSubject = 'SYSTEM'
+            $accountRunsAs = 'SYSTEM'
             if (-not $isSystemAccount) {
-                $uncTaskSubject = "the privileged account $runAsLabel"
-                $uncRunsAs = 'that account'
+                $accountSubject = "the operator account $runAsLabel"
+                if ($isTier0Account) { $accountSubject = "the privileged account $runAsLabel" }
+                $accountRunsAs = 'that account'
             }
+            $uncRisk = "Task runs as $accountSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $accountRunsAs on every computer in scope. Who may write there was not checked"
             $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
             $scriptPrograms = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' })
             $isScript = $scriptPrograms.Count -gt 0
-            $uncFinding = $false
-            if (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath) {
+            if ($riskyPathFinding) {
                 $severity = "Finding"
-                $uncFinding = $true
-                $risk = "Task runs as $uncTaskSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $uncRunsAs on every computer in scope. Who may write there was not checked"
-            } elseif ($isSystemAccount -and $riskyPathApplies) {
+                $risk = "Task runs as $accountSubject $riskyPathText as $accountRunsAs"
+            } elseif ($isTier0Account -and $hasUNCPath) {
                 $severity = "Finding"
-                $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
-            } elseif ($isPrivilegedAccount -and $riskyPathApplies) {
+                $risk = $uncRisk
+            } elseif ($isTier0Account) {
                 $severity = "Finding"
-                $risk = "Task runs as the privileged account $runAsLabel $riskyPathText as that account"
+                $risk = "Task runs as privileged account"
+            } elseif ($isElevatedAccount -and $hasUNCPath) {
+                $severity = "Hint"
+                $risk = $uncRisk
             } elseif ($isSystemAccount -and $isScript) {
                 $severity = "Hint"
                 $risk = "Task runs a script as SYSTEM - whoever can change the script controls what runs as SYSTEM on every computer in scope. Its permissions on those computers were not checked"
@@ -78315,8 +78326,8 @@ function Parse-ScheduledTasksXML {
                 $severity = "Hint"
                 $risk = "Task runs PowerShell as SYSTEM - whoever can change a script it loads controls what runs as SYSTEM on every computer in scope. That was not checked"
             } elseif ($isPrivilegedAccount) {
-                $severity = "Finding"
-                $risk = "Task runs as privileged account"
+                $severity = "Hint"
+                $risk = "Task runs as $accountSubject"
             } elseif ($riskyPathApplies) {
                 $severity = "Hint"
                 $risk = "Task runs as $runAsLabel $riskyPathText as that account"
@@ -78357,8 +78368,9 @@ function Parse-ScheduledTasksXML {
                 _Severity  = $severity
                 _Risk      = $risk
             }
-            if ($uncFinding) { $taskProps['_UNCFinding'] = $true }
-            if ($runAsCategory -eq 'Privileged') {
+            if ($isElevatedAccount -and $hasUNCPath) { $taskProps['_UNCCard'] = $true }
+            if ($riskyPathFinding) { $taskProps['_CommandSeverity'] = 'Finding' }
+            if ($isTier0Account) {
                 $taskProps['_RunAsSeverity'] = 'Finding'
             } elseif ($runAsCategory -eq 'Operator' -or $isSystemAccount) {
                 $taskProps['_RunAsSeverity'] = 'Hint'
@@ -95976,7 +95988,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1428"
+$Script:adPEASVersion = "2.7.0+20261021-1455"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

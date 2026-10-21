@@ -943,8 +943,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   was a finding with "check if script is modifiable" and "check command for injection
   vulnerabilities" - claims about permissions on the computers the directory does not
   show, and about an injection surface a static command line does not have. The rows say
-  what was not checked. Risky directories and UNC paths, which the check can judge, stay
-  findings.
+  what was not checked. Risky directories, which the check can judge, stay findings.
 
 - **A GPO linked to a site no longer claims to affect 0 computers.** Site membership
   follows the IP subnet a computer starts in, which the directory does not record per
@@ -1104,9 +1103,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Get-GPOScheduledTasks` colours the program path and the account of every task.**
   `Command` was coloured by patterns on the path and stayed plain where a line started with
   `cmd.exe`, `powershell` or anything else the patterns did not expect; it is yellow on
-  every task that runs now. `RunAs` takes the colour of the account's privilege, as an
-  identity does elsewhere: red for a Tier 0 account, yellow for an operator account and for
-  SYSTEM, LOCAL SERVICE and NETWORK SERVICE.
+  every task that runs now, and red where a directory every user may write by Windows
+  default makes the task a finding. `RunAs` takes the colour of the account's privilege, as
+  an identity does elsewhere: red for a Tier 0 account, yellow for an operator account and
+  for SYSTEM, LOCAL SERVICE and NETWORK SERVICE. Every task rated a finding shows one of
+  the two in red - the headline "Found ... scheduled task(s)" was red above rows that were
+  all yellow.
+
+- **A GPO scheduled task that runs from a share as SYSTEM, or as an operator account, is a
+  hint.** Who may write the share is not read, so the finding claimed a risk nothing had
+  looked at - the same reason a SYSTEM task that runs a local script is a hint. A task that
+  runs as an operator account is a hint where nothing else is wrong, as an operator is
+  elsewhere, and a finding where its program lies in a directory every user may write by
+  Windows default, like a SYSTEM task. A Tier 0 account keeps a task a finding, from a
+  share or not. The card *GPO Scheduled Task Runs as SYSTEM or a Privileged Account from
+  UNC Path* is a hint now (score 25).
 
 - **Two notes of `Get-GPOScheduledTasks` stay on the HTML card.** `gpoTaskUnquotedPath` -
   a paragraph saying that a program path with a space is quoted by the Task Scheduler and
