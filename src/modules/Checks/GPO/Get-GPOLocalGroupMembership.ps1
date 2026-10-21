@@ -487,8 +487,21 @@ function Resolve-LocalGroupTargetName {
 function Get-GroupAssignmentSeverity {
     param(
         [string]$GroupSID,
-        [array]$RiskyMembers
+        [array]$RiskyMembers,
+        # The Resolve-GroupMemberRisk verdict of every member added, and whether the item
+        # empties the group first.
+        [array]$MemberVerdicts,
+        [switch]$EmptiesGroup
     )
+
+    # An assignment that adds Tier 0 only grants nobody anything: Domain Admins in the local
+    # Administrators was a red "vulnerable" finding although it is the default. One that
+    # empties the group first is still judged as before - it removes everybody else.
+    $verdicts = @($MemberVerdicts | Where-Object { $_ })
+    if ($verdicts.Count -gt 0 -and -not $EmptiesGroup -and
+        @($verdicts | Where-Object { $_ -ne 'Privileged' }).Count -eq 0) {
+        return @{ Severity = "Note"; Risk = "Only Tier 0 principals added - they hold the group's rights already" }
+    }
 
     $config = $Script:GroupSeverityConfig[$GroupSID]
     if (-not $config) {
@@ -528,6 +541,27 @@ function Get-GroupAssignmentSeverity {
     }
 
     return @{ Severity = $severity; Risk = $risk }
+}
+
+<#
+.SYNOPSIS
+    What the target group is worth, before any member is looked at.
+
+.DESCRIPTION
+    The severity of $Script:GroupSeverityConfig, not escalated by a broad member: the
+    colour of the TargetGroup row and of every member that is neither broad nor Tier 0
+    (_groupBaseSeverity). A group the table does not know is a Hint, as in
+    Get-GroupAssignmentSeverity.
+
+.NOTES
+    Internal helper function
+#>
+function Get-LocalGroupBaseSeverity {
+    param([string]$GroupSID)
+
+    $config = $Script:GroupSeverityConfig[$GroupSID]
+    if ($config) { return [string]$config.Severity }
+    return 'Hint'
 }
 
 <#
@@ -586,6 +620,11 @@ function Resolve-RestrictedGroupSID {
     A broad group is shown under its canonical English name; any other member under
     -FallbackName when the caller has one, and otherwise under its resolved name.
 
+    Verdict is what the member is worth in the group, by SID: Broad, Privileged (Tier 0 -
+    it holds the group's rights already, and the member renderer leaves it uncoloured), or
+    Other - a user, a group of the domain, an operator group, a SID nothing resolves - which
+    the renderer marks in the colour of the target group.
+
 .NOTES
     Internal helper function
 #>
@@ -614,7 +653,14 @@ function Resolve-GroupMemberRisk {
         $memberName = if ($FallbackName) { $FallbackName } else { ConvertFrom-SID -SID $MemberSID }
     }
 
-    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad }
+    $verdict = 'Other'
+    if ($isBroad) {
+        $verdict = 'Broad'
+    } elseif ($MemberSID -match '^S-1-' -and (Test-IsPrivileged -Identity $MemberSID).Category -eq 'Privileged') {
+        $verdict = 'Privileged'
+    }
+
+    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad; Verdict = $verdict }
 }
 
 # Helper Function: Parse Restricted Groups (GptTmpl.inf)
@@ -684,6 +730,7 @@ function Parse-RestrictedGroups {
 
                         $memberNames = @()
                         $riskyMembers = @()
+                        $memberVerdicts = @()
 
                         foreach ($memberSID in $memberSIDs) {
                             if ([string]::IsNullOrWhiteSpace($memberSID)) { continue }
@@ -693,10 +740,13 @@ function Parse-RestrictedGroups {
                             if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
 
                             $memberNames += $memberName
+                            $memberVerdicts += $memberRisk.Verdict
                         }
 
-                        # Get severity from centralized configuration
-                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+                        # Get severity from centralized configuration. A blank list, which
+                        # empties the group, has no verdict to lower it.
+                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                            -MemberVerdicts $memberVerdicts
 
                         # A Members list REPLACES the group on every policy refresh, which
                         # the report never said: the attribute was called MembersAdded and
@@ -722,6 +772,10 @@ function Parse-RestrictedGroups {
                             RiskyMembers = $riskyMembers
                             Severity = $severityResult.Severity
                             Risk = $severityResult.Risk
+                            # One verdict per MembersAdded entry, in its order - what the
+                            # member renderer colours each by.
+                            _memberVerdicts = $memberVerdicts
+                            _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
                         }
 
                         if ($emptiesGroup) {
@@ -756,7 +810,8 @@ function Parse-RestrictedGroups {
                         $groupName = Resolve-LocalGroupTargetName -SID $groupSID
                         if ($groupName) {
 
-                            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+                            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                                -MemberVerdicts @($memberRisk.Verdict)
 
                             $findings += [PSCustomObject]@{
                                 GPOName = $GPOName
@@ -774,6 +829,8 @@ function Parse-RestrictedGroups {
                                 RiskyMembers = $riskyMembers
                                 Severity = $severityResult.Severity
                                 Risk = $severityResult.Risk
+                                _memberVerdicts = @($memberRisk.Verdict)
+                                _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
                             }
                         }
                     }
@@ -849,6 +906,7 @@ function Parse-GPPGroups {
             $members = @()
             $memberSIDs = @()
             $riskyMembers = @()
+            $memberVerdicts = @()
             $removedMembers = @()
 
             # The item-level semantics, which used to be dropped: action C/R/U/D on the
@@ -910,6 +968,8 @@ function Parse-GPPGroups {
                     #
                     # The two Restricted Groups parsers above already name their members
                     # this way; only the preferences parser did not.
+                    # A member no SID is known for is Other: nothing says it is Tier 0.
+                    $memberVerdict = 'Other'
                     if ($memberSID) {
                         # Language-independent: decided by SID. A Member element carrying
                         # only a SID gets its resolved name, or the group would look
@@ -917,12 +977,14 @@ function Parse-GPPGroups {
                         $memberRisk = Resolve-GroupMemberRisk -MemberSID ([string]$memberSID) -FallbackName ([string]$memberName)
                         $memberName = $memberRisk.Name
                         if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
+                        $memberVerdict = $memberRisk.Verdict
 
                         $memberSIDs += $memberSID
                     }
 
                     if ($memberName) {
                         $members += $memberName
+                        $memberVerdicts += $memberVerdict
                     }
                 }
             }
@@ -943,8 +1005,10 @@ function Parse-GPPGroups {
                 continue
             }
 
-            # Get severity from centralized configuration
-            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+            # Get severity from centralized configuration. An item that clears the group
+            # first removes everybody else, whatever it adds.
+            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                -MemberVerdicts $memberVerdicts -EmptiesGroup:$clearsGroup
 
             $finding = [PSCustomObject]@{
                 GPOName = $GPOName
@@ -960,6 +1024,8 @@ function Parse-GPPGroups {
                 RiskyMembers = $riskyMembers
                 Severity = $severityResult.Severity
                 Risk = $severityResult.Risk
+                _memberVerdicts = $memberVerdicts
+                _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
             }
 
             if (@($removedMembers).Count -gt 0) {

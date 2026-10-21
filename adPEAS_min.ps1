@@ -3849,6 +3849,7 @@ $Script:ExcludeAttributes = @(
     'EnrollmentAgentChainReachable',
     'dangerousRightsSeverity',
     'RiskyMembers',
+    '_memberVerdicts', '_groupBaseSeverity',
     'MemberCount', 'ProtectedCount',
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
     '_gmsaReaderVerdicts',
@@ -16957,6 +16958,33 @@ $acl.Access | Where-Object {
         )
         Tools = @("BloodHound", "PowerView")
     }
+    'GPO_LOCAL_GROUP_MEMBER' = @{
+        Title = "Account Added to a Privileged Local Group by Group Policy"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A Group Policy adds a principal that is not Tier 0 - a user account, a group of the domain, an operator group - to a privileged local group on every computer the policy reaches, and the principal holds that group's rights on each of them: in the local Administrators group it is local administrator everywhere the policy is linked. The membership is granted by the policy, so it is re-applied at every refresh and survives being removed on the machine. Tier 0 principals are not marked - they hold these rights already. Whether the principal is meant to have them is not something a policy file can say; a dedicated administration group may well be."
+        Impact = @(
+            "Whoever controls the principal - its password, a session where it is logged on, a delegated right to reset it or to change the group's members - controls every computer in scope"
+            "Local administrator on many machines makes credential theft from LSASS and lateral movement across them routine"
+            "Removing the member on a machine changes nothing - the next policy refresh puts it back"
+        )
+        Attack = @(
+            "1. Read the assignment from SYSVOL as any domain user - GptTmpl.inf and Groups.xml are readable by all"
+            "2. Determine which computers the GPO is linked to"
+            "3. Take over the principal - spray or phish the account, reset its password with a delegated right, or add a member to the group"
+            "4. Log on to the computers in scope with the group's rights"
+        )
+        Remediation = @(
+            "Check that the principal is meant to hold these rights on every computer the policy reaches"
+            "Prefer a dedicated group per tier and scope over individual accounts, and LAPS over a standing membership for workstation administration"
+            "Protect the principal as well as the computers in scope are protected: whoever may reset its password or change its members controls them"
+        )
+        References = @(
+            @{ Title = "Restricted Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc756802(v=ws.10)" }
+            @{ Title = "Group Policy Preferences - Local Users and Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn581922(v=ws.11)" }
+        )
+        Tools = @("BloodHound", "PowerView")
+    }
     'GPO_LINK_REACHES_DC' = @{
         Title = "Policy Reaches a Domain Controller Through This Link"
         Risk = "Hint"
@@ -19810,12 +19838,25 @@ function Convert-MembersAddedToRenderValues {
     }
     $riskySeverity = [string]$sourceObject.Severity
     if ($riskySeverity -notin @('Finding', 'Hint', 'Note')) { $riskySeverity = 'Finding' }
+    $verdicts = $null
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts']) {
+        $verdicts = @($sourceObject._memberVerdicts)
+    }
+    $memberSeverity = [string]$sourceObject._groupBaseSeverity
+    if ($memberSeverity -notin @('Finding', 'Hint', 'Note')) { $memberSeverity = 'Hint' }
     $renderValues = @()
-    foreach ($member in $members) {
+    for ($memberIndex = 0; $memberIndex -lt $members.Count; $memberIndex++) {
+        $member = $members[$memberIndex]
         $display = [string]$member
-        if ($riskyLookup.ContainsKey($display)) {
+        $verdict = $null
+        if ($null -ne $verdicts -and $memberIndex -lt $verdicts.Count) { $verdict = [string]$verdicts[$memberIndex] }
+        if (-not $verdict) { $verdict = $(if ($riskyLookup.ContainsKey($display)) { 'Broad' } else { 'Unjudged' }) }
+        if ($verdict -eq 'Broad') {
             $renderValues += New-RenderValue -Display $display -Severity $riskySeverity `
                 -FindingId 'GPO_LOCAL_GROUP_RISKY_MEMBER' -RawValue $member
+        } elseif ($verdict -eq 'Other') {
+            $renderValues += New-RenderValue -Display $display -Severity $memberSeverity `
+                -FindingId 'GPO_LOCAL_GROUP_MEMBER' -RawValue $member
         } else {
             $renderValues += New-RenderValue -Display $display -Severity 'Standard' -RawValue $member
         }
@@ -19826,6 +19867,27 @@ function Convert-MembersAddedToRenderValues {
         OverallSeverity     = $maxSev
         ForceAttributeClass = ($maxSev -ne 'Standard')
         Values              = $renderValues
+    }
+}
+function Convert-TargetGroupToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+    $group = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($group)) { return $null }
+    $sourceObject = $Context.SourceObject
+    $severity = 'Standard'
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts'] -and
+        @($sourceObject._memberVerdicts | Where-Object { $_ -and $_ -ne 'Privileged' }).Count -gt 0) {
+        $severity = [string]$sourceObject._groupBaseSeverity
+        if ($severity -notin @('Finding', 'Hint', 'Note')) { $severity = 'Hint' }
+    }
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = $severity
+        ForceAttributeClass = ($severity -ne 'Standard')
+        Values              = @(
+            New-RenderValue -Display $group -Severity $severity -RawValue $Value
+        )
     }
 }
 function Convert-DangerousACEsToRenderValues {
@@ -20271,6 +20333,7 @@ $Script:AttributeTransformers['affectedOUs']                 = ${function:Conver
 $Script:AttributeTransformers['inheritedFrom']               = ${function:Convert-InheritedFromToRenderValues}
 $Script:AttributeTransformers['DangerousACEs']               = ${function:Convert-DangerousACEsToRenderValues}
 $Script:AttributeTransformers['MembersAdded']               = ${function:Convert-MembersAddedToRenderValues}
+$Script:AttributeTransformers['TargetGroup']                 = ${function:Convert-TargetGroupToRenderValues}
 $Script:AttributeTransformers['TemplateACL']                 = ${function:Convert-TemplateACLToRenderValues}
 $Script:AttributeTransformers['DangerousPermissions']        = ${function:Convert-DangerousPermToRenderValues}
 $Script:AttributeTransformers['SysvolPermissions']           = ${function:Convert-DangerousPermToRenderValues}
@@ -22299,7 +22362,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Restricted Groups settings adding local admins"
             "Group Policy Preferences modifying local groups"
             "Scope of these configurations"
+            "Every member added, by SID: a broad group is marked in the colour of the assignment, any other principal that is not Tier 0 in the colour of the target group, a Tier 0 principal not at all - it holds these rights already"
         )
+        FilteringNote = "An assignment that adds Tier 0 principals only - Domain Admins to the local Administrators, say - is a note rather than a finding, unless it empties the group first. The target group is coloured only where a member that is not Tier 0 is added."
         SecureMessage = "No vulnerable GPO local group assignments found. Local administrator configurations through GPO are properly scoped and controlled."
     }
     'GPOSuppressedGroup' = @{
@@ -77481,8 +77546,15 @@ function Resolve-LocalGroupTargetName {
 function Get-GroupAssignmentSeverity {
     param(
         [string]$GroupSID,
-        [array]$RiskyMembers
+        [array]$RiskyMembers,
+        [array]$MemberVerdicts,
+        [switch]$EmptiesGroup
     )
+    $verdicts = @($MemberVerdicts | Where-Object { $_ })
+    if ($verdicts.Count -gt 0 -and -not $EmptiesGroup -and
+        @($verdicts | Where-Object { $_ -ne 'Privileged' }).Count -eq 0) {
+        return @{ Severity = "Note"; Risk = "Only Tier 0 principals added - they hold the group's rights already" }
+    }
     $config = $Script:GroupSeverityConfig[$GroupSID]
     if (-not $config) {
         $fallbackRisk = "Domain accounts added to local group"
@@ -77504,6 +77576,12 @@ function Get-GroupAssignmentSeverity {
         $risk = "$risk (includes: $riskyList)"
     }
     return @{ Severity = $severity; Risk = $risk }
+}
+function Get-LocalGroupBaseSeverity {
+    param([string]$GroupSID)
+    $config = $Script:GroupSeverityConfig[$GroupSID]
+    if ($config) { return [string]$config.Severity }
+    return 'Hint'
 }
 function Resolve-RestrictedGroupSID {
     [CmdletBinding()]
@@ -77547,7 +77625,13 @@ function Resolve-GroupMemberRisk {
     if (-not $memberName) {
         $memberName = if ($FallbackName) { $FallbackName } else { ConvertFrom-SID -SID $MemberSID }
     }
-    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad }
+    $verdict = 'Other'
+    if ($isBroad) {
+        $verdict = 'Broad'
+    } elseif ($MemberSID -match '^S-1-' -and (Test-IsPrivileged -Identity $MemberSID).Category -eq 'Privileged') {
+        $verdict = 'Privileged'
+    }
+    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad; Verdict = $verdict }
 }
 function Parse-RestrictedGroups {
     [CmdletBinding()]
@@ -77578,14 +77662,17 @@ function Parse-RestrictedGroups {
                     if ($groupName) {
                         $memberNames = @()
                         $riskyMembers = @()
+                        $memberVerdicts = @()
                         foreach ($memberSID in $memberSIDs) {
                             if ([string]::IsNullOrWhiteSpace($memberSID)) { continue }
                             $memberRisk = Resolve-GroupMemberRisk -MemberSID $memberSID
                             $memberName = $memberRisk.Name
                             if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
                             $memberNames += $memberName
+                            $memberVerdicts += $memberRisk.Verdict
                         }
-                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                            -MemberVerdicts $memberVerdicts
                         $membersMode = 'Members (replaces the group on every refresh)'
                         $emptiesGroup = (@($memberNames).Count -eq 0)
                         $finding = [PSCustomObject]@{
@@ -77602,6 +77689,8 @@ function Parse-RestrictedGroups {
                             RiskyMembers = $riskyMembers
                             Severity = $severityResult.Severity
                             Risk = $severityResult.Risk
+                            _memberVerdicts = $memberVerdicts
+                            _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
                         }
                         if ($emptiesGroup) {
                             $finding | Add-Member -NotePropertyName 'groupEmptied' -NotePropertyValue (
@@ -77624,7 +77713,8 @@ function Parse-RestrictedGroups {
                         if ([string]::IsNullOrWhiteSpace($groupSID)) { continue }
                         $groupName = Resolve-LocalGroupTargetName -SID $groupSID
                         if ($groupName) {
-                            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+                            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                                -MemberVerdicts @($memberRisk.Verdict)
                             $findings += [PSCustomObject]@{
                                 GPOName = $GPOName
                                 GPOGUID = $GPOGUID
@@ -77639,6 +77729,8 @@ function Parse-RestrictedGroups {
                                 RiskyMembers = $riskyMembers
                                 Severity = $severityResult.Severity
                                 Risk = $severityResult.Risk
+                                _memberVerdicts = @($memberRisk.Verdict)
+                                _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
                             }
                         }
                     }
@@ -77683,6 +77775,7 @@ function Parse-GPPGroups {
             $members = @()
             $memberSIDs = @()
             $riskyMembers = @()
+            $memberVerdicts = @()
             $removedMembers = @()
             $itemAction = [string]$group.Properties.action
             if ([string]::IsNullOrWhiteSpace($itemAction)) { $itemAction = 'U' }
@@ -77709,14 +77802,17 @@ function Parse-GPPGroups {
                     if (-not $memberSID -and $memberName) {
                         $memberSID = ConvertTo-SID -Identity ([string]$memberName)
                     }
+                    $memberVerdict = 'Other'
                     if ($memberSID) {
                         $memberRisk = Resolve-GroupMemberRisk -MemberSID ([string]$memberSID) -FallbackName ([string]$memberName)
                         $memberName = $memberRisk.Name
                         if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
+                        $memberVerdict = $memberRisk.Verdict
                         $memberSIDs += $memberSID
                     }
                     if ($memberName) {
                         $members += $memberName
+                        $memberVerdicts += $memberVerdict
                     }
                 }
             }
@@ -77728,7 +77824,8 @@ function Parse-GPPGroups {
                 Write-Log "[Parse-GPPGroups] Item for '$canonicalGroupName' names no BUILTIN group and no broad principal - not reported"
                 continue
             }
-            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                -MemberVerdicts $memberVerdicts -EmptiesGroup:$clearsGroup
             $finding = [PSCustomObject]@{
                 GPOName = $GPOName
                 GPOGUID = $GPOGUID
@@ -77743,6 +77840,8 @@ function Parse-GPPGroups {
                 RiskyMembers = $riskyMembers
                 Severity = $severityResult.Severity
                 Risk = $severityResult.Risk
+                _memberVerdicts = $memberVerdicts
+                _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
             }
             if (@($removedMembers).Count -gt 0) {
                 $finding | Add-Member -NotePropertyName 'MembersRemoved' -NotePropertyValue $removedMembers -Force
@@ -95793,7 +95892,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1139"
+$Script:adPEASVersion = "2.7.0+20261021-1202"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

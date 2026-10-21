@@ -13939,6 +13939,38 @@ $acl.Access | Where-Object {
         )
         Tools = @("BloodHound", "PowerView")
     }
+
+    # Any other member of a GPO-deployed local group that is not Tier 0 - a user, a group of
+    # the domain, an operator group. Carried by Convert-MembersAddedToRenderValues as the
+    # broad one is, from the verdict the check makes by SID; coloured like the target group.
+    'GPO_LOCAL_GROUP_MEMBER' = @{
+        Title = "Account Added to a Privileged Local Group by Group Policy"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A Group Policy adds a principal that is not Tier 0 - a user account, a group of the domain, an operator group - to a privileged local group on every computer the policy reaches, and the principal holds that group's rights on each of them: in the local Administrators group it is local administrator everywhere the policy is linked. The membership is granted by the policy, so it is re-applied at every refresh and survives being removed on the machine. Tier 0 principals are not marked - they hold these rights already. Whether the principal is meant to have them is not something a policy file can say; a dedicated administration group may well be."
+        Impact = @(
+            "Whoever controls the principal - its password, a session where it is logged on, a delegated right to reset it or to change the group's members - controls every computer in scope"
+            "Local administrator on many machines makes credential theft from LSASS and lateral movement across them routine"
+            "Removing the member on a machine changes nothing - the next policy refresh puts it back"
+        )
+        Attack = @(
+            "1. Read the assignment from SYSVOL as any domain user - GptTmpl.inf and Groups.xml are readable by all"
+            "2. Determine which computers the GPO is linked to"
+            "3. Take over the principal - spray or phish the account, reset its password with a delegated right, or add a member to the group"
+            "4. Log on to the computers in scope with the group's rights"
+        )
+        Remediation = @(
+            "Check that the principal is meant to hold these rights on every computer the policy reaches"
+            "Prefer a dedicated group per tier and scope over individual accounts, and LAPS over a standing membership for workstation administration"
+            "Protect the principal as well as the computers in scope are protected: whoever may reset its password or change its members controls them"
+        )
+        References = @(
+            @{ Title = "Restricted Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc756802(v=ws.10)" }
+            @{ Title = "Group Policy Preferences - Local Users and Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn581922(v=ws.11)" }
+        )
+        Tools = @("BloodHound", "PowerView")
+    }
+
     # A LinkedOUs entry through which the policy reaches a domain controller - marked by
     # Add-GPODomainControllerReach and coloured by the LinkedOUs transformer. No Triggers:
     # whether a link reaches a domain controller is not in its text.

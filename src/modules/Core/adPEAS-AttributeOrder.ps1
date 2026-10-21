@@ -818,6 +818,9 @@ $Script:ExcludeAttributes = @(
     # are instead - Convert-MembersAddedToRenderValues colours the risky ones and reads
     # this property to know which, so it stays on the object and off the report.
     'RiskyMembers',
+    # What each added member is worth (Broad, Privileged, Other) and what the target group
+    # is worth - read by the MembersAdded and TargetGroup transformers, shown as colours.
+    '_memberVerdicts', '_groupBaseSeverity',
     # Operator Group internal counts - kept in object but not displayed
     'MemberCount', 'ProtectedCount',
     # Internal adPEAS type markers and transport properties - not for display.

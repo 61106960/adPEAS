@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 11:39:14
-    Version: 2.7.0+20261021-1139
+    Build: 2026-10-21 12:02:36
+    Version: 2.7.0+20261021-1202
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7513,6 +7513,9 @@ $Script:ExcludeAttributes = @(
     # are instead - Convert-MembersAddedToRenderValues colours the risky ones and reads
     # this property to know which, so it stays on the object and off the report.
     'RiskyMembers',
+    # What each added member is worth (Broad, Privileged, Other) and what the target group
+    # is worth - read by the MembersAdded and TargetGroup transformers, shown as colours.
+    '_memberVerdicts', '_groupBaseSeverity',
     # Operator Group internal counts - kept in object but not displayed
     'MemberCount', 'ProtectedCount',
     # Internal adPEAS type markers and transport properties - not for display.
@@ -22411,6 +22414,38 @@ $acl.Access | Where-Object {
         )
         Tools = @("BloodHound", "PowerView")
     }
+
+    # Any other member of a GPO-deployed local group that is not Tier 0 - a user, a group of
+    # the domain, an operator group. Carried by Convert-MembersAddedToRenderValues as the
+    # broad one is, from the verdict the check makes by SID; coloured like the target group.
+    'GPO_LOCAL_GROUP_MEMBER' = @{
+        Title = "Account Added to a Privileged Local Group by Group Policy"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A Group Policy adds a principal that is not Tier 0 - a user account, a group of the domain, an operator group - to a privileged local group on every computer the policy reaches, and the principal holds that group's rights on each of them: in the local Administrators group it is local administrator everywhere the policy is linked. The membership is granted by the policy, so it is re-applied at every refresh and survives being removed on the machine. Tier 0 principals are not marked - they hold these rights already. Whether the principal is meant to have them is not something a policy file can say; a dedicated administration group may well be."
+        Impact = @(
+            "Whoever controls the principal - its password, a session where it is logged on, a delegated right to reset it or to change the group's members - controls every computer in scope"
+            "Local administrator on many machines makes credential theft from LSASS and lateral movement across them routine"
+            "Removing the member on a machine changes nothing - the next policy refresh puts it back"
+        )
+        Attack = @(
+            "1. Read the assignment from SYSVOL as any domain user - GptTmpl.inf and Groups.xml are readable by all"
+            "2. Determine which computers the GPO is linked to"
+            "3. Take over the principal - spray or phish the account, reset its password with a delegated right, or add a member to the group"
+            "4. Log on to the computers in scope with the group's rights"
+        )
+        Remediation = @(
+            "Check that the principal is meant to hold these rights on every computer the policy reaches"
+            "Prefer a dedicated group per tier and scope over individual accounts, and LAPS over a standing membership for workstation administration"
+            "Protect the principal as well as the computers in scope are protected: whoever may reset its password or change its members controls them"
+        )
+        References = @(
+            @{ Title = "Restricted Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc756802(v=ws.10)" }
+            @{ Title = "Group Policy Preferences - Local Users and Groups"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn581922(v=ws.11)" }
+        )
+        Tools = @("BloodHound", "PowerView")
+    }
+
     # A LinkedOUs entry through which the policy reaches a domain controller - marked by
     # Add-GPODomainControllerReach and coloured by the LinkedOUs transformer. No Triggers:
     # whether a link reaches a domain controller is not in its text.
@@ -26322,6 +26357,15 @@ function Convert-TemplateACLToRenderValues {
 # fixed one. That value is escalated precisely because a risky member is present, so
 # Everyone in Remote Desktop Users shows as a hint and Everyone in Administrators as a
 # finding - one judgement, made once, in the check.
+#
+# Every other member is marked too, the other way round from a member list elsewhere: a
+# user, a group of the domain or an operator group added to a privileged local group gets
+# the group's rights on every computer in scope, and is shown in the colour of the group
+# (_groupBaseSeverity, not escalated) with GPO_LOCAL_GROUP_MEMBER. A Tier 0 member holds
+# those rights already and stays uncoloured. Only a single account added to the local
+# Administrators used to be plain text under a red headline. The check decides by SID and
+# leaves one verdict per member in _memberVerdicts; an object without them - an older JSON
+# export - is read by RiskyMembers alone, as before.
 function Convert-MembersAddedToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
@@ -26342,12 +26386,27 @@ function Convert-MembersAddedToRenderValues {
     $riskySeverity = [string]$sourceObject.Severity
     if ($riskySeverity -notin @('Finding', 'Hint', 'Note')) { $riskySeverity = 'Finding' }
 
+    $verdicts = $null
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts']) {
+        $verdicts = @($sourceObject._memberVerdicts)
+    }
+    $memberSeverity = [string]$sourceObject._groupBaseSeverity
+    if ($memberSeverity -notin @('Finding', 'Hint', 'Note')) { $memberSeverity = 'Hint' }
+
     $renderValues = @()
-    foreach ($member in $members) {
+    for ($memberIndex = 0; $memberIndex -lt $members.Count; $memberIndex++) {
+        $member = $members[$memberIndex]
         $display = [string]$member
-        if ($riskyLookup.ContainsKey($display)) {
+        $verdict = $null
+        if ($null -ne $verdicts -and $memberIndex -lt $verdicts.Count) { $verdict = [string]$verdicts[$memberIndex] }
+        if (-not $verdict) { $verdict = $(if ($riskyLookup.ContainsKey($display)) { 'Broad' } else { 'Unjudged' }) }
+
+        if ($verdict -eq 'Broad') {
             $renderValues += New-RenderValue -Display $display -Severity $riskySeverity `
                 -FindingId 'GPO_LOCAL_GROUP_RISKY_MEMBER' -RawValue $member
+        } elseif ($verdict -eq 'Other') {
+            $renderValues += New-RenderValue -Display $display -Severity $memberSeverity `
+                -FindingId 'GPO_LOCAL_GROUP_MEMBER' -RawValue $member
         } else {
             $renderValues += New-RenderValue -Display $display -Severity 'Standard' -RawValue $member
         }
@@ -26361,6 +26420,39 @@ function Convert-MembersAddedToRenderValues {
         Values              = $renderValues
     }
 }
+# --- TargetGroup Transformer (GPO local group assignments) ---
+#
+# The local group a policy adds members to, in its own colour - red for Administrators and
+# the three operator groups that are domain-wide on a domain controller, yellow for Backup
+# Operators, Remote Desktop Users and the like (_groupBaseSeverity). Only where a member
+# that is not Tier 0 is added: an item adding Domain Admins to the local Administrators
+# grants nobody anything, and one that only removes adds nobody. The row was plain text,
+# so the one word that says what the assignment is worth had to be read.
+function Convert-TargetGroupToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $group = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($group)) { return $null }
+
+    $sourceObject = $Context.SourceObject
+    $severity = 'Standard'
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts'] -and
+        @($sourceObject._memberVerdicts | Where-Object { $_ -and $_ -ne 'Privileged' }).Count -gt 0) {
+        $severity = [string]$sourceObject._groupBaseSeverity
+        if ($severity -notin @('Finding', 'Hint', 'Note')) { $severity = 'Hint' }
+    }
+
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = $severity
+        ForceAttributeClass = ($severity -ne 'Standard')
+        Values              = @(
+            New-RenderValue -Display $group -Severity $severity -RawValue $Value
+        )
+    }
+}
+
 # --- DangerousACEs Transformer ---
 function Convert-DangerousACEsToRenderValues {
     [CmdletBinding()]
@@ -26976,6 +27068,7 @@ $Script:AttributeTransformers['affectedOUs']                 = ${function:Conver
 $Script:AttributeTransformers['inheritedFrom']               = ${function:Convert-InheritedFromToRenderValues}
 $Script:AttributeTransformers['DangerousACEs']               = ${function:Convert-DangerousACEsToRenderValues}
 $Script:AttributeTransformers['MembersAdded']               = ${function:Convert-MembersAddedToRenderValues}
+$Script:AttributeTransformers['TargetGroup']                 = ${function:Convert-TargetGroupToRenderValues}
 $Script:AttributeTransformers['TemplateACL']                 = ${function:Convert-TemplateACLToRenderValues}
 $Script:AttributeTransformers['DangerousPermissions']        = ${function:Convert-DangerousPermToRenderValues}
 # The NTFS half of a GPO, rendered the same way: one row per rule, each resolved against
@@ -29553,7 +29646,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Restricted Groups settings adding local admins"
             "Group Policy Preferences modifying local groups"
             "Scope of these configurations"
+            "Every member added, by SID: a broad group is marked in the colour of the assignment, any other principal that is not Tier 0 in the colour of the target group, a Tier 0 principal not at all - it holds these rights already"
         )
+        FilteringNote = "An assignment that adds Tier 0 principals only - Domain Admins to the local Administrators, say - is a note rather than a finding, unless it empties the group first. The target group is coloured only where a member that is not Tier 0 is added."
         SecureMessage = "No vulnerable GPO local group assignments found. Local administrator configurations through GPO are properly scoped and controlled."
     }
 
@@ -123323,8 +123418,21 @@ function Resolve-LocalGroupTargetName {
 function Get-GroupAssignmentSeverity {
     param(
         [string]$GroupSID,
-        [array]$RiskyMembers
+        [array]$RiskyMembers,
+        # The Resolve-GroupMemberRisk verdict of every member added, and whether the item
+        # empties the group first.
+        [array]$MemberVerdicts,
+        [switch]$EmptiesGroup
     )
+
+    # An assignment that adds Tier 0 only grants nobody anything: Domain Admins in the local
+    # Administrators was a red "vulnerable" finding although it is the default. One that
+    # empties the group first is still judged as before - it removes everybody else.
+    $verdicts = @($MemberVerdicts | Where-Object { $_ })
+    if ($verdicts.Count -gt 0 -and -not $EmptiesGroup -and
+        @($verdicts | Where-Object { $_ -ne 'Privileged' }).Count -eq 0) {
+        return @{ Severity = "Note"; Risk = "Only Tier 0 principals added - they hold the group's rights already" }
+    }
 
     $config = $Script:GroupSeverityConfig[$GroupSID]
     if (-not $config) {
@@ -123364,6 +123472,27 @@ function Get-GroupAssignmentSeverity {
     }
 
     return @{ Severity = $severity; Risk = $risk }
+}
+
+<#
+.SYNOPSIS
+    What the target group is worth, before any member is looked at.
+
+.DESCRIPTION
+    The severity of $Script:GroupSeverityConfig, not escalated by a broad member: the
+    colour of the TargetGroup row and of every member that is neither broad nor Tier 0
+    (_groupBaseSeverity). A group the table does not know is a Hint, as in
+    Get-GroupAssignmentSeverity.
+
+.NOTES
+    Internal helper function
+#>
+function Get-LocalGroupBaseSeverity {
+    param([string]$GroupSID)
+
+    $config = $Script:GroupSeverityConfig[$GroupSID]
+    if ($config) { return [string]$config.Severity }
+    return 'Hint'
 }
 
 <#
@@ -123422,6 +123551,11 @@ function Resolve-RestrictedGroupSID {
     A broad group is shown under its canonical English name; any other member under
     -FallbackName when the caller has one, and otherwise under its resolved name.
 
+    Verdict is what the member is worth in the group, by SID: Broad, Privileged (Tier 0 -
+    it holds the group's rights already, and the member renderer leaves it uncoloured), or
+    Other - a user, a group of the domain, an operator group, a SID nothing resolves - which
+    the renderer marks in the colour of the target group.
+
 .NOTES
     Internal helper function
 #>
@@ -123450,7 +123584,14 @@ function Resolve-GroupMemberRisk {
         $memberName = if ($FallbackName) { $FallbackName } else { ConvertFrom-SID -SID $MemberSID }
     }
 
-    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad }
+    $verdict = 'Other'
+    if ($isBroad) {
+        $verdict = 'Broad'
+    } elseif ($MemberSID -match '^S-1-' -and (Test-IsPrivileged -Identity $MemberSID).Category -eq 'Privileged') {
+        $verdict = 'Privileged'
+    }
+
+    [PSCustomObject]@{ Name = $memberName; IsBroad = [bool]$isBroad; Verdict = $verdict }
 }
 
 # Helper Function: Parse Restricted Groups (GptTmpl.inf)
@@ -123520,6 +123661,7 @@ function Parse-RestrictedGroups {
 
                         $memberNames = @()
                         $riskyMembers = @()
+                        $memberVerdicts = @()
 
                         foreach ($memberSID in $memberSIDs) {
                             if ([string]::IsNullOrWhiteSpace($memberSID)) { continue }
@@ -123529,10 +123671,13 @@ function Parse-RestrictedGroups {
                             if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
 
                             $memberNames += $memberName
+                            $memberVerdicts += $memberRisk.Verdict
                         }
 
-                        # Get severity from centralized configuration
-                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+                        # Get severity from centralized configuration. A blank list, which
+                        # empties the group, has no verdict to lower it.
+                        $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                            -MemberVerdicts $memberVerdicts
 
                         # A Members list REPLACES the group on every policy refresh, which
                         # the report never said: the attribute was called MembersAdded and
@@ -123558,6 +123703,10 @@ function Parse-RestrictedGroups {
                             RiskyMembers = $riskyMembers
                             Severity = $severityResult.Severity
                             Risk = $severityResult.Risk
+                            # One verdict per MembersAdded entry, in its order - what the
+                            # member renderer colours each by.
+                            _memberVerdicts = $memberVerdicts
+                            _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
                         }
 
                         if ($emptiesGroup) {
@@ -123592,7 +123741,8 @@ function Parse-RestrictedGroups {
                         $groupName = Resolve-LocalGroupTargetName -SID $groupSID
                         if ($groupName) {
 
-                            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+                            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                                -MemberVerdicts @($memberRisk.Verdict)
 
                             $findings += [PSCustomObject]@{
                                 GPOName = $GPOName
@@ -123610,6 +123760,8 @@ function Parse-RestrictedGroups {
                                 RiskyMembers = $riskyMembers
                                 Severity = $severityResult.Severity
                                 Risk = $severityResult.Risk
+                                _memberVerdicts = @($memberRisk.Verdict)
+                                _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
                             }
                         }
                     }
@@ -123685,6 +123837,7 @@ function Parse-GPPGroups {
             $members = @()
             $memberSIDs = @()
             $riskyMembers = @()
+            $memberVerdicts = @()
             $removedMembers = @()
 
             # The item-level semantics, which used to be dropped: action C/R/U/D on the
@@ -123746,6 +123899,8 @@ function Parse-GPPGroups {
                     #
                     # The two Restricted Groups parsers above already name their members
                     # this way; only the preferences parser did not.
+                    # A member no SID is known for is Other: nothing says it is Tier 0.
+                    $memberVerdict = 'Other'
                     if ($memberSID) {
                         # Language-independent: decided by SID. A Member element carrying
                         # only a SID gets its resolved name, or the group would look
@@ -123753,12 +123908,14 @@ function Parse-GPPGroups {
                         $memberRisk = Resolve-GroupMemberRisk -MemberSID ([string]$memberSID) -FallbackName ([string]$memberName)
                         $memberName = $memberRisk.Name
                         if ($memberRisk.IsBroad) { $riskyMembers += $memberName }
+                        $memberVerdict = $memberRisk.Verdict
 
                         $memberSIDs += $memberSID
                     }
 
                     if ($memberName) {
                         $members += $memberName
+                        $memberVerdicts += $memberVerdict
                     }
                 }
             }
@@ -123779,8 +123936,10 @@ function Parse-GPPGroups {
                 continue
             }
 
-            # Get severity from centralized configuration
-            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers
+            # Get severity from centralized configuration. An item that clears the group
+            # first removes everybody else, whatever it adds.
+            $severityResult = Get-GroupAssignmentSeverity -GroupSID $groupSID -RiskyMembers $riskyMembers `
+                -MemberVerdicts $memberVerdicts -EmptiesGroup:$clearsGroup
 
             $finding = [PSCustomObject]@{
                 GPOName = $GPOName
@@ -123796,6 +123955,8 @@ function Parse-GPPGroups {
                 RiskyMembers = $riskyMembers
                 Severity = $severityResult.Severity
                 Risk = $severityResult.Risk
+                _memberVerdicts = $memberVerdicts
+                _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
             }
 
             if (@($removedMembers).Count -gt 0) {
@@ -149532,7 +149693,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1139"
+$Script:adPEASVersion = "2.7.0+20261021-1202"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

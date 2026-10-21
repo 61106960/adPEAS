@@ -1762,7 +1762,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Restricted Groups settings adding local admins"
             "Group Policy Preferences modifying local groups"
             "Scope of these configurations"
+            "Every member added, by SID: a broad group is marked in the colour of the assignment, any other principal that is not Tier 0 in the colour of the target group, a Tier 0 principal not at all - it holds these rights already"
         )
+        FilteringNote = "An assignment that adds Tier 0 principals only - Domain Admins to the local Administrators, say - is a note rather than a finding, unless it empties the group first. The target group is coloured only where a member that is not Tier 0 is added."
         SecureMessage = "No vulnerable GPO local group assignments found. Local administrator configurations through GPO are properly scoped and controlled."
     }
 

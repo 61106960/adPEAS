@@ -1273,6 +1273,7 @@ Get-GPOPermissions -IncludePrivileged
 - Local Administrators group additions via GPO
 - Remote Desktop Users additions
 - Other privileged local group modifications
+- Every member added, by SID: a broad group (Everyone, Domain Users, ...) raises the assignment; a Tier 0 principal holds the group's rights already and is not marked; every other principal - a user, a group of the domain, an operator group - is marked in the colour of the target group (red for Administrators and the operator groups, yellow for Backup Operators, Remote Desktop Users and the like). An assignment that adds Tier 0 principals only is a *Note*, unless it empties the group first
 
 **Security Impact**: GPOs adding users to local admin groups can provide persistent privileged access across many systems.
 

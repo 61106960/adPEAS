@@ -1087,6 +1087,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   They are recognised the way every other check recognises them now, and shown under
   their English names.
 
+- **`Get-GPOLocalGroupMembership` judges every member it reports.** Only a broad group in
+  `MembersAdded` was coloured, so a single account added to the local Administrators of
+  every computer in an OU was plain text under a red headline, with no card - and a policy
+  that adds Domain Admins to the local Administrators, the default, was a red "vulnerable"
+  finding. Each member is now judged by SID: a broad group as before; a Tier 0 principal,
+  which holds the group's rights already, stays uncoloured; every other principal - a user,
+  a group of the domain, an operator group, a SID nothing resolves - is marked in the
+  colour of the target group, with the new card *Account Added to a Privileged Local Group
+  by Group Policy*. `TargetGroup` is coloured too - red for Administrators and the three
+  operator groups, yellow for Backup Operators, Remote Desktop Users and the like - where
+  such a member is added. An assignment that adds Tier 0 principals only is a note, unless
+  it empties the group first.
+
 - **Two values of the BloodHound export came from the wrong place.** The domain's
   `dsheuristics` was read from the domain object, which never carries it, so every export
   said null; it is read from `CN=Directory Service` in the Configuration partition now.

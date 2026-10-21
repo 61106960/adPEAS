@@ -850,6 +850,15 @@ function Convert-TemplateACLToRenderValues {
 # fixed one. That value is escalated precisely because a risky member is present, so
 # Everyone in Remote Desktop Users shows as a hint and Everyone in Administrators as a
 # finding - one judgement, made once, in the check.
+#
+# Every other member is marked too, the other way round from a member list elsewhere: a
+# user, a group of the domain or an operator group added to a privileged local group gets
+# the group's rights on every computer in scope, and is shown in the colour of the group
+# (_groupBaseSeverity, not escalated) with GPO_LOCAL_GROUP_MEMBER. A Tier 0 member holds
+# those rights already and stays uncoloured. Only a single account added to the local
+# Administrators used to be plain text under a red headline. The check decides by SID and
+# leaves one verdict per member in _memberVerdicts; an object without them - an older JSON
+# export - is read by RiskyMembers alone, as before.
 function Convert-MembersAddedToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
@@ -870,12 +879,27 @@ function Convert-MembersAddedToRenderValues {
     $riskySeverity = [string]$sourceObject.Severity
     if ($riskySeverity -notin @('Finding', 'Hint', 'Note')) { $riskySeverity = 'Finding' }
 
+    $verdicts = $null
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts']) {
+        $verdicts = @($sourceObject._memberVerdicts)
+    }
+    $memberSeverity = [string]$sourceObject._groupBaseSeverity
+    if ($memberSeverity -notin @('Finding', 'Hint', 'Note')) { $memberSeverity = 'Hint' }
+
     $renderValues = @()
-    foreach ($member in $members) {
+    for ($memberIndex = 0; $memberIndex -lt $members.Count; $memberIndex++) {
+        $member = $members[$memberIndex]
         $display = [string]$member
-        if ($riskyLookup.ContainsKey($display)) {
+        $verdict = $null
+        if ($null -ne $verdicts -and $memberIndex -lt $verdicts.Count) { $verdict = [string]$verdicts[$memberIndex] }
+        if (-not $verdict) { $verdict = $(if ($riskyLookup.ContainsKey($display)) { 'Broad' } else { 'Unjudged' }) }
+
+        if ($verdict -eq 'Broad') {
             $renderValues += New-RenderValue -Display $display -Severity $riskySeverity `
                 -FindingId 'GPO_LOCAL_GROUP_RISKY_MEMBER' -RawValue $member
+        } elseif ($verdict -eq 'Other') {
+            $renderValues += New-RenderValue -Display $display -Severity $memberSeverity `
+                -FindingId 'GPO_LOCAL_GROUP_MEMBER' -RawValue $member
         } else {
             $renderValues += New-RenderValue -Display $display -Severity 'Standard' -RawValue $member
         }
@@ -889,6 +913,39 @@ function Convert-MembersAddedToRenderValues {
         Values              = $renderValues
     }
 }
+# --- TargetGroup Transformer (GPO local group assignments) ---
+#
+# The local group a policy adds members to, in its own colour - red for Administrators and
+# the three operator groups that are domain-wide on a domain controller, yellow for Backup
+# Operators, Remote Desktop Users and the like (_groupBaseSeverity). Only where a member
+# that is not Tier 0 is added: an item adding Domain Admins to the local Administrators
+# grants nobody anything, and one that only removes adds nobody. The row was plain text,
+# so the one word that says what the assignment is worth had to be read.
+function Convert-TargetGroupToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $group = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($group)) { return $null }
+
+    $sourceObject = $Context.SourceObject
+    $severity = 'Standard'
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_memberVerdicts'] -and
+        @($sourceObject._memberVerdicts | Where-Object { $_ -and $_ -ne 'Privileged' }).Count -gt 0) {
+        $severity = [string]$sourceObject._groupBaseSeverity
+        if ($severity -notin @('Finding', 'Hint', 'Note')) { $severity = 'Hint' }
+    }
+
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = $severity
+        ForceAttributeClass = ($severity -ne 'Standard')
+        Values              = @(
+            New-RenderValue -Display $group -Severity $severity -RawValue $Value
+        )
+    }
+}
+
 # --- DangerousACEs Transformer ---
 function Convert-DangerousACEsToRenderValues {
     [CmdletBinding()]
@@ -1504,6 +1561,7 @@ $Script:AttributeTransformers['affectedOUs']                 = ${function:Conver
 $Script:AttributeTransformers['inheritedFrom']               = ${function:Convert-InheritedFromToRenderValues}
 $Script:AttributeTransformers['DangerousACEs']               = ${function:Convert-DangerousACEsToRenderValues}
 $Script:AttributeTransformers['MembersAdded']               = ${function:Convert-MembersAddedToRenderValues}
+$Script:AttributeTransformers['TargetGroup']                 = ${function:Convert-TargetGroupToRenderValues}
 $Script:AttributeTransformers['TemplateACL']                 = ${function:Convert-TemplateACLToRenderValues}
 $Script:AttributeTransformers['DangerousPermissions']        = ${function:Convert-DangerousPermToRenderValues}
 # The NTFS half of a GPO, rendered the same way: one row per rule, each resolved against
