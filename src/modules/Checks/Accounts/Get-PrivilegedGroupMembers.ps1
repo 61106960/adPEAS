@@ -426,6 +426,10 @@ function Get-PrivilegedGroupMembers {
             # of AdminSDHolder protection, and a group reached only through those is not
             # protected any more, whatever its adminCount says - step 5b needs the paths to
             # tell.
+            #
+            # Weight: what taking the group over is worth, from the privileged group it was
+            # reached from - Get-GroupTakeoverWeight. A nested group carries the weight of the
+            # group above it, and of the heaviest one where several paths lead to it.
             $GroupsForACLReview = [ordered]@{}
             function Add-GroupForACLReview {
                 param(
@@ -433,7 +437,8 @@ function Get-PrivilegedGroupMembers {
                     [string]$Name,
                     [string]$Source,
                     $NestedGroups,
-                    [string]$RootSID
+                    [string]$RootSID,
+                    [string]$Weight
                 )
                 if ([string]::IsNullOrWhiteSpace($DistinguishedName)) { return }
                 if ($domainDN -and -not $DistinguishedName.EndsWith(",$domainDN", [System.StringComparison]::OrdinalIgnoreCase)) { return }
@@ -443,13 +448,16 @@ function Get-PrivilegedGroupMembers {
                         Name              = $Name
                         Source            = $Source
                         Roots             = New-Object System.Collections.Generic.List[string]
+                        Weight            = $Weight
                     }
+                } elseif ($Weight -eq 'Finding') {
+                    $GroupsForACLReview[$DistinguishedName].Weight = 'Finding'
                 }
                 $GroupsForACLReview[$DistinguishedName].Roots.Add([string]$RootSID)
                 foreach ($nestedGroup in @($NestedGroups)) {
                     if (-not $nestedGroup) { continue }
                     Add-GroupForACLReview -DistinguishedName $nestedGroup.DistinguishedName -Name $nestedGroup.GroupName `
-                        -Source "nested in $Name" -NestedGroups $nestedGroup.NestedGroups -RootSID $RootSID
+                        -Source "nested in $Name" -NestedGroups $nestedGroup.NestedGroups -RootSID $RootSID -Weight $Weight
                 }
             }
 
@@ -524,7 +532,8 @@ function Get-PrivilegedGroupMembers {
                         # Each top-level group gets its own Visited hashtable to avoid cross-contamination
                         # Pass the already-fetched group object to avoid duplicate LDAP query
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
-                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $GroupSID
+                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $GroupSID `
+                            -Weight (Get-GroupTakeoverWeight -GroupSID $GroupSID)
 
                         # Fold in the accounts holding this group as their primary group.
                         # They are direct members in every sense that matters - the RID is in
@@ -638,7 +647,8 @@ function Get-PrivilegedGroupMembers {
                         # Each top-level group gets its own Visited hashtable to avoid cross-contamination
                         # Pass the already-fetched group object to avoid duplicate LDAP query
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
-                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $SID
+                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -RootSID $SID `
+                            -Weight (Get-GroupTakeoverWeight -GroupSID $SID)
 
                         $DirectMemberCount = @($Result.DirectMembers).Count
                         $NestedGroupCount = @($Result.NestedGroups).Count
@@ -699,7 +709,9 @@ function Get-PrivilegedGroupMembers {
                         # Each top-level group gets its own Visited hashtable to avoid cross-contamination
                         # Pass the already-fetched group object to avoid duplicate LDAP query
                         $Result = Get-GroupMembersRecursive -GroupDN $Group.distinguishedName -GroupName $GroupName -CredentialParams $CredParams -Visited @{} -GroupObject $Group
-                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups
+                        # DnsAdmins run code as SYSTEM on the domain controllers, ESX Admins own
+                        # the hypervisor and the domain controllers on it: the domain's weight.
+                        Add-GroupForACLReview -DistinguishedName $Group.distinguishedName -Name $GroupName -Source 'privileged group' -NestedGroups $Result.NestedGroups -Weight 'Finding'
 
                         $DirectMemberCount = @($Result.DirectMembers).Count
                         $NestedGroupCount = @($Result.NestedGroups).Count
@@ -751,7 +763,8 @@ function Get-PrivilegedGroupMembers {
                 try {
                     $exchangeGroup = Select-LocalDomainGroup (Get-DomainGroup -Identity $exchangeGroupName @CredParams)
                     if ($exchangeGroup -and [string]$exchangeGroup.distinguishedName -match ',OU=Microsoft Exchange Security Groups,') {
-                        Add-GroupForACLReview -DistinguishedName $exchangeGroup.distinguishedName -Name $exchangeGroup.sAMAccountName -Source 'Exchange group'
+                        # They hold rights on the domain object - the domain's weight.
+                        Add-GroupForACLReview -DistinguishedName $exchangeGroup.distinguishedName -Name $exchangeGroup.sAMAccountName -Source 'Exchange group' -Weight 'Finding'
                     }
                 } catch {
                     Write-Log "[Get-PrivilegedGroupMembers] Lookup of $exchangeGroupName failed: $_"
@@ -1725,6 +1738,42 @@ function Get-AdminSDHolderExcludedGroup {
 
 <#
 .SYNOPSIS
+    What taking over a privileged group is worth: Finding or Hint.
+
+.DESCRIPTION
+    Step 5b reported every principal that may change an unprotected privileged group as a
+    finding, and the groups it reads are not equally privileged. A Tier-0 group - one
+    Test-IsPrivileged files as Privileged - is the domain: Finding. Everything else it is
+    asked about is a foothold short of it: the operator groups (Group Policy Creator Owners
+    creates policies and links none, Cert Publishers writes certificates, an operator group
+    dsHeuristics excludes), Remote Management Users (WinRM on the domain controllers) and
+    Hyper-V Administrators (Hyper-V on the domain controllers): Hint. DnsAdmins, ESX Admins
+    and the Exchange groups are given Finding by their callers - Test-IsPrivileged does not
+    know them by SID.
+
+.PARAMETER GroupSID
+    The SID of the privileged group a group was reached from. Without one: Finding, the
+    weight nobody has argued down.
+
+.OUTPUTS
+    [string] 'Finding' or 'Hint'.
+#>
+function Get-GroupTakeoverWeight {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [string]$GroupSID
+    )
+
+    if (-not $GroupSID) { return 'Finding' }
+    if ((Test-IsPrivileged -Identity $GroupSID).Category -eq 'Privileged') { return 'Finding' }
+    return 'Hint'
+}
+
+<#
+.SYNOPSIS
     Reports who may change a privileged group that AdminSDHolder does not protect.
 
 .DESCRIPTION
@@ -1761,6 +1810,16 @@ function Get-AdminSDHolderExcludedGroup {
     protect, in every domain, by design. Listed per group that would be the same finding in
     every report; it is said once instead, as a hint while the group has members and a note
     while it is empty.
+
+    A holder is a finding where a group it can take over is worth the domain - DnsAdmins,
+    ESX Admins, the Exchange groups, a Tier-0 group - and a hint where all of them are
+    operator-level, such as Group Policy Creator Owners or Cert Publishers: the weight each
+    group carries from the privileged group it was reached from (Get-GroupTakeoverWeight).
+    Every one of them was a finding, which put a group that creates policies beside one
+    that runs code on the domain controllers.
+
+    What was read goes out as one UnprotectedPrivilegedGroups object, not as lines of group
+    names that ran past the width of the console.
 
 .PARAMETER Groups
     The groups to read: DistinguishedName, Name and Source ("privileged group", "nested in
@@ -1817,6 +1876,10 @@ function Show-UnprotectedGroupACL {
     foreach ($group in @($Groups)) {
         if (-not $group -or -not $group.DistinguishedName) { continue }
 
+        # Where a nested or an Exchange group came from belongs beside its name.
+        $groupLabel = $group.Name
+        if ($group.Source -and $group.Source -ne 'privileged group') { $groupLabel = "$($group.Name) ($($group.Source))" }
+
         $groupObject = $null
         try {
             $groupObject = @(Get-DomainObject -Identity $group.DistinguishedName -Properties 'nTSecurityDescriptor', 'adminCount' -Raw @ConnectionParams)[0]
@@ -1824,7 +1887,7 @@ function Show-UnprotectedGroupACL {
             Write-Log "[Get-PrivilegedGroupMembers] Could not read $($group.DistinguishedName): $_"
         }
         if (-not $groupObject -or -not $groupObject.nTSecurityDescriptor) {
-            $unreadGroups += $group.Name
+            $unreadGroups += $groupLabel
             continue
         }
 
@@ -1845,16 +1908,16 @@ function Show-UnprotectedGroupACL {
             $descriptor.SetSecurityDescriptorBinaryForm([byte[]]$groupObject.nTSecurityDescriptor)
         } catch {
             Write-Log "[Get-PrivilegedGroupMembers] Could not parse the descriptor of $($group.DistinguishedName): $_"
-            $unreadGroups += $group.Name
+            $unreadGroups += $groupLabel
             continue
         }
-        $examinedGroups += $group.Name
+        $examinedGroups += $groupLabel
 
         # SecurityIdentifier, not .Access - see the AdminSDHolder step.
         $rules = @($descriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
         $denyRules = @($rules | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny })
 
-        # Trustee SID -> the rights it holds on this group, and whether any came by inheritance.
+        # Trustee SID -> the rights it holds on this group.
         $onThisGroup = [ordered]@{}
 
         foreach ($ace in $rules) {
@@ -1895,12 +1958,11 @@ function Show-UnprotectedGroupACL {
             if ($rights.Count -eq 0) { continue }
 
             if (-not $onThisGroup.Contains($trusteeSID)) {
-                $onThisGroup[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+                $onThisGroup[$trusteeSID] = [PSCustomObject]@{ Rights = @() }
             }
             foreach ($right in $rights) {
                 if ($onThisGroup[$trusteeSID].Rights -notcontains $right) { $onThisGroup[$trusteeSID].Rights += $right }
             }
-            if ($ace.IsInherited) { $onThisGroup[$trusteeSID].Inherited = $true }
         }
 
         # The owner may rewrite the DACL whatever it says - the same as WriteDacl.
@@ -1908,7 +1970,7 @@ function Show-UnprotectedGroupACL {
         try { $ownerSID = $descriptor.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $ownerSID = $null }
         if ($ownerSID) {
             if (-not $onThisGroup.Contains($ownerSID)) {
-                $onThisGroup[$ownerSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+                $onThisGroup[$ownerSID] = [PSCustomObject]@{ Rights = @() }
             }
             $onThisGroup[$ownerSID].Rights += 'Owner of the group - may rewrite its DACL'
         }
@@ -1936,42 +1998,57 @@ function Show-UnprotectedGroupACL {
             }
 
             if (-not $byTrustee.Contains($trusteeSID)) {
-                $byTrustee[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Groups = @(); Severity = $severity }
+                $byTrustee[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Groups = @(); Severity = $severity; Weight = 'Hint' }
             }
             $entry = $byTrustee[$trusteeSID]
             foreach ($right in $held.Rights) {
                 if ($entry.Rights -notcontains $right) { $entry.Rights += $right }
             }
-            $groupText = "$($group.Name) ($($group.Source))"
-            if ($held.Inherited) { $groupText += ' - inherited, remove it at the parent' }
-            $entry.Groups += $groupText
+            # Whether the ACE is inherited is not said here: the card says where an
+            # inherited one has to be removed, and the suffix pushed the row past the line.
+            $entry.Groups += "$($group.Name) ($($group.Source))"
+            # The heaviest group decides; one without a weight counts as Finding.
+            $groupWeight = 'Finding'
+            if ($group.PSObject.Properties['Weight'] -and $group.Weight) { $groupWeight = [string]$group.Weight }
+            if ($groupWeight -eq 'Finding') { $entry.Weight = 'Finding' }
         }
     }
 
-    if ($examinedGroups.Count -gt 0) {
-        Show-Line ("$($examinedGroups.Count) privileged group(s) are outside AdminSDHolder's protection and were read: " +
-                   ($examinedGroups -join ', ')) -Class Note
-    }
-    if ($excludedRead.Count -gt 0) {
-        $excludedNames = @($AdminSDExcludedGroups.Values | Sort-Object)
-        Show-Line ("$($excludedRead.Count) of them carry adminCount=1 from an earlier SDProp run, but dsHeuristics takes " +
-                   "$($excludedNames -join ', ') out of the protection: " + ($excludedRead -join ', ')) -Class Note
+    # What was read, as an object rather than as lines of group names, which ran past the
+    # width of the console. Group names only where the group was found as itself, with
+    # where it came from for a nested or an Exchange group.
+    if ($examinedGroups.Count -gt 0 -or $unreadGroups.Count -gt 0) {
+        $scope = [PSCustomObject]@{ groupsRead = @($examinedGroups) }
+        if ($excludedRead.Count -gt 0) {
+            # adminCount=1 from an earlier SDProp run, but dsHeuristics takes the groups
+            # they were reached from out of the protection - the card says so.
+            $scope | Add-Member -NotePropertyName 'readDespiteAdminCount' -NotePropertyValue @($excludedRead) -Force
+        }
+        if ($unreadGroups.Count -gt 0) {
+            $scope | Add-Member -NotePropertyName 'groupsNotRead' -NotePropertyValue @($unreadGroups) -Force
+        }
+        $scope | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'UnprotectedPrivilegedGroups' -Force
+        Show-Line "Privileged groups outside AdminSDHolder's protection:" -Class Note
+        Show-Object $scope -Class Note
     }
 
-    # Account Operators: the default, said once - see the description.
+    # Account Operators: the default, said once - see the description. Short: what a member
+    # of Account Operators can do with it is the card's.
     if ($accountOperatorGroups.Count -gt 0) {
-        $aoText = "Account Operators control $($accountOperatorGroups.Count) of these group(s) through the default every new group gets - a member of Account Operators can make itself a member of each"
+        $aoReach = if ($accountOperatorGroups.Count -eq $examinedGroups.Count) { "all $($examinedGroups.Count)" } else { "$($accountOperatorGroups.Count) of them" }
+        $aoMembers = ''
         $aoClass = 'Note'
         if ($null -ne $AccountOperatorMembers -and [int]$AccountOperatorMembers -gt 0) {
-            $aoText += "; Account Operators has $AccountOperatorMembers member(s)"
+            $aoMembers = " ($AccountOperatorMembers member(s))"
             $aoClass = 'Hint'
         } elseif ($null -ne $AccountOperatorMembers) {
-            $aoText += '; Account Operators has no members'
+            $aoMembers = ' (no members)'
         }
-        Show-Line $aoText -Class $aoClass -FindingId 'PRIVILEGED_GROUP_ACL'
+        Show-Line "Account Operators$aoMembers control $aoReach - the default of every new group" -Class $aoClass -FindingId 'PRIVILEGED_GROUP_ACL'
     }
 
     $findingRows = @()
+    $operatorRows = @()
     $hintRows = @()
     foreach ($trusteeSID in @($byTrustee.Keys)) {
         $entry = $byTrustee[$trusteeSID]
@@ -1985,13 +2062,17 @@ function Show-UnprotectedGroupACL {
             dangerousRights = @($entry.Rights)
             affectedGroups  = @($entry.Groups)
         }
+        $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedGroupACL' -Force
         if ($entry.Severity -in @('Expected', 'Attention')) {
             $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
-            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedGroupACL' -Force
             $hintRows += $row
-        } else {
-            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedGroupACL' -Force
+        } elseif ($entry.Weight -eq 'Finding') {
             $findingRows += $row
+        } else {
+            # Only operator-level groups: a foothold, not the domain - see
+            # Get-GroupTakeoverWeight. dangerousRightsSeverity turns the rows yellow.
+            $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
+            $operatorRows += $row
         }
     }
 
@@ -2000,17 +2081,17 @@ function Show-UnprotectedGroupACL {
                    "does not protect") -Class Finding -FindingId 'PRIVILEGED_GROUP_ACL'
         foreach ($row in $findingRows) { Show-Object $row -Class Finding }
     }
+    if ($operatorRows.Count -gt 0) {
+        Show-Line ("Found $($operatorRows.Count) principal(s) that can take over an operator-level group AdminSDHolder " +
+                   "does not protect") -Class Hint -FindingId 'PRIVILEGED_GROUP_ACL'
+        foreach ($row in $operatorRows) { Show-Object $row -Class Hint }
+    }
     if ($hintRows.Count -gt 0) {
         Show-Line "Found $($hintRows.Count) expected or privileged holder(s) of the same rights" -Class Hint
         foreach ($row in $hintRows) { Show-Object $row -Class Hint }
     }
 
-    if ($unreadGroups.Count -gt 0) {
-        Show-Line ("$($unreadGroups.Count) group(s) could not be read - who may change them was not evaluated: " +
-                   ($unreadGroups -join ', ')) -Class Note
-    }
-
-    if ($findingRows.Count -eq 0 -and $hintRows.Count -eq 0) {
+    if ($findingRows.Count -eq 0 -and $operatorRows.Count -eq 0 -and $hintRows.Count -eq 0) {
         if ($examinedGroups.Count -eq 0) {
             if ($unreadGroups.Count -eq 0) {
                 Show-Line "Every privileged group found is protected by AdminSDHolder" -Class Note

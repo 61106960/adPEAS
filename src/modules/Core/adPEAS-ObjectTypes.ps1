@@ -1204,9 +1204,25 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "The owner of each group"
             "The same identity gate as the AdminSDHolder check; Exchange service groups count as by design"
         )
-        FilteringNote = "Which groups are unprotected is read from adminCount, which SDProp sets and never clears: a group protected once and no longer keeps a stale 1 and is not read - except the operator groups character 16 of dsHeuristics excludes, and the groups reached only through them, which are read. Account Operators control every unprotected group through the default security descriptor of the group class; that is said once, as a hint while the group has members, instead of once per group. Expected and privileged holders are hidden unless -IncludePrivileged. Groups in another domain of the forest are not read."
+        FilteringNote = "Which groups are unprotected is read from adminCount, which SDProp sets and never clears: a group protected once and no longer keeps a stale 1 and is not read - except the operator groups character 16 of dsHeuristics excludes, and the groups reached only through them, which are read. A holder is a finding where a group it can take over is worth the domain - DnsAdmins, ESX Admins, the Exchange groups, a Tier-0 group or one nested into it - and a hint where all of them are operator-level, such as Group Policy Creator Owners, Cert Publishers, Remote Management Users or Hyper-V Administrators. Account Operators control every unprotected group through the default security descriptor of the group class; that is said once, as a hint while the group has members, instead of once per group. Expected and privileged holders are hidden unless -IncludePrivileged. Groups in another domain of the forest are not read."
         SecureMessage = "No principal beyond the expected ones can change the privileged groups AdminSDHolder does not protect."
         PrimaryFindingId = 'PRIVILEGED_GROUP_ACL'
+    }
+
+    # What step 5b of Get-PrivilegedGroupMembers read, ahead of who may change it.
+    'UnprotectedPrivilegedGroups' = @{
+        TitleFormat = "Privileged Groups Outside AdminSDHolder"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Privileged Groups Outside AdminSDHolder"
+        Summary = "The privileged groups AdminSDHolder does not protect whose DACL was read."
+        WhyItMatters = "SDProp resets the DACL of the groups AdminSDHolder protects every hour. Every other privileged group keeps whatever entries it is given, so who may change it has to be read group by group - these are the groups that were."
+        WhatWeCheck = @(
+            "groupsRead - the privileged groups without adminCount=1, the groups nested into them (with the group they are nested in) and the Exchange groups"
+            "readDespiteAdminCount - groups with adminCount=1 from an earlier SDProp run that are read anyway, because character 16 of dsHeuristics takes the operator group they were reached from out of the protection"
+            "groupsNotRead - groups whose security descriptor could not be read; who may change them was not evaluated"
+        )
+        SecureMessage = "Every privileged group found is protected by AdminSDHolder."
     }
 
     'PrivilegedAccountACL' = @{

@@ -692,6 +692,11 @@ $Script:PrimaryAttributes = @{
     PrivilegedGroupACL = @(
         'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedGroups'
     )
+    # What step 5b read (Get-PrivilegedGroupMembers): the groups, the ones read despite
+    # adminCount=1 because dsHeuristics excludes their operator group, and the unreadable.
+    UnprotectedPrivilegedGroups = @(
+        'groupsRead', 'readDespiteAdminCount', 'groupsNotRead'
+    )
     PrivilegedAccountACL = @(
         'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedAccounts'
     )
@@ -743,7 +748,8 @@ $Script:StrictAttributeTypes = @(
     'FineGrainedPasswordPolicy',
     'BitLockerRecoveryKey',
     'GPOUserRights',
-    'LAPSCoverage'
+    'LAPSCoverage',
+    'UnprotectedPrivilegedGroups'
 )
 
 # Per-ObjectType row labels: what a row is called, where the property it comes from is

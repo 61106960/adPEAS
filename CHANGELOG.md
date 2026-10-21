@@ -116,11 +116,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Policy Creator Owners, Cert Publishers, the Exchange groups, and every group nested into
   a privileged group. A new section reports who may write their `member` attribute, use
   the Self-Membership validated write, change their DACL or owner, holds full control or
-  owns them, with the same identity gate as the AdminSDHolder analysis. Which groups are
-  unprotected is read from `adminCount`, not from a list - Microsoft counts Key Admins and
-  Enterprise Key Admins among the protected groups. Account Operators control every
-  unprotected group through the default security descriptor of the group class; that is
-  said once, as a hint while Account Operators has members.
+  owns them, with the same identity gate as the AdminSDHolder analysis. A holder is a
+  finding where a group it can take over is worth the domain - DnsAdmins, ESX Admins, the
+  Exchange groups, or a group reached from a tier-0 group - and a hint where every such
+  group is operator-level: Group Policy Creator Owners, Cert Publishers, Remote Management
+  Users, a group nested into Backup Operators. Which groups are unprotected is read from
+  `adminCount`, not from a list - Microsoft counts Key Admins and Enterprise Key Admins
+  among the protected groups. The groups read, and any that could not be, are one object
+  at the head of the section. Account Operators control every unprotected group through
+  the default security descriptor of the group class; that is said once, as a hint while
+  Account Operators has members.
 
 - **Who may write `msDS-KeyCredentialLink` is reported (Shadow Credentials).** No check
   asked it, although the card for a populated key credential said the ACL checks did.
@@ -1216,7 +1221,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   groups whose DACL nobody resets any more looked protected, and the right granted on
   them since went unread. The step now reads `dsHeuristics`, records through which
   privileged group each group was reached, and reads a group whose every path runs
-  through an excluded operator group, whatever its `adminCount` says; a note names them.
+  through an excluded operator group, whatever its `adminCount` says; the section's
+  summary names them.
   A group another protected group still covers stays out.
 
 - **`msDS-SupportedEncryptionTypes` is decoded at the bits MS-KILE defines.** The Kerberos
