@@ -161,7 +161,7 @@ Requires Windows PowerShell 5.1 and no additional dependencies.
 
 ## Licensing
 
-adPEAS uses an RSA-SHA256 signature-based license system. A valid license replaces the default disclaimer in console output and HTML reports with a personalized message ("Licensed to {Licensee} - Valid until {ValidUntil}"). All features remain fully available regardless of license status.
+adPEAS uses an RSA-SHA256 signature-based license system. A valid license replaces the default disclaimer in console output and HTML reports with a personalized message ("Licensed to {Licensee} - Valid until {ValidUntil}"). All features remain fully available regardless of license status. The license line stands under the logo: loading adPEAS prints the one embedded in the build, and a scan under a runtime license prints its own when it starts.
 
 ### Build-time Embedding
 

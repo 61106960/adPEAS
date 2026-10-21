@@ -63,8 +63,10 @@ $Script:adPEAS_FindingsCollectionEnabled = $false
 $Script:adPEAS_CurrentCheckContext = $null
 
 # Whether the logo the import printed is still the last thing adPEAS showed on the console.
-# Set by the import, cleared by every other output - read by Show-ScanLogo.
+# Set by the import, cleared by every other output - read by Show-ScanLogo. With it, the
+# license line the import printed under the logo.
 $Script:adPEASLogoOnScreen = $false
+$Script:adPEASLogoDisclaimer = $null
 
 <#
 .SYNOPSIS
@@ -670,7 +672,7 @@ function Sort-FindingsByCategory {
     Outputs the adPEAS logo.
 
 .PARAMETER FileOnly
-    With -Logo: writes the logo to the text report only, not to the console.
+    With -Logo or a plain line: writes it to the text report only, not to the console.
 
 .PARAMETER ObjectType
     The _adPEASObjectType for SubHeader checks. Used for tooltip lookup in HTML reports.
@@ -830,9 +832,9 @@ function Show-Output {
         default {
             # Standard text output
             if ($Raw) {
-                Write-adPEASOutput -Text $Value -Class "Standard" -NoPrefix
+                Write-adPEASOutput -Text $Value -Class "Standard" -NoPrefix -FileOnly:$FileOnly
             } else {
-                Write-adPEASOutput -Text $Value -Class $Class
+                Write-adPEASOutput -Text $Value -Class $Class -FileOnly:$FileOnly
             }
         }
     }
@@ -886,10 +888,14 @@ function Show-Line {
         [string]$FindingId,
 
         [Parameter(Mandatory=$false)]
-        [switch]$NoCollect
+        [switch]$NoCollect,
+
+        # The text report only, not the console - see Show-ScanLogo.
+        [Parameter(Mandatory=$false)]
+        [switch]$FileOnly
     )
 
-    Show-Output -Value $Text -Class $Class -Raw:$Raw -FindingId $FindingId -NoCollect:$NoCollect
+    Show-Output -Value $Text -Class $Class -Raw:$Raw -FindingId $FindingId -NoCollect:$NoCollect -FileOnly:$FileOnly
 }
 
 <#
@@ -1136,31 +1142,49 @@ function Show-Logo {
 
 <#
 .SYNOPSIS
-    Opens a scan with the logo - on the console unless the logo of the import is still
-    the last thing adPEAS printed there.
+    Opens a scan with the logo and the license line under it - on the console unless the
+    import's are still the last thing adPEAS printed there.
 
 .DESCRIPTION
-    Loading adPEAS prints the logo and the quick start, and Invoke-adPEAS opens every scan
-    with the logo again. A script or one-liner that loads adPEAS and starts a scan at once
-    showed it twice, with the quick start between the two.
+    Loading adPEAS prints the logo, the license line and the quick start, and Invoke-adPEAS
+    opens every scan with the logo and the license line again. A script or one-liner that
+    loads adPEAS and starts a scan at once showed the logo twice, with the quick start
+    between the two.
 
-    The import sets $Script:adPEASLogoOnScreen once its logo and quick start are out, and
-    every other output through Show-Output clears it. Set, the scan writes its logo to the
-    text report only; the report always starts with the logo, the console shows it once. A
-    connection established in between, or an earlier scan, has printed something else, and
-    the logo comes back.
+    The import sets $Script:adPEASLogoOnScreen once its output is out, and records the
+    license line it printed in $Script:adPEASLogoDisclaimer; every other output through
+    Show-Output clears the flag. Set, and with the same license, the scan writes its logo
+    and license line to the text report only; the report always starts with them, the
+    console shows them once. A connection established in between, or an earlier scan, has
+    printed something else, and both come back - as they do for another license, such as
+    one handed to Invoke-adPEAS -License.
+
+    The license line used to stand under the scan's logo only. Once that logo stayed off
+    the console, it opened the scan on its own, straight under the command line.
 
 .PARAMETER Version
     The version string to display.
+
+.PARAMETER Disclaimer
+    The license line, as Get-adPEASDisclaimer returns it (Text, Class).
 #>
 function Show-ScanLogo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$false)]
-        [string]$Version
+        [string]$Version,
+
+        [Parameter(Mandatory=$false)]
+        [PSCustomObject]$Disclaimer
     )
 
-    Show-Logo -Version $Version -FileOnly:([bool]$Script:adPEASLogoOnScreen)
+    $importOnScreen = [bool]$Script:adPEASLogoOnScreen -and
+        ($null -eq $Disclaimer -or [string]$Disclaimer.Text -eq [string]$Script:adPEASLogoDisclaimer)
+
+    Show-Logo -Version $Version -FileOnly:$importOnScreen
+    if ($Disclaimer) {
+        Show-Line ([string]$Disclaimer.Text) -Class ([string]$Disclaimer.Class) -FileOnly:$importOnScreen
+    }
     $Script:adPEASLogoOnScreen = $false
 }
 

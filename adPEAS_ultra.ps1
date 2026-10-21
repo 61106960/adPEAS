@@ -3213,7 +3213,9 @@ function Write-adPEASOutput {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$NoColor,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$LeadingNewline
+	    [switch]$LeadingNewline,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$FileOnly
 	)
 	begin {
 	    $ANSI = $Script:ANSI
@@ -3225,7 +3227,8 @@ function Write-adPEASOutput {
 	    if ($LeadingNewline) {
 	        $plainText = "`n" + $plainText
 	    }
-	    if ($Script:adPEAS_OutputColor -ne $false -and -not $NoColor) {
+	    if ($FileOnly) {
+	    } elseif ($Script:adPEAS_OutputColor -ne $false -and -not $NoColor) {
 	        $color = Get-ClassColor -Class $Class
 	        $coloredText = $color + $plainText + $ANSI["Reset"]
 	        Write-Host $coloredText -NoNewline:$NoNewline
@@ -22990,6 +22993,7 @@ $Script:adPEAS_FindingsCollection = $null
 $Script:adPEAS_FindingsCollectionEnabled = $false
 $Script:adPEAS_CurrentCheckContext = $null
 $Script:adPEASLogoOnScreen = $false
+$Script:adPEASLogoDisclaimer = $null
 function Initialize-FindingsCollection {
 	[CmdletBinding()]
 	param()
@@ -23381,9 +23385,9 @@ function Show-Output {
 	    }
 	    default {
 	        if ($Raw) {
-	            Write-adPEASOutput -Text $Value -Class "Standard" -NoPrefix
+	            Write-adPEASOutput -Text $Value -Class "Standard" -NoPrefix -FileOnly:$FileOnly
 	        } else {
-	            Write-adPEASOutput -Text $Value -Class $Class
+	            Write-adPEASOutput -Text $Value -Class $Class -FileOnly:$FileOnly
 	        }
 	    }
 	}
@@ -23401,9 +23405,11 @@ function Show-Line {
 	    [Parameter(Mandatory=$false)]
 	    [string]$FindingId,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$NoCollect
+	    [switch]$NoCollect,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$FileOnly
 	)
-	Show-Output -Value $Text -Class $Class -Raw:$Raw -FindingId $FindingId -NoCollect:$NoCollect
+	Show-Output -Value $Text -Class $Class -Raw:$Raw -FindingId $FindingId -NoCollect:$NoCollect -FileOnly:$FileOnly
 }
 function Show-KeyValue {
 	[CmdletBinding()]
@@ -23492,9 +23498,16 @@ function Show-ScanLogo {
 	[CmdletBinding()]
 	param(
 	    [Parameter(Mandatory=$false)]
-	    [string]$Version
+	    [string]$Version,
+	    [Parameter(Mandatory=$false)]
+	    [PSCustomObject]$Disclaimer
 	)
-	Show-Logo -Version $Version -FileOnly:([bool]$Script:adPEASLogoOnScreen)
+	$importOnScreen = [bool]$Script:adPEASLogoOnScreen -and
+	    ($null -eq $Disclaimer -or [string]$Disclaimer.Text -eq [string]$Script:adPEASLogoDisclaimer)
+	Show-Logo -Version $Version -FileOnly:$importOnScreen
+	if ($Disclaimer) {
+	    Show-Line ([string]$Disclaimer.Text) -Class ([string]$Disclaimer.Class) -FileOnly:$importOnScreen
+	}
 	$Script:adPEASLogoOnScreen = $false
 }
 function Show-Message {
@@ -92948,7 +92961,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1516"
+$Script:adPEASVersion = "2.7.0+20261021-1549"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -93088,28 +93101,14 @@ function Invoke-adPEAS {
 	if ($VerboseLogging -and -not $Script:adPEAS_Outputfile) {
 	    Write-Warning "[adPEAS] -VerboseLogging: File logging requires -Outputfile with Text format. Verbose messages will be shown in console only."
 	}
-Show-ScanLogo -Version $Script:adPEASVersion
 try {
 	$_licJson = $null
 	if ($PSBoundParameters.ContainsKey('License') -and $License -and (Test-Path $License -ErrorAction SilentlyContinue)) {
 	    $_licJson = Get-Content $License -Raw -Encoding UTF8
 	}
-	elseif ($Script:RuntimeLicense) {
-	    $_licJson = $Script:RuntimeLicense
-	}
-	elseif ($Script:EmbeddedLicense) {
-	    $_licJson = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Script:EmbeddedLicense))
-	}
-	$_licResult = if ($_licJson) { Test-adPEASLicense -LicenseJson $_licJson } else { $null }
-	if ($_licResult -and $_licResult.IsValid -and -not $_licResult.Expired) {
-	    $Script:adPEASDisclaimer = $_licResult.Message
-	    Show-Line $Script:adPEASDisclaimer -Class Note
-	}
-	else {
-	    $_lm="GCQlP2w+KTwjPjhsOy0/bCspIik+LTgpKGw5PyUiK2wtbDgjIyBsOCQtOGw+KT05JT4pP2wtbDotICUobC8jISEpPi8lLSBsICUvKSI/KWwqIz5sLyMiPzkgOCUiK2wjPmwhLSItKykobD8pPjolLylsOT8pYg==";$_lk=0x4C
-	    $Script:adPEASDisclaimer=(-join([Convert]::FromBase64String($_lm)|ForEach-Object{[char]($_-bxor$_lk)}))
-	    Show-Line $Script:adPEASDisclaimer -Class Finding
-	}
+	$_disclaimer = Get-adPEASDisclaimer -LicenseJson $_licJson
+	$Script:adPEASDisclaimer = $_disclaimer.Text
+	Show-ScanLogo -Version $Script:adPEASVersion -Disclaimer $_disclaimer
 	if ($OPSEC) {
 	}
 	$HasConnectionParams = $PSBoundParameters.ContainsKey('Domain') -or
@@ -93595,6 +93594,33 @@ finally {
 	Clear-FindingsCollection
 }
 }
+function Get-adPEASDisclaimer {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$LicenseJson
+	)
+	$_licJson = $LicenseJson
+	if (-not $_licJson) {
+	    if ($Script:RuntimeLicense) {
+	        $_licJson = $Script:RuntimeLicense
+	    }
+	    elseif ($Script:EmbeddedLicense) {
+	        $_licJson = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Script:EmbeddedLicense))
+	    }
+	}
+	$_licResult = if ($_licJson) { Test-adPEASLicense -LicenseJson $_licJson } else { $null }
+	if ($_licResult -and $_licResult.IsValid -and -not $_licResult.Expired) {
+	    return [PSCustomObject]@{ Text = [string]$_licResult.Message; Class = 'Note' }
+	}
+	$_lm="GCQlP2w+KTwjPjhsOy0/bCspIik+LTgpKGw5PyUiK2wtbDgjIyBsOCQtOGw+KT05JT4pP2wtbDotICUobC8jISEpPi8lLSBsICUvKSI/KWwqIz5sLyMiPzkgOCUiK2wjPmwhLSItKykobD8pPjolLylsOT8pYg==";$_lk=0x4C
+	return [PSCustomObject]@{ Text = (-join([Convert]::FromBase64String($_lm)|ForEach-Object{[char]($_-bxor$_lk)})); Class = 'Finding' }
+}
+$_importDisclaimer = Get-adPEASDisclaimer
 Show-Logo -Version $Script:adPEASVersion
+Show-Line $_importDisclaimer.Text -Class $_importDisclaimer.Class
 Get-adPEASHelp -Section QuickStart
+$Script:adPEASLogoDisclaimer = $_importDisclaimer.Text
 $Script:adPEASLogoOnScreen = $true

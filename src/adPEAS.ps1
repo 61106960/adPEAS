@@ -664,38 +664,21 @@ function Invoke-adPEAS {
         # File logging won't happen since $Script:adPEAS_Outputfile is $null
     }
 
-# ===== Banner =====
-# On the console only if the import's logo is not what it last showed; the text report
-# always starts with it.
-Show-ScanLogo -Version $Script:adPEASVersion
-
 # ===== Main Logic =====
 try {
-    # ===== License Validation =====
-    $_licJson = $null
+    # ===== License Validation and Banner =====
     # Priority: runtime -License param > Connect-adPEAS stored license > embedded license
+    $_licJson = $null
     if ($PSBoundParameters.ContainsKey('License') -and $License -and (Test-Path $License -ErrorAction SilentlyContinue)) {
         $_licJson = Get-Content $License -Raw -Encoding UTF8
     }
-    elseif ($Script:RuntimeLicense) {
-        $_licJson = $Script:RuntimeLicense
-    }
-    elseif ($Script:EmbeddedLicense) {
-        $_licJson = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Script:EmbeddedLicense))
-    }
+    $_disclaimer = Get-adPEASDisclaimer -LicenseJson $_licJson
+    $Script:adPEASDisclaimer = $_disclaimer.Text
 
-    $_licResult = if ($_licJson) { Test-adPEASLicense -LicenseJson $_licJson } else { $null }
+    # The logo and the license line under it - on the console only if the import's are not
+    # what it last showed; the text report always starts with them.
+    Show-ScanLogo -Version $Script:adPEASVersion -Disclaimer $_disclaimer
 
-    if ($_licResult -and $_licResult.IsValid -and -not $_licResult.Expired) {
-        $Script:adPEASDisclaimer = $_licResult.Message
-        Show-Line $Script:adPEASDisclaimer -Class Note
-    }
-    else {
-        # Default disclaimer (XOR obfuscated)
-        $_lm="GCQlP2w+KTwjPjhsOy0/bCspIik+LTgpKGw5PyUiK2wtbDgjIyBsOCQtOGw+KT05JT4pP2wtbDotICUobC8jISEpPi8lLSBsICUvKSI/KWwqIz5sLyMiPzkgOCUiK2wjPmwhLSItKykobD8pPjolLylsOT8pYg==";$_lk=0x4C
-        $Script:adPEASDisclaimer=(-join([Convert]::FromBase64String($_lm)|ForEach-Object{[char]($_-bxor$_lk)}))
-        Show-Line $Script:adPEASDisclaimer -Class Finding
-    }
     Write-Log "[adPEAS] Script started: $StartTime"
     Write-Log "[adPEAS] Version: $Script:adPEASVersion"
 
@@ -1409,9 +1392,58 @@ finally {
 }
 # ===== End of Invoke-adPEAS Function =====
 
+<#
+.SYNOPSIS
+    The license line adPEAS prints under its logo, which is also the disclaimer of its
+    reports.
+
+.DESCRIPTION
+    A valid license names its licensee, as a note. Without one - or with one that is
+    invalid or expired - the default disclaimer (XOR obfuscated) stands there, as a finding.
+
+.PARAMETER LicenseJson
+    A license read from Invoke-adPEAS -License, which takes priority over the one
+    Connect-adPEAS -License stored and the one embedded at build time.
+
+.OUTPUTS
+    [PSCustomObject] with Text and Class (Note or Finding).
+#>
+function Get-adPEASDisclaimer {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$LicenseJson
+    )
+
+    $_licJson = $LicenseJson
+    if (-not $_licJson) {
+        if ($Script:RuntimeLicense) {
+            $_licJson = $Script:RuntimeLicense
+        }
+        elseif ($Script:EmbeddedLicense) {
+            $_licJson = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Script:EmbeddedLicense))
+        }
+    }
+
+    $_licResult = if ($_licJson) { Test-adPEASLicense -LicenseJson $_licJson } else { $null }
+    if ($_licResult -and $_licResult.IsValid -and -not $_licResult.Expired) {
+        return [PSCustomObject]@{ Text = [string]$_licResult.Message; Class = 'Note' }
+    }
+
+    # Default disclaimer (XOR obfuscated)
+    $_lm="GCQlP2w+KTwjPjhsOy0/bCspIik+LTgpKGw5PyUiK2wtbDgjIyBsOCQtOGw+KT05JT4pP2wtbDotICUobC8jISEpPi8lLSBsICUvKSI/KWwqIz5sLyMiPzkgOCUiK2wjPmwhLSItKykobD8pPjolLylsOT8pYg==";$_lk=0x4C
+    return [PSCustomObject]@{ Text = (-join([Convert]::FromBase64String($_lm)|ForEach-Object{[char]($_-bxor$_lk)})); Class = 'Finding' }
+}
+
 # ===== Module Import Message =====
-# The logo and the quick start. A scan started right after this shows no second logo on
-# the console - Show-ScanLogo reads the flag set here, which any other output clears.
+# The logo, the license line and the quick start. A scan started right after this shows
+# neither logo nor license line again on the console - Show-ScanLogo reads the flag set
+# here, which any other output clears, and the license line recorded with it.
+$_importDisclaimer = Get-adPEASDisclaimer
 Show-Logo -Version $Script:adPEASVersion
+Show-Line $_importDisclaimer.Text -Class $_importDisclaimer.Class
 Get-adPEASHelp -Section QuickStart
+$Script:adPEASLogoDisclaimer = $_importDisclaimer.Text
 $Script:adPEASLogoOnScreen = $true

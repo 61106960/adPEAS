@@ -1500,13 +1500,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   SCOM sections, and the analysis is *Checking the Exchange servers and their web
   endpoints*.
 
-- **A scan started right after loading adPEAS shows no second logo.** Loading prints the
-  logo and the quick start, and `Invoke-adPEAS` opened every scan with the logo again, so
-  a script or one-liner that loads adPEAS and starts a scan showed it twice. While the
-  import's logo and quick start are still the last thing adPEAS printed, the scan now
-  writes its logo to the text report only. After anything else - a connection, an
-  earlier scan - the console shows it as before. The text report always starts with the
-  logo.
+- **A scan started right after loading adPEAS shows no second logo, and loading shows the
+  license.** Loading prints the logo and the quick start, and `Invoke-adPEAS` opened every
+  scan with the logo again, so a script or one-liner that loads adPEAS and starts a scan
+  showed it twice. Loading now prints the license line under the logo as well - the
+  licensee, or the default disclaimer - which only the scan used to print. While the
+  import's logo, license line and quick start are still the last thing adPEAS printed,
+  the scan writes its logo and license line to the text report only. After anything else
+  - a connection, an earlier scan - or under another license, such as one handed to
+  `Invoke-adPEAS -License`, the console shows both as before. The text report always
+  starts with them.
 
 - **LAPS coverage is one summary object.** `Get-LAPSConfiguration` reported its figures
   as loose lines: the active computers and what was left out, the protected ones by

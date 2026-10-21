@@ -105,7 +105,11 @@ function Write-adPEASOutput {
         [switch]$NoColor,
 
         [Parameter(Mandatory=$false)]
-        [switch]$LeadingNewline
+        [switch]$LeadingNewline,
+
+        # The text report only, not the console - see Show-ScanLogo.
+        [Parameter(Mandatory=$false)]
+        [switch]$FileOnly
     )
 
     begin {
@@ -124,7 +128,9 @@ function Write-adPEASOutput {
         }
 
         # Console output
-        if ($Script:adPEAS_OutputColor -ne $false -and -not $NoColor) {
+        if ($FileOnly) {
+            # The text report only
+        } elseif ($Script:adPEAS_OutputColor -ne $false -and -not $NoColor) {
             # Colored output
             $color = Get-ClassColor -Class $Class
             $coloredText = $color + $plainText + $ANSI["Reset"]
