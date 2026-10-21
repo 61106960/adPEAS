@@ -323,7 +323,8 @@ Get-CredentialRoaming -IncludePrivileged
 **What it checks**:
 - GPP passwords in SYSVOL XML files (cpassword attribute, MS14-025)
 - AutoAdminLogon passwords in Registry.xml (plaintext)
-- Hardcoded credentials in NETLOGON/SYSVOL scripts and configuration files (.bat, .cmd, .ps1, .psm1, .psd1, .vbs, .vbe, .kix, .txt, .ini, .inf, .conf, .cnf, .config, .json, .yml, .yaml, .reg) and in GPO comment files (.cmtx). Not GptTmpl.inf - every one names the password policy - and not Registry.pol, which is parsed for password values on its own
+- Hardcoded credentials in NETLOGON/SYSVOL scripts and configuration files (.bat, .cmd, .ps1, .psm1, .psd1, .vbs, .vbe, .kix, .txt, .ini, .inf, .conf, .cnf, .config, .json, .yml, .yaml, .reg, .vnc) and in GPO comment files (.cmtx). Not GptTmpl.inf - every one names the password policy - and not Registry.pol, which is parsed for password values on its own
+- VNC passwords, decrypted: in VNC viewer connection files (.vnc, with the host they name), in the .ini of UltraVNC and TightVNC, and in the registry values a policy deploys for RealVNC, TightVNC, TigerVNC and UltraVNC (REG_SZ or REG_BINARY). Every VNC installation encrypts the password with the same published DES key, so the stored value is the password
 - Passwords in Windows answer files (unattend XML, recognised by its root element): the administrator, local account, automatic logon and domain join passwords, with values hidden by Windows SIM decoded
 - Net use commands with embedded passwords
 - VBScript Encoded (.vbe) files (automatically decoded)
@@ -336,7 +337,7 @@ Get-CredentialRoaming -IncludePrivileged
 | Tier 1 (High Confidence) | Finding | GPP cpassword, `password=Secret123`, `net use ... /user:admin pass`, PSExec with `-p`, connection strings |
 | Tier 2 (Lower Confidence) | Hint | Generic mentions of `password`, `credential`, XML password elements |
 
-**Security Impact**: GPP passwords use a published Microsoft AES key and are trivially decryptable. Credentials in SYSVOL scripts are readable by all authenticated domain users.
+**Security Impact**: GPP passwords use a published Microsoft AES key and VNC passwords a published DES key; both are trivially decryptable. Credentials in SYSVOL scripts are readable by all authenticated domain users.
 
 **The account behind a credential**: GPP passwords, AutoAdminLogon values and `net use` credentials carry an `accountInAD` row. It says whether a domain account of that name exists, whether it is enabled and privileged, and whether its password was changed after the file was last written. Variables, local and built-in accounts, names qualified with another domain or a computer, and the accounts of a `Groups.xml` (local accounts by definition) are named as such instead of being looked up. Without a directory session the row is left out.
 

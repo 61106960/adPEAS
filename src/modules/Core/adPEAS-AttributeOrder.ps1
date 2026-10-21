@@ -530,7 +530,7 @@ $Script:PrimaryAttributes = @{
         'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'VNCHost', 'VNCSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
 
     # ACL findings (users/computers/groups with dangerous permissions)

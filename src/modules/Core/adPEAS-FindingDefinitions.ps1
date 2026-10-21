@@ -7235,6 +7235,43 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'CREDENTIAL_VNC_PASSWORD' = @{
+        Title = "VNC Password Readable"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A VNC password is stored where it can be read here: in a VNC viewer's connection file (.vnc), the .ini of UltraVNC or TightVNC, or a registry value a Group Policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC. VNC keeps it DES-encrypted with a key that is the same in every installation and part of the published source code, so the stored value is the password - shown decrypted here. A VNC password is at most eight characters and is not tied to an account: whoever has it connects to every VNC server that uses it."
+        Impact = @(
+            "Screen and keyboard of every VNC server the password opens - with a full-access password, the session of whoever is signed in there"
+            "Readable by whoever can read the share the file or policy sits on - in SYSVOL or NETLOGON, every authenticated user"
+            "A connection file names the host as well"
+        )
+        Attack = @(
+            "1. Read the .vnc file, the .ini or the policy from the share"
+            "2. Decrypt the 16 hex digits with the fixed VNC DES key"
+            "3. Connect to the host the file names, or to any VNC server that shares the password"
+        )
+        Remediation = @(
+            "Change the VNC password on every server that uses it"
+            "Remove connection files with saved passwords from shares; do not distribute VNC passwords by Group Policy"
+            "Prefer VNC authentication against the Windows account (RealVNC system authentication, UltraVNC MS-Logon) over a shared VNC password"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Find VNC connection files and VNC .ini files in SYSVOL"
+                Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com' -Recurse -Include *.vnc,*vnc*.ini -ErrorAction SilentlyContinue | Select-Object FullName"
+            }
+        )
+        References = @(
+            @{ Title = "PasswordDecrypts - VNC"; Url = "https://github.com/peternewman/PasswordDecrypts" }
+            @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+        )
+        Tools = @("vncpwd", "Metasploit", "Snaffler")
+        MITRE = "T1552.001"
+        Triggers = @(
+            @{ Attribute = 'credentialType'; Pattern = '^VNC Password$'; Severity = 'Finding' }
+        )
+    }
+
     'CREDENTIAL_NET_USE' = @{
         Title = "Net Use Command with Embedded Password"
         Risk = "Finding"

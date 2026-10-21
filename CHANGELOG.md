@@ -844,6 +844,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   objectSid as bytes: the attribute indexer of a search result returns a string for a SID
   whose bytes happen to be valid UTF-8, and the SID was lost.
 
+- **`Get-CredentialExposure` decrypts VNC passwords.** RealVNC, TightVNC, TigerVNC and
+  UltraVNC store the VNC password DES-encrypted with one key every installation shares, so
+  the stored value is the password. The check now reads VNC viewer connection files
+  (`.vnc`, with the host they name) and the `.ini` of UltraVNC and TightVNC, and the
+  registry values a policy deploys for these products, of either type - TightVNC and
+  TigerVNC keep the password as REG_BINARY, which was not read at all, and a RealVNC value
+  was shown as the hex it is stored as. Each is reported decrypted, as a finding with its
+  own card. `Parse-PRegRecords` hands the data of a REG_BINARY value on, and
+  `Get-GPORegistrySettings` counts the VNC values as judged.
 - **`Get-GPORegistrySettings` knows eleven more settings.** WinRM accepting or sending
   unencrypted traffic and Basic authentication; logon credentials delegated by CredSSP to
   any server (a server list entry `*` or `TERMSRV/*` under "Allow delegating default

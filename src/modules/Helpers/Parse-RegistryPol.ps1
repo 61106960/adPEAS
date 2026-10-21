@@ -20,7 +20,8 @@
     informational, based on which SYSVOL subfolder the file was read from.
 
 .OUTPUTS
-    Array of PSCustomObject: Hive, Key, ValueName, Type, ValueInt, ValueString
+    Array of PSCustomObject: Hive, Key, ValueName, Type, ValueInt, ValueString, ValueBytes
+    (the data of a REG_BINARY value, $null for every other type)
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -109,7 +110,11 @@ function Parse-PRegRecords {
             # Decode value depending on registry type
             $valueInt = $null
             $valueString = $null
+            $valueBytes = $null
             switch ($type) {
+                # REG_BINARY. Handed on as it is: TightVNC and TigerVNC keep their password
+                # this way, and Get-CredentialExposure decrypts it.
+                3  { $valueBytes = $data }
                 4  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }      # REG_DWORD
                 5  {
                     # REG_DWORD_BIG_ENDIAN. BitConverter reads in the machine's byte
@@ -143,6 +148,7 @@ function Parse-PRegRecords {
                 Type        = $type
                 ValueInt    = $valueInt
                 ValueString = $valueString
+                ValueBytes  = $valueBytes
             }
 
             # expect ']' - if not present, the loop's resync will find the next '['

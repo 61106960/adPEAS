@@ -3849,7 +3849,7 @@ $Script:PrimaryAttributes = @{
 	    'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
 	)
 	SYSVOLCredential = @(
-	    'CredentialType', 'GPOName', 'FilePath', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+	    'CredentialType', 'GPOName', 'FilePath', 'VNCHost', 'VNCSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
 	)
 	ACLFinding = @(
 	    'sAMAccountName', 'userPrincipalName', 'distinguishedName', 'objectSid',
@@ -11158,6 +11158,42 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    MITRE = "T1552.001"
 	    Triggers = @(
 	        @{ Attribute = 'credentialType'; Pattern = '^Unattend Answer File$'; Severity = 'Finding' }
+	    )
+	}
+	'CREDENTIAL_VNC_PASSWORD' = @{
+	    Title = "VNC Password Readable"
+	    Risk = "Finding"
+	    BaseScore = 50
+	    Description = "A VNC password is stored where it can be read here: in a VNC viewer's connection file (.vnc), the .ini of UltraVNC or TightVNC, or a registry value a Group Policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC. VNC keeps it DES-encrypted with a key that is the same in every installation and part of the published source code, so the stored value is the password - shown decrypted here. A VNC password is at most eight characters and is not tied to an account: whoever has it connects to every VNC server that uses it."
+	    Impact = @(
+	        "Screen and keyboard of every VNC server the password opens - with a full-access password, the session of whoever is signed in there"
+	        "Readable by whoever can read the share the file or policy sits on - in SYSVOL or NETLOGON, every authenticated user"
+	        "A connection file names the host as well"
+	    )
+	    Attack = @(
+	        "1. Read the .vnc file, the .ini or the policy from the share"
+	        "2. Decrypt the 16 hex digits with the fixed VNC DES key"
+	        "3. Connect to the host the file names, or to any VNC server that shares the password"
+	    )
+	    Remediation = @(
+	        "Change the VNC password on every server that uses it"
+	        "Remove connection files with saved passwords from shares; do not distribute VNC passwords by Group Policy"
+	        "Prefer VNC authentication against the Windows account (RealVNC system authentication, UltraVNC MS-Logon) over a shared VNC password"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Find VNC connection files and VNC .ini files in SYSVOL"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com' -Recurse -Include *.vnc,*vnc*.ini -ErrorAction SilentlyContinue | Select-Object FullName"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "PasswordDecrypts - VNC"; Url = "https://github.com/peternewman/PasswordDecrypts" }
+	        @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+	    )
+	    Tools = @("vncpwd", "Metasploit", "Snaffler")
+	    MITRE = "T1552.001"
+	    Triggers = @(
+	        @{ Attribute = 'credentialType'; Pattern = '^VNC Password$'; Severity = 'Finding' }
 	    )
 	}
 	'CREDENTIAL_NET_USE' = @{
@@ -22444,6 +22480,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "cpassword attributes and their decryption"
 	        "AutoAdminLogon credentials in Registry.xml"
 	        "String registry values named like a password - Password, ProxyPassword, Pwd - in Registry.xml and in the Administrative Template file Registry.pol"
+	        "VNC passwords a policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC, decrypted (one DES key shared by every VNC installation)"
 	    )
 	    SecureMessage = "No credentials were found in Group Policy Preference files. GPP password storage (cpassword) is not used in this domain."
 	}
@@ -22458,6 +22495,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Login scripts with embedded credentials"
 	        "net use commands with passwords"
 	        "Configuration files with sensitive data"
+	        "VNC viewer connection files (.vnc) and VNC .ini files, with the password decrypted"
 	    )
 	    SecureMessage = "No credentials or sensitive information were found in SYSVOL/NETLOGON scripts and configuration files."
 	}
@@ -40001,6 +40039,54 @@ function ConvertFrom-GPPPassword {
 	    }
 	}
 }
+function ConvertFrom-VNCPassword {
+	[CmdletBinding(DefaultParameterSetName = 'Hex')]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true, ParameterSetName = 'Hex')]
+	    [AllowEmptyString()]
+	    [string]$Hex,
+	    [Parameter(Mandatory = $true, ParameterSetName = 'Bytes')]
+	    [AllowEmptyCollection()]
+	    [byte[]]$Bytes
+	)
+	if ($PSCmdlet.ParameterSetName -eq 'Hex') {
+	    $digits = $Hex -replace '[\s,]', ''
+	    if ($digits -notmatch '^([0-9A-Fa-f]{16}|[0-9A-Fa-f]{18})$') { return $null }
+	    $Bytes = New-Object byte[] ($digits.Length / 2)
+	    for ($i = 0; $i -lt $Bytes.Length; $i++) {
+	        $Bytes[$i] = [Convert]::ToByte($digits.Substring($i * 2, 2), 16)
+	    }
+	}
+	if ($null -eq $Bytes -or $Bytes.Length -lt 8) { return $null }
+	$des = $null
+	$plain = $null
+	try {
+	    $des = New-Object System.Security.Cryptography.DESCryptoServiceProvider
+	    $des.Mode = [System.Security.Cryptography.CipherMode]::ECB
+	    $des.Padding = [System.Security.Cryptography.PaddingMode]::None
+	    $key = [byte[]](0xE8, 0x4A, 0xD6, 0x60, 0xC4, 0x72, 0x1A, 0xE0)
+	    $plain = $des.CreateDecryptor($key, $null).TransformFinalBlock($Bytes, 0, 8)
+	} catch {
+	    return $null
+	} finally {
+	    if ($des) { $des.Dispose() }
+	}
+	$length = 8
+	while ($length -gt 0 -and $plain[$length - 1] -eq 0) { $length-- }
+	return [System.Text.Encoding]::GetEncoding(28591).GetString($plain, 0, $length)
+}
+function Test-VNCPasswordRecord {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    $Record
+	)
+	$key = ([string]$Record.Key -replace '^\\+', '').TrimEnd('\')
+	return ($key -match '(?i)(^|\\)(RealVNC|TightVNC|TigerVNC|ORL)(\\|$)' -and
+	    [string]$Record.ValueName -match '(?i)^(Password|PasswordViewOnly|ControlPassword|passwd|passwd2)$')
+}
 function ConvertFrom-VBE {
 	[CmdletBinding()]
 	param(
@@ -52369,7 +52455,9 @@ function Parse-PRegRecords {
 	        $pos += $size
 	        $valueInt = $null
 	        $valueString = $null
+	        $valueBytes = $null
 	        switch ($type) {
+	            3  { $valueBytes = $data }
 	            4  { if ($data.Length -ge 4) { $valueInt = [System.BitConverter]::ToUInt32($data, 0) } }
 	            5  {
 	                if ($data.Length -ge 4) {
@@ -52394,6 +52482,7 @@ function Parse-PRegRecords {
 	            Type        = $type
 	            ValueInt    = $valueInt
 	            ValueString = $valueString
+	            ValueBytes  = $valueBytes
 	        }
 	    }
 	    if ($malformed) {
@@ -76840,6 +76929,7 @@ function Test-RegistryRecordUnjudged {
 	    if ($reader.Key -ine $recKey) { continue }
 	    if (@($reader.ValueNames) -contains '*' -or @($reader.ValueNames) -contains $recValueName) { return $false }
 	}
+	if (Test-VNCPasswordRecord -Record $Record) { return $false }
 	if ($recValueName -match '(?i)(password|passwd|pwd)$') {
 	    $isString = if ($Record.Type -is [string]) {
 	        $Record.Type -match '^REG_(EXPAND_|MULTI_)?SZ$'
@@ -81093,7 +81183,8 @@ function Get-UnixPasswordAccounts {
 $Script:CredentialScanExtensions = @(
 	'*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
 	'*.ps1', '*.psm1',
-	'*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1', '*.inf'
+	'*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1', '*.inf',
+	'*.vnc'
 )
 $Script:CredentialScanSkippedFiles = @('GptTmpl.inf')
 function Get-ReportedLineKey {
@@ -81165,6 +81256,35 @@ function Get-WinlogonCredential {
 	    }
 	}
 }
+function Get-VNCFileCredential {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$FileName,
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyCollection()]
+	    [string[]]$Lines
+	)
+	if ($FileName -notmatch '(?i)(\.vnc$|vnc[^\\]*\.ini$)') { return }
+	$vncHost = $null
+	foreach ($line in @($Lines)) {
+	    if ([string]$line -match '^\s*Host\s*=\s*(\S+)') { $vncHost = $Matches[1]; break }
+	}
+	foreach ($line in @($Lines)) {
+	    $trimmed = ([string]$line).Trim()
+	    if ($trimmed -notmatch '(?i)^(Password|PasswordViewOnly|ControlPassword|passwd|passwd2)\s*=\s*([0-9A-F]{16}([0-9A-F]{2})?)$') { continue }
+	    $setting = $Matches[1]
+	    $password = ConvertFrom-VNCPassword -Hex $Matches[2]
+	    if ($null -eq $password) { continue }
+	    [PSCustomObject]@{
+	        Line     = $trimmed
+	        Setting  = $setting
+	        VNCHost  = $vncHost
+	        Password = $password
+	    }
+	}
+}
 function Get-RegistryPasswordCredential {
 	[CmdletBinding()]
 	param(
@@ -81178,6 +81298,25 @@ function Get-RegistryPasswordCredential {
 	foreach ($record in @($Records)) {
 	    if (-not $record) { continue }
 	    $valueName = [string]$record.ValueName
+	    if (Test-VNCPasswordRecord -Record $record) {
+	        if ($record.PSObject.Properties['Disabled'] -and $record.Disabled) { continue }
+	        if ($record.PSObject.Properties['Action'] -and $record.Action -eq 'D') { continue }
+	        $vncPassword = $null
+	        if ($record.PSObject.Properties['ValueBytes'] -and $record.ValueBytes) {
+	            $vncPassword = ConvertFrom-VNCPassword -Bytes $record.ValueBytes
+	        } elseif ($record.ValueString) {
+	            $vncPassword = ConvertFrom-VNCPassword -Hex ([string]$record.ValueString)
+	        }
+	        if ($null -ne $vncPassword) {
+	            [PSCustomObject]@{
+	                CredentialType = 'VNC Password'
+	                FilePath       = $FilePath
+	                RegistryValue  = (@($record.Hive, $record.Key, $valueName) | Where-Object { $_ }) -join '\'
+	                Password       = $vncPassword
+	            }
+	            continue
+	        }
+	    }
 	    if ($valueName -notmatch '(?i)(password|passwd|pwd)$' -or $valueName -match '^\*\*') { continue }
 	    $isString = if ($record.Type -is [string]) {
 	        $record.Type -match '^REG_(EXPAND_|MULTI_)?SZ$'
@@ -81411,9 +81550,9 @@ function Get-CredentialExposure {
 	                                Show-Object $credObj -Class Finding
 	                            }
 	                            foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $xmlFile.FullName) -FilePath $xmlFile.FullName)) {
-	                                Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                                Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
 	                                $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-	                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
 	                                Show-Object $credObj -Class Finding
 	                            }
 	                        }
@@ -81441,9 +81580,9 @@ function Get-CredentialExposure {
 	                try {
 	                    $polHive = if ($polFile.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
 	                    foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive $polHive) -FilePath $polFile.FullName)) {
-	                        Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                        Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
 	                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-	                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
 	                        Show-Object $credObj -Class Finding
 	                    }
 	                }
@@ -81472,6 +81611,20 @@ function Get-CredentialExposure {
 	                        if (-not $fileContent) { continue }
 	                        $lines = $fileContent -split "`n"
 	                        $reportedLines = @{}
+	                        foreach ($vncCredential in @(Get-VNCFileCredential -FileName $file.Name -Lines $lines)) {
+	                            $credObj = [PSCustomObject]@{
+	                                CredentialType = 'VNC Password'
+	                                FilePath       = $file.FullName
+	                                VNCHost        = $vncCredential.VNCHost
+	                                VNCSetting     = $vncCredential.Setting
+	                                Password       = $vncCredential.Password
+	                            }
+	                            Show-Line "Found a VNC password" -Class Finding
+	                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
+	                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'VNC Password' -Force
+	                            Show-Object $credObj -Class Finding
+	                            $reportedLines[$vncCredential.Line] = $true
+	                        }
 	                        $netUseMatches = [Regex]::Matches($fileContent, $netUsePattern)
 	                        foreach ($match in $netUseMatches) {
 	                            $foundUsername = $match.Groups["username"].Value
@@ -81677,9 +81830,9 @@ function Get-CredentialExposure {
 	                                foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $xmlFile.FullName) -FilePath $xmlFile.FullName)) {
 	                                    if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
 	                                    if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-	                                    Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                                    Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
 	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
 	                                    Show-Object $credObj -Class Finding
 	                                    $gppFindingsCount++
 	                                }
@@ -81726,9 +81879,9 @@ function Get-CredentialExposure {
 	                                }
 	                                $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $polLinkedOUs -Force
 	                            }
-	                            Show-Line "Found a password in a registry value deployed by Group Policy" -Class Finding
+	                            Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
 	                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-	                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Registry Value' -Force
+	                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
 	                            Show-Object $credObj -Class Finding
 	                            $gppFindingsCount++
 	                        }
@@ -81833,6 +81986,23 @@ function Get-CredentialExposure {
 	                            if (-not $fileContent) { continue }
 	                            $lines = $fileContent -split "`n"
 	                            $reportedLines = @{}
+	                            foreach ($vncCredential in @(Get-VNCFileCredential -FileName $file.Name -Lines $lines)) {
+	                                $credObj = [PSCustomObject]@{
+	                                    CredentialType = 'VNC Password'
+	                                    FilePath       = $file.FullName
+	                                    VNCHost        = $vncCredential.VNCHost
+	                                    VNCSetting     = $vncCredential.Setting
+	                                    Password       = $vncCredential.Password
+	                                }
+	                                if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
+	                                if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
+	                                Show-Line "Found a VNC password" -Class Finding
+	                                $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
+	                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'VNC Password' -Force
+	                                Show-Object $credObj -Class Finding
+	                                $reportedLines[$vncCredential.Line] = $true
+	                                $sysvolFindingsCount++
+	                            }
 	                            $netUseMatches = [Regex]::Matches($fileContent, $netUsePattern)
 	                            foreach ($match in $netUseMatches) {
 	                                $foundUsername = $match.Groups["username"].Value
@@ -93486,7 +93656,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1648"
+$Script:adPEASVersion = "2.7.0+20261021-1728"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

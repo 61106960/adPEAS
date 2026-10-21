@@ -603,9 +603,10 @@ function Test-RegistryRecordUnjudged {
     .DESCRIPTION
         A value with a rule in $Script:DangerousRegistryKeys is judged whatever it holds -
         LmCompatibilityLevel 5 was looked at and is fine. So is a value another check reads
-        ($Script:RegistryValuesReadElsewhere), and a string value named like a password,
-        which Get-CredentialExposure reports. Everything else is the part of the registry
-        no list covers: an application's settings, and Windows settings without a rule.
+        ($Script:RegistryValuesReadElsewhere), a string value named like a password and the
+        password of a VNC product, which Get-CredentialExposure reports. Everything else is
+        the part of the registry no list covers: an application's settings, and Windows
+        settings without a rule.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -630,6 +631,9 @@ function Test-RegistryRecordUnjudged {
         if ($reader.Key -ine $recKey) { continue }
         if (@($reader.ValueNames) -contains '*' -or @($reader.ValueNames) -contains $recValueName) { return $false }
     }
+
+    # The password of a VNC product, of any type - Get-CredentialExposure decrypts it.
+    if (Test-VNCPasswordRecord -Record $Record) { return $false }
 
     # Get-RegistryPasswordCredential: a string value whose name ends in password, passwd
     # or pwd. Registry.xml names the type, Registry.pol and GptTmpl.inf number it.

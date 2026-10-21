@@ -1393,6 +1393,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "cpassword attributes and their decryption"
             "AutoAdminLogon credentials in Registry.xml"
             "String registry values named like a password - Password, ProxyPassword, Pwd - in Registry.xml and in the Administrative Template file Registry.pol"
+            "VNC passwords a policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC, decrypted (one DES key shared by every VNC installation)"
         )
         SecureMessage = "No credentials were found in Group Policy Preference files. GPP password storage (cpassword) is not used in this domain."
     }
@@ -1408,6 +1409,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Login scripts with embedded credentials"
             "net use commands with passwords"
             "Configuration files with sensitive data"
+            "VNC viewer connection files (.vnc) and VNC .ini files, with the password decrypted"
         )
         SecureMessage = "No credentials or sensitive information were found in SYSVOL/NETLOGON scripts and configuration files."
     }
