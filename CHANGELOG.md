@@ -1275,6 +1275,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   above it, and `whoCanAddComputers` says the default it rests on: "Any authenticated user
   by default, up to the quota".
 
+- **A time attribute that holds 0 says what that means.** `pwdLastSet: 0` was printed as
+  the number - it is the "User must change password at next logon" box, and now reads
+  "Never - must change at next logon", or "Never" where the password does not expire.
+  `accountExpires` 0 or 9223372036854775807 reads "Never" instead of the number, and so do
+  `lastLogon`, `lastLogonTimestamp` and `badPasswordTime` at 0; `lockoutTime` 0 reads "Not
+  locked out". Display only - the checks read the values as before.
+
 - **An encryption type of 0 shows only where it matters.** `msDS-SupportedEncryptionTypes`
   stored as 0 - which Active Directory Users and Computers writes when the AES boxes on an
   account are cleared - read "Not configured" on any account, while an account without

@@ -20177,6 +20177,38 @@ function Convert-EncryptionTypesToRenderValues {
     }
     return Convert-DefaultToRenderValues -Name $Name -Value $Value -Context $Context
 }
+function Convert-FileTimeSentinelToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+    $raw = [string](@($Value) | Select-Object -First 1)
+    $isZero = (@($Value).Count -eq 1) -and ($raw -eq '0')
+    $isMax = (@($Value).Count -eq 1) -and ($raw -eq '9223372036854775807')
+    if (-not ($isZero -or ($isMax -and $Name -eq 'accountExpires'))) {
+        return Convert-DefaultToRenderValues -Name $Name -Value $Value -Context $Context
+    }
+    $display = switch ($Name) {
+        'pwdLastSet' {
+            $source = if ($Context) { $Context.SourceObject } else { $null }
+            $uac = if ($source) { $source.userAccountControl } else { $null }
+            $neverExpires = (@($uac) -contains 'DONT_EXPIRE_PASSWORD')
+            if (-not $neverExpires -and $null -ne $uac -and "$uac" -match '^\d+$') {
+                $neverExpires = (([int64]"$uac") -band 0x10000) -ne 0
+            }
+            if ($neverExpires) { 'Never' } else { 'Never - must change at next logon' }
+        }
+        'lockoutTime' { 'Not locked out' }
+        default       { 'Never' }
+    }
+    $match = Get-TriggerMatch -Name $Name -Value $Value -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = $match.Severity
+        ForceAttributeClass = $false
+        Values              = @(
+            New-RenderValue -Display $display -Severity $match.Severity -FindingId $match.FindingId -RawValue $Value
+        )
+    }
+}
 function Convert-ScriptPathToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
@@ -20230,6 +20262,9 @@ $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Conver
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['msDS-SupportedEncryptionTypes'] = ${function:Convert-EncryptionTypesToRenderValues}
+foreach ($fileTimeName in @('pwdLastSet', 'accountExpires', 'lastLogon', 'lastLogonTimestamp', 'badPasswordTime', 'lockoutTime')) {
+    $Script:AttributeTransformers[$fileTimeName] = ${function:Convert-FileTimeSentinelToRenderValues}
+}
 $Script:AttributeTransformers['LinkedOUs']                   = ${function:Convert-LinkedOUsToRenderValues}
 $Script:AttributeTransformers['GPOStatus']                   = ${function:Convert-GPOStatusToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
@@ -95662,7 +95697,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-0849"
+$Script:adPEASVersion = "2.7.0+20261021-0855"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

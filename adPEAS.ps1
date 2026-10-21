@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 08:49:09
-    Version: 2.7.0+20261021-0849
+    Build: 2026-10-21 08:55:03
+    Version: 2.7.0+20261021-0855
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -26815,6 +26815,53 @@ function Convert-EncryptionTypesToRenderValues {
     return Convert-DefaultToRenderValues -Name $Name -Value $Value -Context $Context
 }
 
+# --- FileTime "never" values ---
+# ConvertFrom-LDAPAttribute hands 0 and Int64.MaxValue of a FileTime attribute over raw, on
+# purpose: several consumers test for [DateTime] or for 0. The default renderer then printed
+# the number - "pwdLastSet: 0", "accountExpires: 9223372036854775807". The words, here, and
+# only for display; every other value takes the default path.
+#
+# pwdLastSet 0 is the "User must change password at next logon" box: "If this value is set
+# to 0 and the User-Account-Control attribute does not contain the UF_DONT_EXPIRE_PASSWD
+# flag, then the user must set the password at the next logon" (Pwd-Last-Set, Microsoft).
+# With that flag there is only no time recorded. lockoutTime 0 is written on unlock as well,
+# so it says "not locked out" rather than "never".
+function Convert-FileTimeSentinelToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $raw = [string](@($Value) | Select-Object -First 1)
+    $isZero = (@($Value).Count -eq 1) -and ($raw -eq '0')
+    $isMax = (@($Value).Count -eq 1) -and ($raw -eq '9223372036854775807')
+    if (-not ($isZero -or ($isMax -and $Name -eq 'accountExpires'))) {
+        return Convert-DefaultToRenderValues -Name $Name -Value $Value -Context $Context
+    }
+
+    $display = switch ($Name) {
+        'pwdLastSet' {
+            $source = if ($Context) { $Context.SourceObject } else { $null }
+            $uac = if ($source) { $source.userAccountControl } else { $null }
+            $neverExpires = (@($uac) -contains 'DONT_EXPIRE_PASSWORD')
+            if (-not $neverExpires -and $null -ne $uac -and "$uac" -match '^\d+$') {
+                $neverExpires = (([int64]"$uac") -band 0x10000) -ne 0
+            }
+            if ($neverExpires) { 'Never' } else { 'Never - must change at next logon' }
+        }
+        'lockoutTime' { 'Not locked out' }
+        default       { 'Never' }
+    }
+
+    $match = Get-TriggerMatch -Name $Name -Value $Value -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+    return @{
+        RowType             = 'SingleValue'
+        OverallSeverity     = $match.Severity
+        ForceAttributeClass = $false
+        Values              = @(
+            New-RenderValue -Display $display -Severity $match.Severity -FindingId $match.FindingId -RawValue $Value
+        )
+    }
+}
+
 # --- scriptPath Transformer ---
 function Convert-ScriptPathToRenderValues {
     [CmdletBinding()]
@@ -26887,6 +26934,9 @@ $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Conver
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
 $Script:AttributeTransformers['msDS-SupportedEncryptionTypes'] = ${function:Convert-EncryptionTypesToRenderValues}
+foreach ($fileTimeName in @('pwdLastSet', 'accountExpires', 'lastLogon', 'lastLogonTimestamp', 'badPasswordTime', 'lockoutTime')) {
+    $Script:AttributeTransformers[$fileTimeName] = ${function:Convert-FileTimeSentinelToRenderValues}
+}
 $Script:AttributeTransformers['LinkedOUs']                   = ${function:Convert-LinkedOUsToRenderValues}
 $Script:AttributeTransformers['GPOStatus']                   = ${function:Convert-GPOStatusToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
@@ -149261,7 +149311,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-0849"
+$Script:adPEASVersion = "2.7.0+20261021-0855"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
