@@ -887,13 +887,13 @@ $Script:PrivilegedRIDSuffixes = @(
 	'-516',
 	'-518',
 	'-519',
-	'-520',
 	'-521',
 	'-526',
 	'-527'
 )
 $Script:OperatorRIDSuffixes = @(
-	'-517'
+	'-517',
+	'-520'
 )
 $Script:Tier0RIDSuffixes = @(
 	'-500',
@@ -92640,7 +92640,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-0858"
+$Script:adPEASVersion = "2.7.0+20261021-0951"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

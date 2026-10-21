@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 08:58:17
-    Version: 2.7.0+20261021-0858
+    Build: 2026-10-21 09:51:48
+    Version: 2.7.0+20261021-0951
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -2213,7 +2213,6 @@ $Script:PrivilegedRIDSuffixes = @(
     '-516',   # Domain Controllers
     '-518',   # Schema Admins (forest root)
     '-519',   # Enterprise Admins (forest root)
-    '-520',   # Group Policy Creator Owners (can create/edit GPOs)
     '-521',   # Read-only Domain Controllers
     '-526',   # Key Admins
     '-527'    # Enterprise Key Admins
@@ -2236,9 +2235,17 @@ $Script:PrivilegedRIDSuffixes = @(
     - Can write to userCertificate attribute on all objects
     - NOT direct domain takeover, but can facilitate ESC attacks
     - Tier-1 (Operator), not Tier-0 (Privileged)
+
+    Group Policy Creator Owners (-520):
+    - Can create policies, and edit and delete the ones it created
+    - Cannot link one anywhere: that is write access to gPLink on the container, which the
+      group does not give, so its policies apply nowhere on their own
+    - Tier-1 (Operator), not Tier-0 (user decision 2026-10-21) - it was Privileged, which
+      also hid the rights the group holds as "expected"
 #>
 $Script:OperatorRIDSuffixes = @(
-    '-517'    # Cert Publishers (can write certificates, Tier-1)
+    '-517',   # Cert Publishers (can write certificates, Tier-1)
+    '-520'    # Group Policy Creator Owners (can create policies, not link them, Tier-1)
 )
 
 # ============================================================================
@@ -82951,9 +82958,9 @@ function Test-UnixPasswordUsableAsIs {
     handled this by verifying each candidate with Test-IsPrivileged.
 
     It under-reports, and nothing handled that. AdminSDHolder protects a fixed list of
-    groups, and adPEAS treats groups outside it as privileged - Group Policy Creator Owners
-    (RID -520) most obviously, whose members can create and edit Group Policy and never
-    receive adminCount at all. The propagation is also periodic, SDProp runs hourly by
+    groups, and adPEAS counts groups outside it as privileged or operator - Group Policy
+    Creator Owners (RID -520, an operator, so selected with -IncludeOperators) most
+    obviously, whose members can create Group Policy and never receive adminCount at all. The propagation is also periodic, SDProp runs hourly by
     default, so an account added to Domain Admins this morning is not marked yet.
 
     The clause returned here is the union of the two: membership in one of the privileged
@@ -112030,8 +112037,8 @@ function Get-InactiveAdminAccounts {
             Show-SubHeader "Searching for inactive privileged accounts (>$InactiveDays days)..." -ObjectType "InactiveAdmin"
 
             # Membership in a privileged group OR adminCount=1, not adminCount alone.
-            # AdminSDHolder does not protect every group adPEAS counts as privileged -
-            # Group Policy Creator Owners never receives adminCount - and it propagates
+            # AdminSDHolder does not protect every group adPEAS counts as privileged or
+            # operator - Group Policy Creator Owners never receives adminCount - and it propagates
             # hourly, so a recent addition is not marked yet. The per-account group
             # resolution below then decides what each hit actually is.
             # -Enabled stays, deliberately. The review asked for disabled privileged
@@ -112279,7 +112286,7 @@ function Get-AdminPasswordNeverExpires {
 
             # The candidate set is membership in a privileged group OR adminCount=1, not
             # adminCount alone. AdminSDHolder does not protect every group adPEAS counts as
-            # privileged - Group Policy Creator Owners has no adminCount at all - and it
+            # privileged or operator - Group Policy Creator Owners has no adminCount at all - and it
             # propagates hourly, so an account added this morning is not marked yet. Both
             # gaps used to be invisible here, and the verification below only ever removed
             # accounts, never found the missing ones.
@@ -112487,7 +112494,7 @@ function Get-AdminReversibleEncryption {
                     # That attribute is set by AdminSDHolder and never cleared, so it both
                     # keeps accounts that left the group years ago and misses the groups
                     # AdminSDHolder does not protect - Group Policy Creator Owners among
-                    # them, whose members can create and edit Group Policy.
+                    # them, an operator whose members can create Group Policy.
                     $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
                     if ($privileged -and $privileged.IsPrivileged) {
                         $privilegedCount++
@@ -137298,15 +137305,15 @@ function Build-ScoringContext {
                     # Classify via the central Test-IsPrivileged categorization
                     # ($Script:PrivilegedRIDSuffixes / $Script:OperatorRIDSuffixes in
                     # adPEAS-SIDs.ps1) instead of an inline regex copy that had drifted
-                    # out of sync with it - Group Policy Creator Owners (-520) and Key
-                    # Admins/Enterprise Key Admins (-526/-527) are both direct paths to
-                    # domain takeover (GPO -> SYSTEM code execution; msDS-KeyCredentialLink
-                    # -> Shadow Credentials -> PKINIT -> UnPAC-the-Hash - adPEAS implements
-                    # both attacks itself) and are now tier0 like the identity gate already
-                    # considered them, not tier2. Cert Publishers (-517) is tier1: it can
-                    # write userCertificate but is not a direct takeover without a matching
-                    # altSecurityIdentities mapping or template, which the identity gate
-                    # already reflects by calling it Operator rather than Privileged.
+                    # out of sync with it - Key Admins/Enterprise Key Admins (-526/-527) are a
+                    # direct path to domain takeover (msDS-KeyCredentialLink -> Shadow
+                    # Credentials -> PKINIT -> UnPAC-the-Hash, which adPEAS implements itself)
+                    # and are tier0 like the identity gate considers them, not tier2. Cert
+                    # Publishers (-517) is tier1: it can write userCertificate but is not a
+                    # direct takeover without a matching altSecurityIdentities mapping or
+                    # template. Group Policy Creator Owners (-520) is tier1 as well since
+                    # 2026-10-21: it creates policies, and linking one needs write access to
+                    # gPLink, which the group does not give.
                     # A bare SID string never touches LDAP (Test-IsPrivileged's
                     # sIDHistory/group-membership phases are gated on
                     # $Script:LdapConnection, unset during offline report generation), so
@@ -149316,7 +149323,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-0858"
+$Script:adPEASVersion = "2.7.0+20261021-0951"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

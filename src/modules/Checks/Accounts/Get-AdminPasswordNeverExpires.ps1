@@ -93,7 +93,7 @@ function Get-AdminPasswordNeverExpires {
 
             # The candidate set is membership in a privileged group OR adminCount=1, not
             # adminCount alone. AdminSDHolder does not protect every group adPEAS counts as
-            # privileged - Group Policy Creator Owners has no adminCount at all - and it
+            # privileged or operator - Group Policy Creator Owners has no adminCount at all - and it
             # propagates hourly, so an account added this morning is not marked yet. Both
             # gaps used to be invisible here, and the verification below only ever removed
             # accounts, never found the missing ones.

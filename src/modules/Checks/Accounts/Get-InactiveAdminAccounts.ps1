@@ -67,8 +67,8 @@ function Get-InactiveAdminAccounts {
             Show-SubHeader "Searching for inactive privileged accounts (>$InactiveDays days)..." -ObjectType "InactiveAdmin"
 
             # Membership in a privileged group OR adminCount=1, not adminCount alone.
-            # AdminSDHolder does not protect every group adPEAS counts as privileged -
-            # Group Policy Creator Owners never receives adminCount - and it propagates
+            # AdminSDHolder does not protect every group adPEAS counts as privileged or
+            # operator - Group Policy Creator Owners never receives adminCount - and it propagates
             # hourly, so a recent addition is not marked yet. The per-account group
             # resolution below then decides what each hit actually is.
             # -Enabled stays, deliberately. The review asked for disabled privileged

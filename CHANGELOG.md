@@ -1275,6 +1275,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   above it, and `whoCanAddComputers` says the default it rests on: "Any authenticated user
   by default, up to the quota".
 
+- **Group Policy Creator Owners is tier 1, not tier 0.** The group creates policies, and
+  edits and deletes the ones it created, but links none anywhere: that needs write access
+  to `gPLink` on the container, which the group does not give, so its policies apply
+  nowhere on their own. It was counted with Domain Admins, so rights the group itself holds
+  - full control of an OU, a password reset right - passed as expected and went
+  unreported. It is now an operator group like Cert Publishers: such rights are findings,
+  its members are tier 1 in the report's scoring, and the checks on privileged accounts
+  that include operators still cover them.
+
 - **`adminCount` is on the console wherever an account carries it.** The attribute was in
   no primary list of users or computers, so it reached the console only when the hint for
   an orphaned account promoted it. On the Administrator and every other account whose

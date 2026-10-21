@@ -89,7 +89,6 @@ $Script:PrivilegedRIDSuffixes = @(
     '-516',   # Domain Controllers
     '-518',   # Schema Admins (forest root)
     '-519',   # Enterprise Admins (forest root)
-    '-520',   # Group Policy Creator Owners (can create/edit GPOs)
     '-521',   # Read-only Domain Controllers
     '-526',   # Key Admins
     '-527'    # Enterprise Key Admins
@@ -112,9 +111,17 @@ $Script:PrivilegedRIDSuffixes = @(
     - Can write to userCertificate attribute on all objects
     - NOT direct domain takeover, but can facilitate ESC attacks
     - Tier-1 (Operator), not Tier-0 (Privileged)
+
+    Group Policy Creator Owners (-520):
+    - Can create policies, and edit and delete the ones it created
+    - Cannot link one anywhere: that is write access to gPLink on the container, which the
+      group does not give, so its policies apply nowhere on their own
+    - Tier-1 (Operator), not Tier-0 (user decision 2026-10-21) - it was Privileged, which
+      also hid the rights the group holds as "expected"
 #>
 $Script:OperatorRIDSuffixes = @(
-    '-517'    # Cert Publishers (can write certificates, Tier-1)
+    '-517',   # Cert Publishers (can write certificates, Tier-1)
+    '-520'    # Group Policy Creator Owners (can create policies, not link them, Tier-1)
 )
 
 # ============================================================================

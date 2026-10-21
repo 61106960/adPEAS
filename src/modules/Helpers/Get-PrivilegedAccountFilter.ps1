@@ -12,9 +12,9 @@
     handled this by verifying each candidate with Test-IsPrivileged.
 
     It under-reports, and nothing handled that. AdminSDHolder protects a fixed list of
-    groups, and adPEAS treats groups outside it as privileged - Group Policy Creator Owners
-    (RID -520) most obviously, whose members can create and edit Group Policy and never
-    receive adminCount at all. The propagation is also periodic, SDProp runs hourly by
+    groups, and adPEAS counts groups outside it as privileged or operator - Group Policy
+    Creator Owners (RID -520, an operator, so selected with -IncludeOperators) most
+    obviously, whose members can create Group Policy and never receive adminCount at all. The propagation is also periodic, SDProp runs hourly by
     default, so an account added to Domain Admins this morning is not marked yet.
 
     The clause returned here is the union of the two: membership in one of the privileged

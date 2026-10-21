@@ -79,7 +79,7 @@ function Get-AdminReversibleEncryption {
                     # That attribute is set by AdminSDHolder and never cleared, so it both
                     # keeps accounts that left the group years ago and misses the groups
                     # AdminSDHolder does not protect - Group Policy Creator Owners among
-                    # them, whose members can create and edit Group Policy.
+                    # them, an operator whose members can create Group Policy.
                     $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
                     if ($privileged -and $privileged.IsPrivileged) {
                         $privilegedCount++

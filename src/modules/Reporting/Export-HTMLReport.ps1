@@ -524,15 +524,15 @@ function Build-ScoringContext {
                     # Classify via the central Test-IsPrivileged categorization
                     # ($Script:PrivilegedRIDSuffixes / $Script:OperatorRIDSuffixes in
                     # adPEAS-SIDs.ps1) instead of an inline regex copy that had drifted
-                    # out of sync with it - Group Policy Creator Owners (-520) and Key
-                    # Admins/Enterprise Key Admins (-526/-527) are both direct paths to
-                    # domain takeover (GPO -> SYSTEM code execution; msDS-KeyCredentialLink
-                    # -> Shadow Credentials -> PKINIT -> UnPAC-the-Hash - adPEAS implements
-                    # both attacks itself) and are now tier0 like the identity gate already
-                    # considered them, not tier2. Cert Publishers (-517) is tier1: it can
-                    # write userCertificate but is not a direct takeover without a matching
-                    # altSecurityIdentities mapping or template, which the identity gate
-                    # already reflects by calling it Operator rather than Privileged.
+                    # out of sync with it - Key Admins/Enterprise Key Admins (-526/-527) are a
+                    # direct path to domain takeover (msDS-KeyCredentialLink -> Shadow
+                    # Credentials -> PKINIT -> UnPAC-the-Hash, which adPEAS implements itself)
+                    # and are tier0 like the identity gate considers them, not tier2. Cert
+                    # Publishers (-517) is tier1: it can write userCertificate but is not a
+                    # direct takeover without a matching altSecurityIdentities mapping or
+                    # template. Group Policy Creator Owners (-520) is tier1 as well since
+                    # 2026-10-21: it creates policies, and linking one needs write access to
+                    # gPLink, which the group does not give.
                     # A bare SID string never touches LDAP (Test-IsPrivileged's
                     # sIDHistory/group-membership phases are gated on
                     # $Script:LdapConnection, unset during offline report generation), so
