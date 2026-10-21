@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 10:09:18
-    Version: 2.7.0+20261021-1009
+    Build: 2026-10-21 10:20:53
+    Version: 2.7.0+20261021-1020
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6730,11 +6730,12 @@ $Script:PrimaryAttributes = @{
         # memberOfNested: the primary group and the nested groups, from
         # Get-DomainUser -ResolveGroups.
         #
-        # adminCount: the mark SDProp leaves on a member of a protected group. It reached
-        # the console only when the ADMIN_COUNT_INDICATOR trigger promoted it - an account
-        # with the mark and no protected membership - so on the Administrator, whose
-        # membership explains it, it was in the collapsed block alone and read as absent.
-        'memberOf', 'memberOfNested', 'privilegedGroups', 'adminCount',
+        # adminCount is not in this list on purpose. It reaches the console when the
+        # ADMIN_COUNT_INDICATOR trigger promotes it - an account with the mark and no
+        # protected membership, the orphan the card describes. On a privileged account
+        # privilegedGroups already says why SDProp protects it, and "1" beside that adds a
+        # line to every administrator (decided 2026-10-18, confirmed 2026-10-21).
+        'memberOf', 'memberOfNested', 'privilegedGroups',
 
         # 3. SERVICE PRINCIPAL NAMES (Kerberoasting indicator)
         #
@@ -6790,8 +6791,8 @@ $Script:PrimaryAttributes = @{
 
         # 3. GROUP MEMBERSHIPS
         # memberOfNested: a managed service account from Get-DomainUser -GMSA -ResolveGroups
-        # is rendered as a computer. adminCount as on a user.
-        'memberOf', 'memberOfNested', 'privilegedGroups', 'adminCount',
+        # is rendered as a computer. adminCount as on a user: promoted only as an orphan.
+        'memberOf', 'memberOfNested', 'privilegedGroups',
 
         # 4. CREDENTIAL EXPOSURE (LAPS)
         # Note: servicePrincipalName moved to extended view (too verbose for primary display)
@@ -149331,7 +149332,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1009"
+$Script:adPEASVersion = "2.7.0+20261021-1020"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

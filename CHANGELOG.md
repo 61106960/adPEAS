@@ -1297,13 +1297,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   its members are tier 1 in the report's scoring, and the checks on privileged accounts
   that include operators still cover them.
 
-- **`adminCount` is on the console wherever an account carries it.** The attribute was in
-  no primary list of users or computers, so it reached the console only when the hint for
-  an orphaned account promoted it. On the Administrator and every other account whose
-  protected membership explains the mark, it stood only in the collapsed part of the HTML
-  report and read as absent. It now sits with the group memberships, uncoloured where the
-  membership explains it and a hint with its card where none does.
-
 - **A time attribute that holds 0 says what that means.** `pwdLastSet: 0` was printed as
   the number - it is the "User must change password at next logon" box, and now reads
   "Never - must change at next logon", or "Never" where the password does not expire.

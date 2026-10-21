@@ -3413,7 +3413,7 @@ $Script:PrimaryAttributes = @{
 	User = @(
 	    'displayName',
 	    'sAMAccountName', 'userPrincipalName', 'distinguishedName', 'objectSid',
-	    'memberOf', 'memberOfNested', 'privilegedGroups', 'adminCount',
+	    'memberOf', 'memberOfNested', 'privilegedGroups',
 	    'servicePrincipalName', 'msDS-SupportedEncryptionTypes',
 	    'unixUserPassword', 'userPassword', 'unicodePwd', 'msSFU30Password',
 	    'sambaNTPassword', 'sambaLMPassword',
@@ -3433,7 +3433,7 @@ $Script:PrimaryAttributes = @{
 	    'displayName',
 	    'sAMAccountName', 'dNSHostName', 'distinguishedName', 'objectSid',
 	    'operatingSystem',
-	    'memberOf', 'memberOfNested', 'privilegedGroups', 'adminCount',
+	    'memberOf', 'memberOfNested', 'privilegedGroups',
 	    'ms-Mcs-AdmPwd', 'msLAPS-Password', 'msLAPS-EncryptedPassword', 'msLAPS-Account',
 	    'description', 'info',
 	    'msDS-AllowedToDelegateTo', 'msDS-AllowedToActOnBehalfOfOtherIdentity',
@@ -92640,7 +92640,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1009"
+$Script:adPEASVersion = "2.7.0+20261021-1020"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
