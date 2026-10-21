@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-20 17:45:54
-    Version: 2.7.0+20261020-1745
+    Build: 2026-10-21 08:49:09
+    Version: 2.7.0+20261021-0849
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -26792,6 +26792,29 @@ function Convert-LinkedOUsToRenderValues {
     }
 }
 
+# --- msDS-SupportedEncryptionTypes Transformer ---
+# A stored 0 - no encryption type, so the account is on the domain's default types - reads
+# "Not configured", and means what an attribute that is not there means: that produces no
+# row. On an account without a service principal name the row says nothing, since no
+# service ticket is issued for it (the enc_not_configured_with_spn trigger leaves it
+# uncoloured for that reason). It stood there because Active Directory Users and Computers
+# writes 0 when the AES boxes are cleared, rather than removing the value. With an SPN it
+# decides what a roasted ticket is worth and keeps its row and card; set types show
+# everywhere.
+function Convert-EncryptionTypesToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+
+    $source = if ($Context) { $Context.SourceObject } else { $null }
+    if ($source -and (@($Value) -contains 'Not configured')) {
+        $spnProperty = $source.PSObject.Properties['servicePrincipalName']
+        $hasSPN = $spnProperty -and (@(@($spnProperty.Value) | Where-Object { $_ }).Count -gt 0)
+        if (-not $hasSPN) { return $null }
+    }
+
+    return Convert-DefaultToRenderValues -Name $Name -Value $Value -Context $Context
+}
+
 # --- scriptPath Transformer ---
 function Convert-ScriptPathToRenderValues {
     [CmdletBinding()]
@@ -26863,6 +26886,7 @@ $Script:AttributeTransformers['WebEndpoints']                = ${function:Conver
 $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Convert-WebEnrollEndpointsToRenderValues}
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
+$Script:AttributeTransformers['msDS-SupportedEncryptionTypes'] = ${function:Convert-EncryptionTypesToRenderValues}
 $Script:AttributeTransformers['LinkedOUs']                   = ${function:Convert-LinkedOUsToRenderValues}
 $Script:AttributeTransformers['GPOStatus']                   = ${function:Convert-GPOStatusToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
@@ -149237,7 +149261,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261020-1745"
+$Script:adPEASVersion = "2.7.0+20261021-0849"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

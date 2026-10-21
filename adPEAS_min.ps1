@@ -20166,6 +20166,17 @@ function Convert-LinkedOUsToRenderValues {
         Values              = $renderValues
     }
 }
+function Convert-EncryptionTypesToRenderValues {
+    [CmdletBinding()]
+    param([string]$Name, $Value, $Context)
+    $source = if ($Context) { $Context.SourceObject } else { $null }
+    if ($source -and (@($Value) -contains 'Not configured')) {
+        $spnProperty = $source.PSObject.Properties['servicePrincipalName']
+        $hasSPN = $spnProperty -and (@(@($spnProperty.Value) | Where-Object { $_ }).Count -gt 0)
+        if (-not $hasSPN) { return $null }
+    }
+    return Convert-DefaultToRenderValues -Name $Name -Value $Value -Context $Context
+}
 function Convert-ScriptPathToRenderValues {
     [CmdletBinding()]
     param([string]$Name, $Value, $Context)
@@ -20218,6 +20229,7 @@ $Script:AttributeTransformers['WebEndpoints']                = ${function:Conver
 $Script:AttributeTransformers['WebEnrollmentEndpoints']      = ${function:Convert-WebEnrollEndpointsToRenderValues}
 $Script:AttributeTransformers['msDS-KeyCredentialLink']      = ${function:Convert-KeyCredentialLinkToRenderValues}
 $Script:AttributeTransformers['scriptPath']                  = ${function:Convert-ScriptPathToRenderValues}
+$Script:AttributeTransformers['msDS-SupportedEncryptionTypes'] = ${function:Convert-EncryptionTypesToRenderValues}
 $Script:AttributeTransformers['LinkedOUs']                   = ${function:Convert-LinkedOUsToRenderValues}
 $Script:AttributeTransformers['GPOStatus']                   = ${function:Convert-GPOStatusToRenderValues}
 $Script:AttributeTransformers['KerberoastingHash']           = ${function:Convert-RoastingHashToRenderValues}
@@ -95650,7 +95662,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261020-1745"
+$Script:adPEASVersion = "2.7.0+20261021-0849"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -1275,6 +1275,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   above it, and `whoCanAddComputers` says the default it rests on: "Any authenticated user
   by default, up to the quota".
 
+- **An encryption type of 0 shows only where it matters.** `msDS-SupportedEncryptionTypes`
+  stored as 0 - which Active Directory Users and Computers writes when the AES boxes on an
+  account are cleared - read "Not configured" on any account, while an account without
+  the attribute, which means the same, showed no row. The row now stays only on an account
+  with a service principal name, where it is a hint with its card: a ticket for it may
+  still be issued with RC4. Set types show on every account as before.
+
 - **`Get-GPOUserRightsAssignment` drops the `BaselineUnknown` row.** For a right without a
   documented Windows default the object carried one long sentence saying the holders were
   filtered by identity instead of compared. Only two rights have none -
