@@ -3501,12 +3501,12 @@ $Script:PrimaryAttributes = @{
         'principalNameUniqueness'
     )
     GPORegistrySetting = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
+        'GPOName', 'GPOGUID', 'GPOPath', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
     PointAndPrintPolicy = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'Scope', 'SourceFile',
+        'GPOName', 'GPOGUID', 'GPOPath', 'Scope',
         'Exploitability',
         'DriverInstallRestriction', 'PointAndPrintRestrictions',
         'NewConnectionPrompt', 'DriverUpdatePrompt',
@@ -3518,7 +3518,7 @@ $Script:PrimaryAttributes = @{
     LAPSGPOConfig = @(
         'lapsGpoNotLinked',
         'lapsPolicyState',
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
+        'GPOName', 'GPOGUID', 'GPOPath', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
         'ExpirationProtection', 'PostAuthActions',
@@ -3624,7 +3624,7 @@ $Script:PrimaryAttributes = @{
         'eolDate', 'daysSinceEoL', 'osExtendedSecurityUpdates', 'lastLogonTimestamp'
     )
     GPOUserRights = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
+        'GPOName', 'GPOGUID', 'GPOPath', 'UserRight', 'UserRightName',
         'GrantedBeyondDefault', 'RemovedFromDefault',
         'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
@@ -3638,11 +3638,11 @@ $Script:PrimaryAttributes = @{
         'dsrmPassword'
     )
     GPOScheduledTask = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
+        'GPOName', 'GPOGUID', 'GPOPath', 'TaskName', 'Command', 'UNCPathPermissions',
         'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
     GPOScriptPath = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
+        'GPOName', 'GPOGUID', 'GPOPath', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
         'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
     GPOLocalGroup = @(
@@ -3830,6 +3830,9 @@ $Script:StrictAttributeTypes = @(
     'UnprotectedPrivilegedGroups',
     'PrivilegedAccountsRead'
 )
+$Script:StrictExtendedAttributes = @{
+    GPOUserRights = @('SourceFile')
+}
 $Script:AttributeLabels = @{
     GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
     SMBSigning     = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
@@ -3970,6 +3973,16 @@ function Get-OrderedAttributes {
     }
     $isStrictType = $objectType -in $Script:StrictAttributeTypes
     if ($isStrictType) {
+        foreach ($attrName in @($Script:StrictExtendedAttributes[$objectType])) {
+            if (-not $attrName -or $processedAttrs.ContainsKey($attrName)) { continue }
+            $value = $Object.$attrName
+            if (($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')) { continue }
+            [void]$result.Extended.Add(@{
+                Name = $attrName
+                Value = $value
+                Severity = (Get-AttributeSeverity -Name $attrName -Value $value -IsComputer $IsComputer -SourceObject $Object)
+            })
+        }
         return $result
     }
     foreach ($prop in $Object.PSObject.Properties) {
@@ -95892,7 +95905,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1206"
+$Script:adPEASVersion = "2.7.0+20261021-1238"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

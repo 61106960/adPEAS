@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 12:06:03
-    Version: 2.7.0+20261021-1206
+    Build: 2026-10-21 12:38:05
+    Version: 2.7.0+20261021-1238
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6890,9 +6890,14 @@ $Script:PrimaryAttributes = @{
         'principalNameUniqueness'
     )
 
+    # No GPO type below lists SourceFile, the file inside the policy a finding was read
+    # from: it belongs on the HTML card, among the extended rows, and GPOPath already says on
+    # the console where the policy's files are (decided 2026-10-21). GPOUserRights, a strict
+    # type, names it in $Script:StrictExtendedAttributes instead.
+
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
     GPORegistrySetting = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'RegistryKey', 'ConfiguredValue',
+        'GPOName', 'GPOGUID', 'GPOPath', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
@@ -6903,7 +6908,7 @@ $Script:PrimaryAttributes = @{
     # Scope here is not the linkage Scope the other GPO types used to carry: it names the
     # hive the settings were read from, "Computer Configuration" or "User Configuration".
     PointAndPrintPolicy = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'Scope', 'SourceFile',
+        'GPOName', 'GPOGUID', 'GPOPath', 'Scope',
         'Exploitability',
         'DriverInstallRestriction', 'PointAndPrintRestrictions',
         'NewConnectionPrompt', 'DriverUpdatePrompt',
@@ -6921,7 +6926,7 @@ $Script:PrimaryAttributes = @{
         # Second for the same reason the unlinked statement is first: a policy that turns
         # LAPS off makes every value below it moot.
         'lapsPolicyState',
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'LAPSVersion', 'ManagedAccount',
+        'GPOName', 'GPOGUID', 'GPOPath', 'LAPSVersion', 'ManagedAccount',
         'BackupDirectory', 'PasswordEncryption', 'EncryptionPrincipal',
         'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
         'ExpirationProtection', 'PostAuthActions',
@@ -7109,7 +7114,7 @@ $Script:PrimaryAttributes = @{
     # well, but no other check prints its own prose next to the data, and the ObjectType
     # entry already carries the explanation for the whole section.
     GPOUserRights = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'UserRight', 'UserRightName',
+        'GPOName', 'GPOGUID', 'GPOPath', 'UserRight', 'UserRightName',
         'GrantedBeyondDefault', 'RemovedFromDefault',
         'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
@@ -7131,13 +7136,13 @@ $Script:PrimaryAttributes = @{
 
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'TaskName', 'Command', 'UNCPathPermissions',
+        'GPOName', 'GPOGUID', 'GPOPath', 'TaskName', 'Command', 'UNCPathPermissions',
         'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
+        'GPOName', 'GPOGUID', 'GPOPath', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
         'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
@@ -7149,9 +7154,9 @@ $Script:PrimaryAttributes = @{
     # that removes Domain Admins from the local administrators of every machine in scope
     # was reported as one that adds somebody.
     #
-    # SourceFile and Type are not in the list: the HTML card shows them among the extended
-    # rows. Mode already says which of the two mechanisms wrote the assignment, and GPOPath
-    # where its files are - on the console the two rows were reading without a finding.
+    # Type is not in the list either, as SourceFile is in none (see GPORegistrySetting): the
+    # HTML card shows it among the extended rows. Mode already says which of the two
+    # mechanisms wrote the assignment - on the console the row was reading without a finding.
     GPOLocalGroup = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'TargetGroup', 'Mode',
         'MembersAdded', 'MembersRemoved', 'groupEmptied',
@@ -7457,6 +7462,13 @@ $Script:StrictAttributeTypes = @(
     'PrivilegedAccountsRead'
 )
 
+# Rows a strict type shows on the HTML card only, among the extended rows. A strict type
+# renders nothing outside its PrimaryAttributes list, so a row taken off the console there
+# would vanish from the report as well; one named here is kept, in this order.
+$Script:StrictExtendedAttributes = @{
+    GPOUserRights = @('SourceFile')
+}
+
 # Per-ObjectType row labels: what a row is called, where the property it comes from is
 # not what a reader should be shown.
 #
@@ -7757,9 +7769,20 @@ function Get-OrderedAttributes {
     }
 
     # 2. Process remaining attributes
-    # Skip entirely for strict types (only PrimaryAttributes are shown)
+    # Skip entirely for strict types (only PrimaryAttributes are shown) - but for the rows
+    # $Script:StrictExtendedAttributes names, which go to the extended block.
     $isStrictType = $objectType -in $Script:StrictAttributeTypes
     if ($isStrictType) {
+        foreach ($attrName in @($Script:StrictExtendedAttributes[$objectType])) {
+            if (-not $attrName -or $processedAttrs.ContainsKey($attrName)) { continue }
+            $value = $Object.$attrName
+            if (($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')) { continue }
+            [void]$result.Extended.Add(@{
+                Name = $attrName
+                Value = $value
+                Severity = (Get-AttributeSeverity -Name $attrName -Value $value -IsComputer $IsComputer -SourceObject $Object)
+            })
+        }
         return $result
     }
 
@@ -149697,7 +149720,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1206"
+$Script:adPEASVersion = "2.7.0+20261021-1238"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
