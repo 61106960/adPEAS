@@ -1275,6 +1275,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   above it, and `whoCanAddComputers` says the default it rests on: "Any authenticated user
   by default, up to the quota".
 
+- **Nested group membership is found for names with umlauts.** The two LDAP filter
+  escapers wrote every non-ASCII character as its UTF-8 bytes, an umlaut as `\c3\a4`.
+  Measured on a domain controller, the in-chain match
+  (`member:1.2.840.113556.1.4.1941:=`) finds nothing with that form and the groups with
+  the character as it is. So an account with an umlaut in its name was a member of no
+  group to `Test-IsPrivileged` - a Domain Admin read as an ordinary account, and its
+  `adminCount` was flagged as left over from a former membership - and every in-chain
+  query on a group with one, such as Domain Admins in a German domain ("Domänen-Admins"),
+  returned nobody: in the privileged-account filter, the OUs of privileged users, the
+  Protected Users and AS-REP checks, the group nesting and the GPO security filtering.
+  Non-ASCII now goes into a filter as it is, which RFC 4515 allows; control characters,
+  `*`, `(`, `)`, `\` and NUL are escaped as before.
+
 - **Group Policy Creator Owners is tier 1, not tier 0.** The group creates policies, and
   edits and deletes the ones it created, but links none anywhere: that needs write access
   to `gPLink` on the container, which the group does not give, so its policies apply

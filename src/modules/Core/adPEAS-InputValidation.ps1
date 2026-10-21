@@ -34,7 +34,14 @@
     - \ (backslash)    -> \5c
     - NUL (0x00)       -> \00
 
-    Additionally, any non-ASCII characters are hex-escaped for safety.
+    Control characters (below 0x20, and 0x7F) are hex-escaped as well. Characters from
+    U+0080 up go through unchanged: RFC 4515 admits UTF-8 multi-byte characters in a
+    value as they are, and Active Directory does not resolve their \XX form everywhere.
+    Measured on a domain controller: (member:1.2.840.113556.1.4.1941:=<DN>) found the
+    groups of an account whose DN holds an a-umlaut with the character as it is, and
+    none with it written as \c3\a4 - so every account with an umlaut in its name read as
+    a member of no group, and every in-chain query on "Domaenen-Admins" (with a-umlaut)
+    returned nobody.
 
 .PARAMETER Value
     The string value to escape for use in an LDAP filter.
@@ -93,10 +100,9 @@ function Escape-LDAPFilterValue {
                 "`0" { [void]$result.Append('\00'); break }  # NUL character
 
                 default {
-                    # Check for non-printable or non-ASCII characters
+                    # Control characters only - non-ASCII stays as it is, see above
                     $charCode = [int]$char
-                    if ($charCode -lt 32 -or $charCode -gt 126) {
-                        # Hex-encode non-printable/non-ASCII
+                    if ($charCode -lt 32 -or $charCode -eq 127) {
                         $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$char)
                         foreach ($byte in $bytes) {
                             [void]$result.Append('\')
@@ -124,7 +130,9 @@ function Escape-LDAPFilterValue {
 
     IMPORTANT: This function is for DNs used INSIDE filter assertions.
     It applies RFC 4515 filter value escaping, which handles:
-    - * ( ) \ NUL and non-ASCII characters
+    - * ( ) \ NUL and control characters
+    Non-ASCII stays as it is - Active Directory does not resolve its \XX form in the
+    in-chain match, see Escape-LDAPFilterValue.
 
     Note: RFC 4514 DN escaping (for DN construction) uses different rules
     and escapes: , + " \ < > ; and leading/trailing spaces.
@@ -159,7 +167,7 @@ function Escape-LDAPFilterDN {
         # for special chars: \, \+ \" \\ \< \> \; \# and \XX hex pairs.
         # We must NOT double-escape those backslashes. We only need to escape
         # the RFC 4515 filter-specific characters: * ( ) NUL
-        # and any non-ASCII characters.
+        # and control characters. Non-ASCII stays as it is (see Escape-LDAPFilterValue).
         $result = [System.Text.StringBuilder]::new($DistinguishedName.Length * 2)
         $chars = $DistinguishedName.ToCharArray()
         $i = 0
@@ -213,7 +221,7 @@ function Escape-LDAPFilterDN {
             }
             else {
                 $charCode = [int]$char
-                if ($charCode -lt 32 -or $charCode -gt 126) {
+                if ($charCode -lt 32 -or $charCode -eq 127) {
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$char)
                     foreach ($byte in $bytes) {
                         [void]$result.Append('\')

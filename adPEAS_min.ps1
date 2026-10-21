@@ -2871,7 +2871,7 @@ function Escape-LDAPFilterValue {
                 "`0" { [void]$result.Append('\00'); break }
                 default {
                     $charCode = [int]$char
-                    if ($charCode -lt 32 -or $charCode -gt 126) {
+                    if ($charCode -lt 32 -or $charCode -eq 127) {
                         $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$char)
                         foreach ($byte in $bytes) {
                             [void]$result.Append('\')
@@ -2944,7 +2944,7 @@ function Escape-LDAPFilterDN {
             }
             else {
                 $charCode = [int]$char
-                if ($charCode -lt 32 -or $charCode -gt 126) {
+                if ($charCode -lt 32 -or $charCode -eq 127) {
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$char)
                     foreach ($byte in $bytes) {
                         [void]$result.Append('\')
@@ -95697,7 +95697,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-0951"
+$Script:adPEASVersion = "2.7.0+20261021-1009"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
