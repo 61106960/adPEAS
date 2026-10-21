@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 12:02:36
-    Version: 2.7.0+20261021-1202
+    Build: 2026-10-21 12:06:03
+    Version: 2.7.0+20261021-1206
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7148,8 +7148,12 @@ $Script:PrimaryAttributes = @{
     # and a preferences item can clear it first. All three used to be absent, so a policy
     # that removes Domain Admins from the local administrators of every machine in scope
     # was reported as one that adds somebody.
+    #
+    # SourceFile and Type are not in the list: the HTML card shows them among the extended
+    # rows. Mode already says which of the two mechanisms wrote the assignment, and GPOPath
+    # where its files are - on the console the two rows were reading without a finding.
     GPOLocalGroup = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
+        'GPOName', 'GPOGUID', 'GPOPath', 'TargetGroup', 'Mode',
         'MembersAdded', 'MembersRemoved', 'groupEmptied',
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
@@ -149693,7 +149697,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1202"
+$Script:adPEASVersion = "2.7.0+20261021-1206"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

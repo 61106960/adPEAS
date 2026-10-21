@@ -1098,7 +1098,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   by Group Policy*. `TargetGroup` is coloured too - red for Administrators and the three
   operator groups, yellow for Backup Operators, Remote Desktop Users and the like - where
   such a member is added. An assignment that adds Tier 0 principals only is a note, unless
-  it empties the group first.
+  it empties the group first. `SourceFile` and `Type` are no longer printed on the console
+  - `Mode` says which mechanism wrote the assignment - and stay on the HTML card.
 
 - **Two values of the BloodHound export came from the wrong place.** The domain's
   `dsheuristics` was read from the domain object, which never carries it, so every export

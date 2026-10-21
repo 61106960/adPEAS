@@ -453,8 +453,12 @@ $Script:PrimaryAttributes = @{
     # and a preferences item can clear it first. All three used to be absent, so a policy
     # that removes Domain Admins from the local administrators of every machine in scope
     # was reported as one that adds somebody.
+    #
+    # SourceFile and Type are not in the list: the HTML card shows them among the extended
+    # rows. Mode already says which of the two mechanisms wrote the assignment, and GPOPath
+    # where its files are - on the console the two rows were reading without a finding.
     GPOLocalGroup = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
+        'GPOName', 'GPOGUID', 'GPOPath', 'TargetGroup', 'Mode',
         'MembersAdded', 'MembersRemoved', 'groupEmptied',
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )

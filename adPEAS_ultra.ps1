@@ -3626,7 +3626,7 @@ $Script:PrimaryAttributes = @{
 	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
 	GPOLocalGroup = @(
-	    'GPOName', 'GPOGUID', 'GPOPath', 'SourceFile', 'Type', 'TargetGroup', 'Mode',
+	    'GPOName', 'GPOGUID', 'GPOPath', 'TargetGroup', 'Mode',
 	    'MembersAdded', 'MembersRemoved', 'groupEmptied',
 	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
 	)
@@ -92835,7 +92835,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1202"
+$Script:adPEASVersion = "2.7.0+20261021-1206"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
