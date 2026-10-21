@@ -3810,6 +3810,10 @@ $Script:StrictAttributeTypes = @(
 	'UnprotectedPrivilegedGroups',
 	'PrivilegedAccountsRead'
 )
+$Script:CardOnlyNotes = @(
+	'gpoTaskUnquotedPath',
+	'gpoTaskCmdUnquotedPath'
+)
 $Script:StrictExtendedAttributes = @{
 	GPOUserRights = @('SourceFile')
 }
@@ -3993,7 +3997,9 @@ function Get-OrderedAttributes {
 	        Value = $prop.Value
 	        Severity = $severity
 	    }
-	    if ($PromoteNonStandard -and $severity -ne 'Standard') {
+	    $promote = ($PromoteNonStandard -and $severity -ne 'Standard')
+	    if ($promote -and $severity -eq 'Note' -and $prop.Name -in $Script:CardOnlyNotes) { $promote = $false }
+	    if ($promote) {
 	        [void]$result.Primary.Add($attrInfo)
 	    } else {
 	        [void]$result.Extended.Add($attrInfo)
@@ -92957,7 +92963,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1337"
+$Script:adPEASVersion = "2.7.0+20261021-1343"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

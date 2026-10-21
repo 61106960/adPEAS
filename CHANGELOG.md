@@ -1113,6 +1113,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   could not be read`, `Not checked - not a computer of the domain`, `Not checked (-OPSEC)`.
   The sentence stays on the HTML card.
 
+- **Two notes of `Get-GPOScheduledTasks` stay on the HTML card.** `gpoTaskUnquotedPath` -
+  a paragraph saying that a program path with a space is quoted by the Task Scheduler and
+  is not the unquoted service path hijack - was printed under every task it applies to,
+  and so was `gpoTaskCmdUnquotedPath` where only administrators can create the file
+  cmd.exe would start instead. Both are notes that say the shape is harmless here; they
+  stay on the card, with their colour and write-up. `gpoTaskCmdUnquotedPath` is still on
+  the console where it is a hint or a finding.
+
 - **`Get-GPOScheduledTasks` no longer reports a task item that deletes its task.** An item
   with the action D removes the task it names from the computers in scope - nothing runs,
   and the account and the program in it are never used (MS-GPPREF 2.2.1.18). It was rated

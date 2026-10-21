@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 13:37:04
-    Version: 2.7.0+20261021-1337
+    Build: 2026-10-21 13:43:11
+    Version: 2.7.0+20261021-1343
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7462,6 +7462,18 @@ $Script:StrictAttributeTypes = @(
     'PrivilegedAccountsRead'
 )
 
+# Rows that reach the console only as a Hint or a Finding. As a Note - a statement that the
+# shape it describes is harmless here - they stay on the HTML card, with their colour and
+# card, among the extended rows. Promotion by severity put them on the console as lines of
+# explanation under every task they apply to (decided 2026-10-21).
+#   gpoTaskUnquotedPath     - the Task Scheduler quotes the program path itself; always a Note
+#   gpoTaskCmdUnquotedPath  - cmd.exe splits the path; a Note where only administrators can
+#                             create the file it would start instead
+$Script:CardOnlyNotes = @(
+    'gpoTaskUnquotedPath',
+    'gpoTaskCmdUnquotedPath'
+)
+
 # Rows a strict type shows on the HTML card only, among the extended rows. A strict type
 # renders nothing outside its PrimaryAttributes list, so a row taken off the console there
 # would vanish from the report as well; one named here is kept, in this order.
@@ -7839,8 +7851,11 @@ function Get-OrderedAttributes {
             Severity = $severity
         }
 
-        # Promote to primary if non-Standard severity and switch is set
-        if ($PromoteNonStandard -and $severity -ne 'Standard') {
+        # Promote to primary if non-Standard severity and switch is set - a row of
+        # $Script:CardOnlyNotes only as a Hint or a Finding.
+        $promote = ($PromoteNonStandard -and $severity -ne 'Standard')
+        if ($promote -and $severity -eq 'Note' -and $prop.Name -in $Script:CardOnlyNotes) { $promote = $false }
+        if ($promote) {
             [void]$result.Primary.Add($attrInfo)
         } else {
             [void]$result.Extended.Add($attrInfo)
@@ -149905,7 +149920,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1337"
+$Script:adPEASVersion = "2.7.0+20261021-1343"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
