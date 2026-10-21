@@ -35,6 +35,8 @@ function Get-GPORegistrySettings {
     of the known vulnerable settings" is not read as "nothing vulnerable is deployed".
     Values another check judges ($Script:RegistryValuesReadElsewhere, and string values
     named like a password, which Get-CredentialExposure reads) are not counted.
+    -IncludeUnknown lists them, one object per policy file, so that what no list covers can
+    be read by the person who knows the applications.
 
     Note: this check sees only what is DEPLOYED via GPO. Values set locally/directly on a
     host (no Remote Registry) are out of scope by design.
@@ -50,11 +52,22 @@ function Get-GPORegistrySettings {
     .PARAMETER Credential
     PSCredential object for authentication (optional, uses current user if not specified)
 
+    .PARAMETER IncludeInactive
+    Also list the settings of policies that are not linked or not enabled.
+
+    .PARAMETER IncludeUnknown
+    List the registry values the check does not judge - an application's settings, Windows
+    settings without a rule - one object per policy file. Without it they are counted only.
+
     .EXAMPLE
     Get-GPORegistrySettings
 
     .EXAMPLE
     Get-GPORegistrySettings -Domain "contoso.com" -Credential (Get-Credential)
+
+    .EXAMPLE
+    Get-GPORegistrySettings -IncludeUnknown
+    Also lists every deployed value the check does not judge, per policy file.
 
     .NOTES
     Category: GPO
@@ -73,7 +86,10 @@ function Get-GPORegistrySettings {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeUnknown
     )
 
     begin {
@@ -200,8 +216,10 @@ function Get-GPORegistrySettings {
                                 [void]$Script:_gpoRegUnjudged.Add([PSCustomObject]@{
                                     GPOGUID     = $gpoGUID
                                     GPOName     = $gpoName
+                                    GPOPath     = $gpoPathMap[([string]$gpoGUID).ToUpper()]
                                     SourceFile  = $source
                                     RegistryKey = $unjudgedKey
+                                    Value       = (Format-RegistryRecordValue -Record $record)
                                     # The half of the policy the value depends on, as for a
                                     # finding - see the _ReachScope assignment below.
                                     _ReachScope = (Get-GPOHalfFromSource -SourceFile $source -RegistryKey $unjudgedKey)
@@ -368,7 +386,31 @@ function Get-GPORegistrySettings {
             if ($unjudgedShown.Count -gt 0) {
                 $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
                 $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
-                Show-Line "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged" -Class Note
+                $unjudgedText = "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
+                # Invoke-adPEAS sets the context for each check and passes no -IncludeUnknown;
+                # without one the switch is reachable, as for -IncludeInactive.
+                if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
+                Show-Line $unjudgedText -Class Note
+
+                if ($IncludeUnknown) {
+                    # One object per policy file, its values a row each: a domain's
+                    # Administrative Templates run to hundreds of values, and an object per
+                    # value buried the few that matter. No colour - nothing here is judged.
+                    $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
+                        Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } }, @{ Expression = { [string]$_.Group[0].SourceFile } })
+                    foreach ($group in $unjudgedGroups) {
+                        $first = $group.Group[0]
+                        $inventory = [PSCustomObject][ordered]@{
+                            GPOName           = $first.GPOName
+                            GPOGUID           = $first.GPOGUID
+                            GPOPath           = $first.GPOPath
+                            SourceFile        = $first.SourceFile
+                            RegistryValues    = @($group.Group | Sort-Object -Property RegistryKey | ForEach-Object { "$($_.RegistryKey) = $($_.Value)" })
+                            _adPEASObjectType = 'GPORegistryValue'
+                        }
+                        Show-Object $inventory -Class Standard
+                    }
+                }
             }
 
         } catch {
@@ -481,6 +523,35 @@ function Test-RegistryRecordApplies {
     if (-not [string]$Record.ValueName -and $null -eq $Record.ValueInt -and -not [string]$Record.ValueString) { return $false }
 
     return $true
+}
+
+# =============================================================================
+# Helper: The value a registry record writes, as one short line
+# =============================================================================
+function Format-RegistryRecordValue {
+    <#
+    .SYNOPSIS
+        The value a registry record writes, for a row of -IncludeUnknown.
+    .DESCRIPTION
+        A number as a number, a string as it is - quoted when empty, cut at 100 characters,
+        because a Preferences item can carry a script or a certificate. Registry.pol hands on
+        no data for a binary value, so that reads "(binary)".
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Record
+    )
+
+    if ($null -ne $Record.ValueInt) { return [string]$Record.ValueInt }
+    if ($null -ne $Record.ValueString) {
+        $text = [string]$Record.ValueString
+        if ($text.Length -eq 0) { return '""' }
+        if ($text.Length -gt 100) { return $text.Substring(0, 100) + '...' }
+        return $text
+    }
+    return '(binary)'
 }
 
 # =============================================================================

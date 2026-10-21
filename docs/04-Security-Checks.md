@@ -1367,7 +1367,7 @@ Get-GPOScriptPaths -OPSEC
 - Against a fixed list of known dangerous settings (`adPEAS-RegistryKeys.ps1`): credential theft (WDigest, LM/NTLMv1, LM hashes), privilege escalation (AlwaysInstallElevated in both hives, UAC), Kerberos and certificates (Zerologon allow-list, ESC10), switched-off defenses (Defender, LSA protection, Credential Guard, firewall, script block logging), RDP, SMB and legacy protocols, updates over HTTP
 - Only values set to the dangerous state. A hardening value that is missing is not a finding: a policy that does not configure a setting does not weaken it. A Preferences item that deletes its value or is switched off deploys nothing
 
-**What it does not judge**: every other value - the settings of applications, and Windows settings without a rule. The check counts them ("N further registry value(s) from M policies are not on the list of this check - not judged"), and its all-clear reads "No known vulnerable registry setting is deployed via GPO". Values another check judges are not counted: Point and Print (`Get-GPOPointAndPrint`), SMB signing (`Get-SMBSigningStatus`), LDAP signing and channel binding (`Get-LDAPConfiguration`), LAPS (`Get-LAPSConfiguration`), and string values named like a password (`Get-CredentialExposure`).
+**What it does not judge**: every other value - the settings of applications, and Windows settings without a rule. The check counts them ("N further registry value(s) from M policies are not on the list of this check - not judged"), and its all-clear reads "No known vulnerable registry setting is deployed via GPO". Values another check judges are not counted: Point and Print (`Get-GPOPointAndPrint`), SMB signing (`Get-SMBSigningStatus`), LDAP signing and channel binding (`Get-LDAPConfiguration`), LAPS (`Get-LAPSConfiguration`), and string values named like a password (`Get-CredentialExposure`). `-IncludeUnknown` lists them, one object per policy file with a row per value - read them with someone who knows the applications. A full scan counts them only; run the check on its own to list them.
 
 **Usage**:
 ```powershell
@@ -1375,6 +1375,9 @@ Get-GPORegistrySettings
 
 # Also list the settings of policies that are not linked or not enabled
 Get-GPORegistrySettings -IncludeInactive
+
+# Also list every deployed value the check does not judge, per policy file
+Get-GPORegistrySettings -IncludeUnknown
 ```
 
 **Output Properties**:
@@ -1382,6 +1385,7 @@ Get-GPORegistrySettings -IncludeInactive
 - `RegistryKey`: hive, key and value name
 - `ConfiguredValue`: the value the policy writes
 - `VulnerabilityName`, `RiskReason`: what the value enables
+- With `-IncludeUnknown`, per policy file: `RegistryValues`, one row `hive\key\value = data` per value not judged, without a severity. Long strings are cut at 100 characters; a binary value of `Registry.pol` reads `(binary)`
 
 ---
 

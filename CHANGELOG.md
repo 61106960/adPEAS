@@ -852,7 +852,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   not on the list of this check - not judged", and the all-clear speaks of *known*
   vulnerable settings. Values another check judges - Point and Print, SMB signing, LDAP
   signing and channel binding, LAPS, string values named like a password - are not
-  counted, nor are values a policy deletes.
+  counted, nor are values a policy deletes. The new switch `-IncludeUnknown` lists them,
+  one object per policy file with a row per value and no severity, so that someone who
+  knows the applications can read them.
 - **A session bound as another account than the Windows logon says so - with Windows
   authentication only.** The session summary's "Local Identity" and "Identity Mismatch:
   DETECTED" rows could never appear: nothing wrote the two values they read. With

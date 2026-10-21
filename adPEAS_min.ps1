@@ -3532,6 +3532,9 @@ $Script:PrimaryAttributes = @{
         'VulnerabilityName', 'RiskReason',
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
+    GPORegistryValue = @(
+        'GPOName', 'GPOGUID', 'GPOPath', 'RegistryValues'
+    )
     PointAndPrintPolicy = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'Scope',
         'Exploitability',
@@ -22500,9 +22503,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
             "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
             "Privilege-escalation enablers (AlwaysInstallElevated, WSUS over HTTP)"
-            "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged"
+            "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged; -IncludeUnknown lists them"
         )
         SecureMessage = "No known vulnerable registry setting deployed via GPO. No Group Policy was found pushing one of the registry values this check knows in a state that enables an attack; values outside its list are counted, not judged."
+    }
+    'GPORegistryValue' = @{
+        TitleFormat = "GPO Registry Values: {Name}"
+        Module = "GPO"
+        Category = "GPO"
+        SectionTitle = "GPO Registry Settings"
+        Summary = "Lists the registry values a policy file deploys that no rule of Get-GPORegistrySettings judges (-IncludeUnknown)."
+        WhyItMatters = "The list of dangerous registry settings covers known Windows attack paths. An application's settings - macro security, remote access tools, update channels - and Windows settings without a rule are not on it. Listed here so that someone who knows the applications can read them."
+        WhatWeCheck = @(
+            "Every value a policy deploys through Registry.pol, Registry.xml or GptTmpl.inf that no rule names and no other check reads"
+            "Not judged: the values are listed as they are, without a severity"
+        )
+        SecureMessage = "No registry value outside the list of the check is deployed."
     }
     'PointAndPrintPolicy' = @{
         TitleFormat = "Point and Print GPO: {Name}"
@@ -78859,7 +78875,9 @@ function Get-GPORegistrySettings {
         [Parameter(Mandatory=$false)]
         [System.Management.Automation.PSCredential]$Credential,
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeUnknown
     )
     begin {
         Write-Log "[Get-GPORegistrySettings] Starting check"
@@ -78943,8 +78961,10 @@ function Get-GPORegistrySettings {
                                 [void]$Script:_gpoRegUnjudged.Add([PSCustomObject]@{
                                     GPOGUID     = $gpoGUID
                                     GPOName     = $gpoName
+                                    GPOPath     = $gpoPathMap[([string]$gpoGUID).ToUpper()]
                                     SourceFile  = $source
                                     RegistryKey = $unjudgedKey
+                                    Value       = (Format-RegistryRecordValue -Record $record)
                                     _ReachScope = (Get-GPOHalfFromSource -SourceFile $source -RegistryKey $unjudgedKey)
                                 })
                             }
@@ -79034,7 +79054,25 @@ function Get-GPORegistrySettings {
             if ($unjudgedShown.Count -gt 0) {
                 $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
                 $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
-                Show-Line "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged" -Class Note
+                $unjudgedText = "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
+                if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
+                Show-Line $unjudgedText -Class Note
+                if ($IncludeUnknown) {
+                    $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
+                        Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } }, @{ Expression = { [string]$_.Group[0].SourceFile } })
+                    foreach ($group in $unjudgedGroups) {
+                        $first = $group.Group[0]
+                        $inventory = [PSCustomObject][ordered]@{
+                            GPOName           = $first.GPOName
+                            GPOGUID           = $first.GPOGUID
+                            GPOPath           = $first.GPOPath
+                            SourceFile        = $first.SourceFile
+                            RegistryValues    = @($group.Group | Sort-Object -Property RegistryKey | ForEach-Object { "$($_.RegistryKey) = $($_.Value)" })
+                            _adPEASObjectType = 'GPORegistryValue'
+                        }
+                        Show-Object $inventory -Class Standard
+                    }
+                }
             }
         } catch {
             Write-Log "[Get-GPORegistrySettings] Error: $_" -Level Error
@@ -79108,6 +79146,22 @@ function Test-RegistryRecordApplies {
     if (([string]$Record.ValueName).StartsWith('**')) { return $false }
     if (-not [string]$Record.ValueName -and $null -eq $Record.ValueInt -and -not [string]$Record.ValueString) { return $false }
     return $true
+}
+function Format-RegistryRecordValue {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Record
+    )
+    if ($null -ne $Record.ValueInt) { return [string]$Record.ValueInt }
+    if ($null -ne $Record.ValueString) {
+        $text = [string]$Record.ValueString
+        if ($text.Length -eq 0) { return '""' }
+        if ($text.Length -gt 100) { return $text.Substring(0, 100) + '...' }
+        return $text
+    }
+    return '(binary)'
 }
 function Test-RegistryRecordUnjudged {
     [CmdletBinding()]
@@ -96105,7 +96159,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1623"
+$Script:adPEASVersion = "2.7.0+20261021-1633"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

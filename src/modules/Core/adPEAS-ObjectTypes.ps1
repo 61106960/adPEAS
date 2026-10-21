@@ -1837,9 +1837,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
             "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
             "Privilege-escalation enablers (AlwaysInstallElevated, WSUS over HTTP)"
-            "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged"
+            "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged; -IncludeUnknown lists them"
         )
         SecureMessage = "No known vulnerable registry setting deployed via GPO. No Group Policy was found pushing one of the registry values this check knows in a state that enables an attack; values outside its list are counted, not judged."
+    }
+
+    'GPORegistryValue' = @{
+        TitleFormat = "GPO Registry Values: {Name}"
+        Module = "GPO"
+        Category = "GPO"
+        SectionTitle = "GPO Registry Settings"
+        Summary = "Lists the registry values a policy file deploys that no rule of Get-GPORegistrySettings judges (-IncludeUnknown)."
+        WhyItMatters = "The list of dangerous registry settings covers known Windows attack paths. An application's settings - macro security, remote access tools, update channels - and Windows settings without a rule are not on it. Listed here so that someone who knows the applications can read them."
+        WhatWeCheck = @(
+            "Every value a policy deploys through Registry.pol, Registry.xml or GptTmpl.inf that no rule names and no other check reads"
+            "Not judged: the values are listed as they are, without a severity"
+        )
+        SecureMessage = "No registry value outside the list of the check is deployed."
     }
 
     'PointAndPrintPolicy' = @{

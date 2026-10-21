@@ -207,6 +207,12 @@ $Script:PrimaryAttributes = @{
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
+    # The values Get-GPORegistrySettings does not judge, per policy file (-IncludeUnknown).
+    # SourceFile is in no GPO list - see GPORegistrySetting.
+    GPORegistryValue = @(
+        'GPOName', 'GPOGUID', 'GPOPath', 'RegistryValues'
+    )
+
     # Point and Print printer driver policy per GPO (Get-GPOPointAndPrint).
     # Exploitability comes first: it is the verdict the whole check exists to produce, and
     # the individual values below it are the evidence it was derived from.
