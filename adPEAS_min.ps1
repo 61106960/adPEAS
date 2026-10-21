@@ -3793,6 +3793,9 @@ $Script:PrimaryAttributes = @{
     PrivilegedAccountACL = @(
         'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedAccounts'
     )
+    PrivilegedAccountsRead = @(
+        'accountsRead', 'protectedByAdminSDHolder', 'accountsNotRead'
+    )
     LogonScriptPermission = @(
         'logonScript', 'logonScriptRisk', 'logonScriptPermissions', 'runByAccounts', 'runByPrivilegedAccounts'
     )
@@ -3824,7 +3827,8 @@ $Script:StrictAttributeTypes = @(
     'BitLockerRecoveryKey',
     'GPOUserRights',
     'LAPSCoverage',
-    'UnprotectedPrivilegedGroups'
+    'UnprotectedPrivilegedGroups',
+    'PrivilegedAccountsRead'
 )
 $Script:AttributeLabels = @{
     GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
@@ -14737,7 +14741,7 @@ $acl.Access | Where-Object {
         Title = "Control Over a Privileged Account"
         Risk = "Finding"
         BaseScore = 75
-        Description = "A principal outside Tier-0 holds a right on a privileged account that lets it act as that account: it may reset the password, add a key credential (shadow credentials), give the account an SPN and crack the ticket, map a certificate onto it, switch off its pre-authentication, set a logon script, rewrite the DACL or take ownership. The account is a member of a privileged group, so the holder receives the group's rights. AdminSDHolder resets the DACL of the accounts it protects every hour; an entry found on such an account was added since, or the account is no longer protected. Every other privileged account - a member of DnsAdmins or of Group Policy Creator Owners, for instance - keeps what it is given, including what an OU delegation passes down."
+        Description = "A principal outside Tier-0 holds a right on a privileged account that lets it act as that account: it may reset the password, add a key credential (shadow credentials), give the account an SPN and crack the ticket, map a certificate onto it, switch off its pre-authentication, set a logon script, rewrite the DACL or take ownership. The account is a member of a privileged group, so the holder receives the group's rights. AdminSDHolder resets the DACL of the accounts it protects every hour; an entry found on such an account was added since, or the account is no longer protected. Every other privileged account - a member of DnsAdmins or of Group Policy Creator Owners, for instance - keeps what it is given, including what an OU delegation passes down. The holder is a finding where an account it can take over is in a group worth the domain, and a hint where every one is in operator-level groups only, such as Group Policy Creator Owners: a foothold, not the domain."
         Impact = @(
             "The holder authenticates as the privileged account and holds every right of its groups"
             "Password reset and certificate mapping work without the account's password; a key credential leaves the password untouched and is easily missed"
@@ -21809,9 +21813,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "The owner of each account"
             "On an account AdminSDHolder protects, only what its template does not grant"
         )
-        FilteringNote = "Computers are reported by the computer owner check, which reads the explicit entries on every computer object. On an account with adminCount=1 an entry the AdminSDHolder template grants the same trustee is reported with AdminSDHolder rather than once per account. Account Operators control every account AdminSDHolder does not protect through the default security descriptor of the user class; that is said once. Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink by design. Expected and privileged holders are hidden unless -IncludePrivileged. Accounts in another domain of the forest are not read."
+        FilteringNote = "Computers are reported by the computer owner check, which reads the explicit entries on every computer object. On an account with adminCount=1 an entry the AdminSDHolder template grants the same trustee is reported with AdminSDHolder rather than once per account. Account Operators control every account AdminSDHolder does not protect through the default security descriptor of the user class; that is said once. Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink by design. A holder is a finding where an account it can take over is in a group worth the domain - a Tier-0 group or one nested into it, DnsAdmins, ESX Admins - and a hint where every one is in operator-level groups only, such as Group Policy Creator Owners, Cert Publishers or Backup Operators. Whether an entry is inherited is not said on the row; an inherited one has to be removed at the container it comes from. Expected and privileged holders are hidden unless -IncludePrivileged. Accounts in another domain of the forest are not read."
         SecureMessage = "No principal beyond the expected ones can take over a privileged account."
         PrimaryFindingId = 'PRIVILEGED_ACCOUNT_ACL'
+    }
+    'PrivilegedAccountsRead' = @{
+        TitleFormat = "Privileged Accounts Read"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Control Over Privileged Accounts"
+        Summary = "The privileged user and managed service accounts whose DACL was read."
+        WhyItMatters = "Whoever may take over a privileged account holds the rights of its groups. AdminSDHolder resets the DACL of the accounts it protects every hour; every other account keeps whatever entries it is given, so each one is read."
+        WhatWeCheck = @(
+            "accountsRead - the users and managed service accounts of this domain found in a privileged group whose security descriptor was read; computers are left to the computer owner check"
+            "protectedByAdminSDHolder - how many of them carry adminCount=1. On these, what the AdminSDHolder template grants is reported once, with AdminSDHolder, and only what is beyond it per account"
+            "accountsNotRead - accounts whose security descriptor could not be read; who may take them over was not evaluated"
+        )
+        SecureMessage = "No privileged user or service account of this domain was found to read."
     }
     'LogonScriptPermission' = @{
         TitleFormat = "Logon Script: {Name}"
@@ -70383,16 +70401,29 @@ function Get-PrivilegedGroupMembers {
                 Show-Line "Error during the group ACL analysis - the privileged groups AdminSDHolder does not protect could not be evaluated: $_" -Class Finding
             }
             try {
+                $topLevelWeights = @{}
+                foreach ($weighedGroup in @($AllGroupData)) {
+                    if ($weighedGroup.GroupType -eq 'Dynamic') {
+                        $topLevelWeights[[string]$weighedGroup.GroupName] = 'Finding'
+                    } else {
+                        $topLevelWeights[[string]$weighedGroup.GroupName] = Get-GroupTakeoverWeight -GroupSID ([string]$weighedGroup.GroupSID)
+                    }
+                }
                 $AccountsForACLReview = @(foreach ($memberDN in @($MemberGroupMemberships.Keys)) {
                     $memberInfo = $MemberGroupMemberships[$memberDN].MemberInfo
                     if (-not $memberInfo -or $memberInfo.IsForeign -or $memberInfo.IsCrossDomain) { continue }
                     if ([string]$memberInfo.ObjectClass -eq 'computer') { continue }
+                    $accountWeight = 'Hint'
+                    foreach ($memberGroupName in @($MemberGroupMemberships[$memberDN].Groups)) {
+                        if ($topLevelWeights[[string]$memberGroupName] -eq 'Finding') { $accountWeight = 'Finding' }
+                    }
                     [PSCustomObject]@{
                         DistinguishedName = [string]$memberDN
                         Name              = $(if ($memberInfo.SAMAccountName) { [string]$memberInfo.SAMAccountName } else { [string]$memberInfo.Name })
                         SID               = [string]$memberInfo.SID
                         ObjectClass       = [string]$memberInfo.ObjectClass
                         Groups            = @($MemberGroupMemberships[$memberDN].Groups)
+                        Weight            = $accountWeight
                     }
                 })
                 Show-PrivilegedAccountACL -Accounts $AccountsForACLReview -TemplateRules $AdminSDHolderRules -IncludePrivileged:$IncludePrivileged `
@@ -70866,24 +70897,25 @@ function Show-PrivilegedAccountACL {
             }
             if ($rights.Count -eq 0) { continue }
             if (-not $onThisAccount.Contains($trusteeSID)) {
-                $onThisAccount[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+                $onThisAccount[$trusteeSID] = [PSCustomObject]@{ Rights = @() }
             }
             $held = $onThisAccount[$trusteeSID]
             foreach ($right in $rights) {
                 if (@($held.Rights | ForEach-Object { $_.Key }) -notcontains $right.Key) { $held.Rights += $right }
             }
-            if ($ace.IsInherited) { $held.Inherited = $true }
         }
         $ownerSID = $null
         try { $ownerSID = $descriptor.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $ownerSID = $null }
         if ($ownerSID -and -not ($account.SID -and $ownerSID -eq [string]$account.SID)) {
             if (-not $onThisAccount.Contains($ownerSID)) {
-                $onThisAccount[$ownerSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+                $onThisAccount[$ownerSID] = [PSCustomObject]@{ Rights = @() }
             }
             $onThisAccount[$ownerSID].Rights += [PSCustomObject]@{ Key = 'Owner'; Text = 'Owner of the account - may rewrite its DACL' }
         }
         $accountText = $accountName
         if (@($account.Groups).Count -gt 0) { $accountText += " ($(@($account.Groups) -join ', '))" }
+        $accountWeight = 'Finding'
+        if ($account.PSObject.Properties['Weight'] -and $account.Weight) { $accountWeight = [string]$account.Weight }
         foreach ($trusteeSID in @($onThisAccount.Keys)) {
             $held = $onThisAccount[$trusteeSID]
             $heldKeys = @($held.Rights | ForEach-Object { $_.Key })
@@ -70904,36 +70936,42 @@ function Show-PrivilegedAccountACL {
                 }
             }
             if (-not $byTrustee.Contains($trusteeSID)) {
-                $byTrustee[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Accounts = @(); Severity = $severity }
+                $byTrustee[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Accounts = @(); Severity = $severity; Weight = 'Hint' }
             }
             $entry = $byTrustee[$trusteeSID]
             foreach ($right in $held.Rights) {
                 if ($entry.Rights -notcontains $right.Text) { $entry.Rights += $right.Text }
             }
-            $thisAccountText = $accountText
-            if ($held.Inherited) { $thisAccountText += ' - inherited, remove it at the parent' }
-            $entry.Accounts += $thisAccountText
+            $entry.Accounts += $accountText
+            if ($accountWeight -eq 'Finding') { $entry.Weight = 'Finding' }
         }
     }
-    if ($examinedAccounts -gt 0) {
-        $readText = "$examinedAccounts privileged account(s) were read"
+    if ($examinedAccounts -gt 0 -or $unreadAccounts.Count -gt 0) {
+        $scope = [PSCustomObject]@{ accountsRead = $examinedAccounts }
         if ($protectedAccounts -gt 0) {
-            $readText += "; on the $protectedAccounts AdminSDHolder protects, what its template grants is reported with AdminSDHolder above"
+            $scope | Add-Member -NotePropertyName 'protectedByAdminSDHolder' -NotePropertyValue $protectedAccounts -Force
         }
-        Show-Line $readText -Class Note
+        if ($unreadAccounts.Count -gt 0) {
+            $scope | Add-Member -NotePropertyName 'accountsNotRead' -NotePropertyValue @($unreadAccounts) -Force
+        }
+        $scope | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountsRead' -Force
+        Show-Line "Privileged accounts read:" -Class Note
+        Show-Object $scope -Class Note
     }
     if ($accountOperatorAccounts.Count -gt 0) {
-        $aoText = "Account Operators control $($accountOperatorAccounts.Count) of these account(s) through the default every new user gets - a member of Account Operators can take each of them over"
+        $aoReach = if ($accountOperatorAccounts.Count -eq $examinedAccounts) { "all $examinedAccounts" } else { "$($accountOperatorAccounts.Count) of them" }
+        $aoMembers = ''
         $aoClass = 'Note'
         if ($null -ne $AccountOperatorMembers -and [int]$AccountOperatorMembers -gt 0) {
-            $aoText += "; Account Operators has $AccountOperatorMembers member(s)"
+            $aoMembers = " ($AccountOperatorMembers member(s))"
             $aoClass = 'Hint'
         } elseif ($null -ne $AccountOperatorMembers) {
-            $aoText += '; Account Operators has no members'
+            $aoMembers = ' (no members)'
         }
-        Show-Line $aoText -Class $aoClass -FindingId 'PRIVILEGED_ACCOUNT_ACL'
+        Show-Line "Account Operators$aoMembers control $aoReach - the default of every new user" -Class $aoClass -FindingId 'PRIVILEGED_ACCOUNT_ACL'
     }
     $accountFindingRows = @()
+    $accountOperatorRows = @()
     $accountHintRows = @()
     foreach ($trusteeSID in @($byTrustee.Keys)) {
         $entry = $byTrustee[$trusteeSID]
@@ -70946,28 +70984,30 @@ function Show-PrivilegedAccountACL {
             dangerousRights  = @($entry.Rights)
             affectedAccounts = @($entry.Accounts)
         }
+        $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
         if ($entry.Severity -in @('Expected', 'Attention')) {
             $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
-            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
             $accountHintRows += $row
-        } else {
-            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
+        } elseif ($entry.Weight -eq 'Finding') {
             $accountFindingRows += $row
+        } else {
+            $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
+            $accountOperatorRows += $row
         }
     }
     if ($accountFindingRows.Count -gt 0) {
         Show-Line "Found $($accountFindingRows.Count) principal(s) that can take over a privileged account" -Class Finding -FindingId 'PRIVILEGED_ACCOUNT_ACL'
         foreach ($row in $accountFindingRows) { Show-Object $row -Class Finding }
     }
+    if ($accountOperatorRows.Count -gt 0) {
+        Show-Line "Found $($accountOperatorRows.Count) principal(s) that can take over a member of an operator-level group" -Class Hint -FindingId 'PRIVILEGED_ACCOUNT_ACL'
+        foreach ($row in $accountOperatorRows) { Show-Object $row -Class Hint }
+    }
     if ($accountHintRows.Count -gt 0) {
         Show-Line "Found $($accountHintRows.Count) expected or privileged holder(s) of the same rights" -Class Hint
         foreach ($row in $accountHintRows) { Show-Object $row -Class Hint }
     }
-    if ($unreadAccounts.Count -gt 0) {
-        Show-Line ("$($unreadAccounts.Count) account(s) could not be read - who may take them over was not evaluated: " +
-                   ($unreadAccounts -join ', ')) -Class Note
-    }
-    if ($accountFindingRows.Count -eq 0 -and $accountHintRows.Count -eq 0) {
+    if ($accountFindingRows.Count -eq 0 -and $accountOperatorRows.Count -eq 0 -and $accountHintRows.Count -eq 0) {
         if ($examinedAccounts -eq 0) {
             if ($unreadAccounts.Count -eq 0) {
                 Show-Line "No privileged user or service account of this domain was found to read" -Class Note
@@ -95743,7 +95783,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1053"
+$Script:adPEASVersion = "2.7.0+20261021-1112"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

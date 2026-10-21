@@ -275,11 +275,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   it reaches, full control, a DACL or owner change, a write of every attribute, all
   extended rights, the password reset right, writes of `msDS-KeyCredentialLink`,
   `servicePrincipalName`, `altSecurityIdentities`, `userAccountControl`, `scriptPath` and
-  `msDS-GroupMSAMembership`, and the owner - explicit and inherited entries, an inherited
-  one marked as such. On an account AdminSDHolder protects, what the template grants is
-  left to the AdminSDHolder step instead of being repeated per account. Account Operators,
-  who control every unprotected account through the default security descriptor of the
-  user class, are named once. New card `PRIVILEGED_ACCOUNT_ACL`.
+  `msDS-GroupMSAMembership`, and the owner - explicit and inherited entries alike. A holder
+  is a finding where an account it can take over is in a group worth the domain, and a
+  hint, under a yellow line of its own, where every one is in operator-level groups only,
+  such as Group Policy Creator Owners. On an account AdminSDHolder protects, what the
+  template grants is left to the AdminSDHolder step instead of being repeated per account.
+  How many accounts were read, how many of them AdminSDHolder protects and which could not
+  be read are one object at the head of the section. Account Operators, who control every
+  unprotected account through the default security descriptor of the user class, are
+  named once, in a short line. New card `PRIVILEGED_ACCOUNT_ACL`.
 
 - **`Get-GPOScriptPaths` reads who may write a script that runs from outside the policy
   store.** A script in NETLOGON, in SYSVOL outside a GPO folder or on a file share follows

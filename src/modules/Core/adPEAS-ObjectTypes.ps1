@@ -1238,9 +1238,25 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "The owner of each account"
             "On an account AdminSDHolder protects, only what its template does not grant"
         )
-        FilteringNote = "Computers are reported by the computer owner check, which reads the explicit entries on every computer object. On an account with adminCount=1 an entry the AdminSDHolder template grants the same trustee is reported with AdminSDHolder rather than once per account. Account Operators control every account AdminSDHolder does not protect through the default security descriptor of the user class; that is said once. Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink by design. Expected and privileged holders are hidden unless -IncludePrivileged. Accounts in another domain of the forest are not read."
+        FilteringNote = "Computers are reported by the computer owner check, which reads the explicit entries on every computer object. On an account with adminCount=1 an entry the AdminSDHolder template grants the same trustee is reported with AdminSDHolder rather than once per account. Account Operators control every account AdminSDHolder does not protect through the default security descriptor of the user class; that is said once. Key Admins and Enterprise Key Admins write msDS-KeyCredentialLink by design. A holder is a finding where an account it can take over is in a group worth the domain - a Tier-0 group or one nested into it, DnsAdmins, ESX Admins - and a hint where every one is in operator-level groups only, such as Group Policy Creator Owners, Cert Publishers or Backup Operators. Whether an entry is inherited is not said on the row; an inherited one has to be removed at the container it comes from. Expected and privileged holders are hidden unless -IncludePrivileged. Accounts in another domain of the forest are not read."
         SecureMessage = "No principal beyond the expected ones can take over a privileged account."
         PrimaryFindingId = 'PRIVILEGED_ACCOUNT_ACL'
+    }
+
+    # What step 5c of Get-PrivilegedGroupMembers read, ahead of who may take it over.
+    'PrivilegedAccountsRead' = @{
+        TitleFormat = "Privileged Accounts Read"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Control Over Privileged Accounts"
+        Summary = "The privileged user and managed service accounts whose DACL was read."
+        WhyItMatters = "Whoever may take over a privileged account holds the rights of its groups. AdminSDHolder resets the DACL of the accounts it protects every hour; every other account keeps whatever entries it is given, so each one is read."
+        WhatWeCheck = @(
+            "accountsRead - the users and managed service accounts of this domain found in a privileged group whose security descriptor was read; computers are left to the computer owner check"
+            "protectedByAdminSDHolder - how many of them carry adminCount=1. On these, what the AdminSDHolder template grants is reported once, with AdminSDHolder, and only what is beyond it per account"
+            "accountsNotRead - accounts whose security descriptor could not be read; who may take them over was not evaluated"
+        )
+        SecureMessage = "No privileged user or service account of this domain was found to read."
     }
 
     'LogonScriptPermission' = @{

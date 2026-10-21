@@ -700,6 +700,11 @@ $Script:PrimaryAttributes = @{
     PrivilegedAccountACL = @(
         'Trustee', 'TrusteeSID', 'dangerousRights', 'affectedAccounts'
     )
+    # What step 5c read (Get-PrivilegedGroupMembers): how many accounts, how many of them
+    # AdminSDHolder protects, and the unreadable.
+    PrivilegedAccountsRead = @(
+        'accountsRead', 'protectedByAdminSDHolder', 'accountsNotRead'
+    )
 
     # Logon scripts of accounts a principal beyond the administrators may change
     # (Get-LogonScriptPermissions)
@@ -749,7 +754,8 @@ $Script:StrictAttributeTypes = @(
     'BitLockerRecoveryKey',
     'GPOUserRights',
     'LAPSCoverage',
-    'UnprotectedPrivilegedGroups'
+    'UnprotectedPrivilegedGroups',
+    'PrivilegedAccountsRead'
 )
 
 # Per-ObjectType row labels: what a row is called, where the property it comes from is

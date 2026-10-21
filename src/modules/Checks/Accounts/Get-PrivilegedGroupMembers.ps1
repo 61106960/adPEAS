@@ -1520,16 +1520,33 @@ function Get-PrivilegedGroupMembers {
             # object; an account behind a trust (IsForeign) or in another domain of the forest
             # (IsCrossDomain, set where the member was resolved) is not read here.
             try {
+                # What taking an account over is worth: that of the heaviest privileged group it
+                # is in, as for the groups of step 5b - Get-GroupTakeoverWeight. DnsAdmins and
+                # ESX Admins are worth the domain.
+                $topLevelWeights = @{}
+                foreach ($weighedGroup in @($AllGroupData)) {
+                    if ($weighedGroup.GroupType -eq 'Dynamic') {
+                        $topLevelWeights[[string]$weighedGroup.GroupName] = 'Finding'
+                    } else {
+                        $topLevelWeights[[string]$weighedGroup.GroupName] = Get-GroupTakeoverWeight -GroupSID ([string]$weighedGroup.GroupSID)
+                    }
+                }
                 $AccountsForACLReview = @(foreach ($memberDN in @($MemberGroupMemberships.Keys)) {
                     $memberInfo = $MemberGroupMemberships[$memberDN].MemberInfo
                     if (-not $memberInfo -or $memberInfo.IsForeign -or $memberInfo.IsCrossDomain) { continue }
                     if ([string]$memberInfo.ObjectClass -eq 'computer') { continue }
+                    # Groups holds the names of the groups in $AllGroupData, each weighed above.
+                    $accountWeight = 'Hint'
+                    foreach ($memberGroupName in @($MemberGroupMemberships[$memberDN].Groups)) {
+                        if ($topLevelWeights[[string]$memberGroupName] -eq 'Finding') { $accountWeight = 'Finding' }
+                    }
                     [PSCustomObject]@{
                         DistinguishedName = [string]$memberDN
                         Name              = $(if ($memberInfo.SAMAccountName) { [string]$memberInfo.SAMAccountName } else { [string]$memberInfo.Name })
                         SID               = [string]$memberInfo.SID
                         ObjectClass       = [string]$memberInfo.ObjectClass
                         Groups            = @($MemberGroupMemberships[$memberDN].Groups)
+                        Weight            = $accountWeight
                     }
                 })
                 Show-PrivilegedAccountACL -Accounts $AccountsForACLReview -TemplateRules $AdminSDHolderRules -IncludePrivileged:$IncludePrivileged `
@@ -2216,7 +2233,15 @@ function Get-AccountTakeoverRight {
     entries on every computer object. An account in another domain is not read over this
     connection. Explicit and inherited ACEs alike - both apply to the account - but not an
     inherit-only one, and not an Allow that an explicit Deny for the same trustee cancels
-    completely. An inherited one is said to be, because it has to be removed at the parent.
+    completely. Whether an ACE is inherited is not said on the row: the card says that an
+    inherited one has to be removed at the container it comes from, and the suffix pushed
+    the row past the width of the console.
+
+    A holder is a Finding where one account it can take over is in a group worth the
+    domain, and a Hint, under a yellow line of its own, where every one is in operator-level
+    groups only - each account carries the weight of the heaviest privileged group it is in
+    (Get-GroupTakeoverWeight), as the groups of step 5b do. What was read is one object
+    (PrivilegedAccountsRead) rather than a line of counts and names.
 
     An account SDProp protects (adminCount=1) carries the template as explicit ACEs. A right
     the template grants the same trustee is step 5's finding and is not repeated per account;
@@ -2240,8 +2265,9 @@ function Get-AccountTakeoverRight {
     once, as for the groups.
 
 .PARAMETER Accounts
-    The accounts to read: DistinguishedName, Name, SID, ObjectClass and Groups (the
-    privileged groups the account is in).
+    The accounts to read: DistinguishedName, Name, SID, ObjectClass, Groups (the
+    privileged groups the account is in) and Weight ('Finding' or 'Hint'; none counts as
+    'Finding').
 
 .PARAMETER TemplateRules
     The access rules of AdminSDHolder from step 5, or $null when step 5 could not read them.
@@ -2334,7 +2360,7 @@ function Show-PrivilegedAccountACL {
         $rules = @($descriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
         $denyRules = @($rules | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny })
 
-        # Trustee SID -> the rights it holds on this account, and whether any came by inheritance.
+        # Trustee SID -> the rights it holds on this account.
         $onThisAccount = [ordered]@{}
 
         foreach ($ace in $rules) {
@@ -2354,13 +2380,12 @@ function Show-PrivilegedAccountACL {
             if ($rights.Count -eq 0) { continue }
 
             if (-not $onThisAccount.Contains($trusteeSID)) {
-                $onThisAccount[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+                $onThisAccount[$trusteeSID] = [PSCustomObject]@{ Rights = @() }
             }
             $held = $onThisAccount[$trusteeSID]
             foreach ($right in $rights) {
                 if (@($held.Rights | ForEach-Object { $_.Key }) -notcontains $right.Key) { $held.Rights += $right }
             }
-            if ($ace.IsInherited) { $held.Inherited = $true }
         }
 
         # The owner may rewrite the DACL whatever it says - the same as WriteDacl.
@@ -2368,13 +2393,16 @@ function Show-PrivilegedAccountACL {
         try { $ownerSID = $descriptor.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $ownerSID = $null }
         if ($ownerSID -and -not ($account.SID -and $ownerSID -eq [string]$account.SID)) {
             if (-not $onThisAccount.Contains($ownerSID)) {
-                $onThisAccount[$ownerSID] = [PSCustomObject]@{ Rights = @(); Inherited = $false }
+                $onThisAccount[$ownerSID] = [PSCustomObject]@{ Rights = @() }
             }
             $onThisAccount[$ownerSID].Rights += [PSCustomObject]@{ Key = 'Owner'; Text = 'Owner of the account - may rewrite its DACL' }
         }
 
         $accountText = $accountName
         if (@($account.Groups).Count -gt 0) { $accountText += " ($(@($account.Groups) -join ', '))" }
+        # One without a weight counts as Finding.
+        $accountWeight = 'Finding'
+        if ($account.PSObject.Properties['Weight'] -and $account.Weight) { $accountWeight = [string]$account.Weight }
 
         foreach ($trusteeSID in @($onThisAccount.Keys)) {
             $held = $onThisAccount[$trusteeSID]
@@ -2400,40 +2428,52 @@ function Show-PrivilegedAccountACL {
             }
 
             if (-not $byTrustee.Contains($trusteeSID)) {
-                $byTrustee[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Accounts = @(); Severity = $severity }
+                $byTrustee[$trusteeSID] = [PSCustomObject]@{ Rights = @(); Accounts = @(); Severity = $severity; Weight = 'Hint' }
             }
             $entry = $byTrustee[$trusteeSID]
             foreach ($right in $held.Rights) {
                 if ($entry.Rights -notcontains $right.Text) { $entry.Rights += $right.Text }
             }
-            $thisAccountText = $accountText
-            if ($held.Inherited) { $thisAccountText += ' - inherited, remove it at the parent' }
-            $entry.Accounts += $thisAccountText
+            # Whether the ACE is inherited is not said here - see the description.
+            $entry.Accounts += $accountText
+            # The heaviest account decides.
+            if ($accountWeight -eq 'Finding') { $entry.Weight = 'Finding' }
         }
     }
 
-    if ($examinedAccounts -gt 0) {
-        $readText = "$examinedAccounts privileged account(s) were read"
+    # What was read, as an object rather than as a line of counts that ran past the width of
+    # the console. That the template's grants on a protected account are reported with
+    # AdminSDHolder is the card's.
+    if ($examinedAccounts -gt 0 -or $unreadAccounts.Count -gt 0) {
+        $scope = [PSCustomObject]@{ accountsRead = $examinedAccounts }
         if ($protectedAccounts -gt 0) {
-            $readText += "; on the $protectedAccounts AdminSDHolder protects, what its template grants is reported with AdminSDHolder above"
+            $scope | Add-Member -NotePropertyName 'protectedByAdminSDHolder' -NotePropertyValue $protectedAccounts -Force
         }
-        Show-Line $readText -Class Note
+        if ($unreadAccounts.Count -gt 0) {
+            $scope | Add-Member -NotePropertyName 'accountsNotRead' -NotePropertyValue @($unreadAccounts) -Force
+        }
+        $scope | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountsRead' -Force
+        Show-Line "Privileged accounts read:" -Class Note
+        Show-Object $scope -Class Note
     }
 
-    # Account Operators: the default, said once - see the description.
+    # Account Operators: the default, said once - see the description. Short: what a member
+    # of Account Operators can do with it is the card's.
     if ($accountOperatorAccounts.Count -gt 0) {
-        $aoText = "Account Operators control $($accountOperatorAccounts.Count) of these account(s) through the default every new user gets - a member of Account Operators can take each of them over"
+        $aoReach = if ($accountOperatorAccounts.Count -eq $examinedAccounts) { "all $examinedAccounts" } else { "$($accountOperatorAccounts.Count) of them" }
+        $aoMembers = ''
         $aoClass = 'Note'
         if ($null -ne $AccountOperatorMembers -and [int]$AccountOperatorMembers -gt 0) {
-            $aoText += "; Account Operators has $AccountOperatorMembers member(s)"
+            $aoMembers = " ($AccountOperatorMembers member(s))"
             $aoClass = 'Hint'
         } elseif ($null -ne $AccountOperatorMembers) {
-            $aoText += '; Account Operators has no members'
+            $aoMembers = ' (no members)'
         }
-        Show-Line $aoText -Class $aoClass -FindingId 'PRIVILEGED_ACCOUNT_ACL'
+        Show-Line "Account Operators$aoMembers control $aoReach - the default of every new user" -Class $aoClass -FindingId 'PRIVILEGED_ACCOUNT_ACL'
     }
 
     $accountFindingRows = @()
+    $accountOperatorRows = @()
     $accountHintRows = @()
     foreach ($trusteeSID in @($byTrustee.Keys)) {
         $entry = $byTrustee[$trusteeSID]
@@ -2447,13 +2487,17 @@ function Show-PrivilegedAccountACL {
             dangerousRights  = @($entry.Rights)
             affectedAccounts = @($entry.Accounts)
         }
+        $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
         if ($entry.Severity -in @('Expected', 'Attention')) {
             $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
-            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
             $accountHintRows += $row
-        } else {
-            $row | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PrivilegedAccountACL' -Force
+        } elseif ($entry.Weight -eq 'Finding') {
             $accountFindingRows += $row
+        } else {
+            # Members of operator-level groups only: a foothold, not the domain - see
+            # Get-GroupTakeoverWeight. dangerousRightsSeverity turns the rows yellow.
+            $row | Add-Member -NotePropertyName 'dangerousRightsSeverity' -NotePropertyValue 'Hint' -Force
+            $accountOperatorRows += $row
         }
     }
 
@@ -2461,17 +2505,16 @@ function Show-PrivilegedAccountACL {
         Show-Line "Found $($accountFindingRows.Count) principal(s) that can take over a privileged account" -Class Finding -FindingId 'PRIVILEGED_ACCOUNT_ACL'
         foreach ($row in $accountFindingRows) { Show-Object $row -Class Finding }
     }
+    if ($accountOperatorRows.Count -gt 0) {
+        Show-Line "Found $($accountOperatorRows.Count) principal(s) that can take over a member of an operator-level group" -Class Hint -FindingId 'PRIVILEGED_ACCOUNT_ACL'
+        foreach ($row in $accountOperatorRows) { Show-Object $row -Class Hint }
+    }
     if ($accountHintRows.Count -gt 0) {
         Show-Line "Found $($accountHintRows.Count) expected or privileged holder(s) of the same rights" -Class Hint
         foreach ($row in $accountHintRows) { Show-Object $row -Class Hint }
     }
 
-    if ($unreadAccounts.Count -gt 0) {
-        Show-Line ("$($unreadAccounts.Count) account(s) could not be read - who may take them over was not evaluated: " +
-                   ($unreadAccounts -join ', ')) -Class Note
-    }
-
-    if ($accountFindingRows.Count -eq 0 -and $accountHintRows.Count -eq 0) {
+    if ($accountFindingRows.Count -eq 0 -and $accountOperatorRows.Count -eq 0 -and $accountHintRows.Count -eq 0) {
         if ($examinedAccounts -eq 0) {
             if ($unreadAccounts.Count -eq 0) {
                 Show-Line "No privileged user or service account of this domain was found to read" -Class Note
