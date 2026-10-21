@@ -844,6 +844,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   objectSid as bytes: the attribute indexer of a search result returns a string for a SID
   whose bytes happen to be valid UTF-8, and the SID was lost.
 
+- **`Get-GPORegistrySettings` knows eleven more settings.** WinRM accepting or sending
+  unencrypted traffic and Basic authentication; logon credentials delegated by CredSSP to
+  any server (a server list entry `*` or `TERMSRV/*` under "Allow delegating default
+  credentials" or its NTLM-only variant) as a finding; LLMNR switched on; more cached
+  logons than the default of 10; unsolicited Remote Assistance offers; LDAP client signing
+  switched off; DES or RC4 among the Kerberos encryption types; and Office macros enabled
+  without a prompt (`VBAWarnings = 1`, every Office version and application) as a
+  finding. Each has its own card and source. A rule can name a family of keys by pattern
+  and every value of a key, and the numeric rules read a number Windows keeps as a string.
 - **`Get-GPORegistrySettings` says what it does not judge.** The check compares the registry
   values a policy deploys against a fixed list of known dangerous settings, and every other
   value - an application's settings, a Windows setting without a rule - passed without a

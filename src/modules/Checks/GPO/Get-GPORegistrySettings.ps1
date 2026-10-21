@@ -436,14 +436,25 @@ function Test-DangerousRegistryRecord {
 
     if (-not (Test-RegistryRecordApplies -Record $Record)) { return $null }
 
-    $recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
+    $recKey = ([string]$Record.Key -replace '^\\+', '').TrimEnd('\')
     $recValueName = [string]$Record.ValueName
     $recHive = [string]$Record.Hive
 
     foreach ($entry in $Script:DangerousRegistryKeys) {
         if ($entry.Hive -ne $recHive) { continue }
-        if (($entry.Key -replace '^\\+', '').TrimEnd('\').ToLower() -ne $recKey) { continue }
-        if ($entry.ValueName.ToLower() -ne $recValueName.ToLower()) { continue }
+        if (-not (Test-RegistryEntryKey -Entry $entry -Key $recKey)) { continue }
+        if ($entry.ValueName -ne '*' -and $entry.ValueName -ine $recValueName) { continue }
+
+        # The number a numeric rule compares. A setting Windows keeps as a REG_SZ number
+        # (AutoAdminLogon "1", CachedLogonsCount "10") is read out of the string, by the
+        # entries that say so; see StoredAsString in the table.
+        $number = $null
+        if ($null -ne $Record.ValueInt) {
+            $number = [int64]$Record.ValueInt
+        } elseif ($entry.StoredAsString -and $null -ne $Record.ValueString) {
+            $stringNumber = [int64]0
+            if ([int64]::TryParse([string]$Record.ValueString, [ref]$stringNumber)) { $number = $stringNumber }
+        }
 
         # Value name matched - now evaluate the dangerous condition
         $isMatch = $false
@@ -452,22 +463,13 @@ function Test-DangerousRegistryRecord {
                 $isMatch = $true
             }
             'Equals' {
-                if ($null -ne $Record.ValueInt) {
-                    $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue)
-                } elseif ($entry.StoredAsString -and $null -ne $Record.ValueString) {
-                    # A setting Windows keeps as a REG_SZ number (AutoAdminLogon "1"). Only
-                    # entries that say so read a string; see StoredAsString in the table.
-                    $stringNumber = [int64]0
-                    if ([int64]::TryParse([string]$Record.ValueString, [ref]$stringNumber)) {
-                        $isMatch = ($stringNumber -eq [int64]$entry.MatchValue)
-                    }
-                }
+                if ($null -ne $number) { $isMatch = ($number -eq [int64]$entry.MatchValue) }
             }
             'LessOrEqual' {
-                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -le [int64]$entry.MatchValue) }
+                if ($null -ne $number) { $isMatch = ($number -le [int64]$entry.MatchValue) }
             }
             'GreaterThan' {
-                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -gt [int64]$entry.MatchValue) }
+                if ($null -ne $number) { $isMatch = ($number -gt [int64]$entry.MatchValue) }
             }
             'BitSet' {
                 # For a value that is a flag field rather than a setting, where one bit
@@ -475,13 +477,25 @@ function Test-DangerousRegistryRecord {
                 # 0x1 subject/issuer, 0x2 issuer, 0x4 UPN, 0x8 subject, and only 0x4 is
                 # ESC10. Equals would miss every combination that has the bit set next to
                 # another one, which is how the value is normally written.
-                if ($null -ne $Record.ValueInt) {
-                    $isMatch = (([int64]$Record.ValueInt -band [int64]$entry.MatchValue) -eq [int64]$entry.MatchValue)
+                if ($null -ne $number) {
+                    $isMatch = (($number -band [int64]$entry.MatchValue) -eq [int64]$entry.MatchValue)
+                }
+            }
+            'AnyBitSet' {
+                # Any one of several bits: SupportedEncryptionTypes with DES-CBC-CRC (0x1),
+                # DES-CBC-MD5 (0x2) or RC4 (0x4) among the types it allows.
+                if ($null -ne $number) {
+                    $isMatch = (($number -band [int64]$entry.MatchValue) -ne 0)
                 }
             }
             'UrlNotHttps' {
                 $sv = [string]$Record.ValueString
                 if ($sv -and $sv.Trim().ToLower().StartsWith('http://')) { $isMatch = $true }
+            }
+            'Pattern' {
+                # A string the rule describes, such as a server list entry "TERMSRV/*".
+                $sv = [string]$Record.ValueString
+                if ($sv -and $sv -match [string]$entry.MatchValue) { $isMatch = $true }
             }
         }
 
@@ -491,6 +505,31 @@ function Test-DangerousRegistryRecord {
     }
 
     return $null
+}
+
+# =============================================================================
+# Helper: Whether a table entry names a registry key
+# =============================================================================
+function Test-RegistryEntryKey {
+    <#
+    .SYNOPSIS
+        Whether an entry of $Script:DangerousRegistryKeys names the key, without regard to
+        case: by its Key, or - for a family of keys such as the Office versions and
+        applications - by its KeyPattern.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Entry,
+
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$Key
+    )
+
+    if ($Entry.KeyPattern) { return ($Key -match [string]$Entry.KeyPattern) }
+    return ((([string]$Entry.Key) -replace '^\\+', '').TrimEnd('\') -ieq $Key)
 }
 
 # =============================================================================
@@ -583,8 +622,8 @@ function Test-RegistryRecordUnjudged {
 
     foreach ($entry in $Script:DangerousRegistryKeys) {
         if ($entry.Hive -ne $recHive) { continue }
-        if ($entry.Key -ine $recKey) { continue }
-        if ($entry.ValueName -ieq $recValueName) { return $false }
+        if (-not (Test-RegistryEntryKey -Entry $entry -Key $recKey)) { continue }
+        if ($entry.ValueName -eq '*' -or $entry.ValueName -ieq $recValueName) { return $false }
     }
 
     foreach ($reader in $Script:RegistryValuesReadElsewhere) {
@@ -668,12 +707,19 @@ function New-RegistryFinding {
         $configured = [string]$record.ValueString
     }
 
+    # The key and the value name as the table writes them - or as the policy does, where
+    # the entry covers a family of keys (KeyPattern) or every value of one ('*').
+    $keyText = [string]$entry.Key
+    if ($entry.KeyPattern) { $keyText = ([string]$record.Key -replace '^\\+', '').TrimEnd('\') }
+    $valueNameText = [string]$entry.ValueName
+    if ($valueNameText -eq '*') { $valueNameText = [string]$record.ValueName }
+
     return [PSCustomObject][ordered]@{
         GPOName           = $RegMatch.GPOName
         GPOGUID           = $RegMatch.GPOGUID
         GPOPath           = $RegMatch.GPOPath
         SourceFile        = $RegMatch.SourceFile
-        RegistryKey       = "$($entry.Hive)\$($entry.Key)\$($entry.ValueName)"
+        RegistryKey       = "$($entry.Hive)\$keyText\$valueNameText"
         ConfiguredValue   = $configured
         VulnerabilityName = $entry.VulnerabilityName
         RiskReason        = $entry.RiskReason

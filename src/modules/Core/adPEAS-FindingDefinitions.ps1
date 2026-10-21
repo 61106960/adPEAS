@@ -15093,6 +15093,213 @@ $acl.Access | Where-Object {
         )
     }
 
+    'REGISTRY_WINRM_UNENCRYPTED' = @{
+        Title = "WinRM Allows Unencrypted Traffic via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Allow unencrypted traffic' for the WinRM service or the WinRM client (AllowUnencryptedTraffic = 1). Remote management - PowerShell remoting among it - may then run over HTTP without message encryption. With Kerberos or NTLM the logon itself stays protected; what crosses the network in clear is everything after it: the commands, their output, and any secret they carry. With Basic authentication allowed as well, the password crosses with them."
+        Impact = @(
+            "Commands and output of remote management sessions readable on the network"
+            "Together with Basic authentication: user names and passwords in clear text"
+        )
+        Remediation = @(
+            "Set 'Allow unencrypted traffic' to Disabled for the WinRM service and the WinRM client"
+            "Use WinRM over HTTPS where Kerberos is not available"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the WinRM policy values on a computer"
+                Command = "Get-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service', 'HKLM:\Software\Policies\Microsoft\Windows\WinRM\Client' -ErrorAction SilentlyContinue | Select-Object PSPath, AllowUnencryptedTraffic, AllowBasic"
+            }
+        )
+        References = @(
+            @{ Title = "Policy CSP - RemoteManagement"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remotemanagement" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^WinRM (service accepts|client sends) unencrypted traffic'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_WINRM_BASIC' = @{
+        Title = "WinRM Allows Basic Authentication via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Allow Basic authentication' for the WinRM service or the WinRM client (AllowBasic = 1). Basic authentication sends the user name and password Base64-encoded - in clear text unless the connection uses HTTPS. Microsoft: if WinRM is configured to use HTTP transport, the user name and password are sent over the network as clear text."
+        Impact = @(
+            "Passwords of the accounts that manage these computers readable on the network over HTTP"
+            "The service side accepts local accounts by password, outside Kerberos and its protections"
+        )
+        Remediation = @(
+            "Set 'Allow Basic authentication' to Disabled for the WinRM service and the WinRM client"
+        )
+        References = @(
+            @{ Title = "Policy CSP - RemoteManagement"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remotemanagement" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^WinRM (service accepts|client uses) Basic authentication'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CREDSSP_DELEGATE_ANY' = @{
+        Title = "Logon Credentials Delegated to Any Server via GPO (CredSSP)"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy enables 'Allow delegating default credentials' (or its NTLM-only variant) with a server list entry that names any host - '*' or 'TERMSRV/*'. CredSSP then hands the signed-in user's own credentials to every such host the user connects to, in a form the host can use to sign in elsewhere as that user. Any host - including one an attacker set up or took over - receives them."
+        Impact = @(
+            "The logon credentials of every user of these computers reach any host they connect to with CredSSP - Remote Desktop, PowerShell remoting with CredSSP"
+            "A single attacker host collects reusable credentials, domain administrators among them"
+        )
+        Attack = @(
+            "1. Stand up or take over a host the list covers - for 'TERMSRV/*', any Remote Desktop host"
+            "2. Get a user of the affected computers to connect to it"
+            "3. Recover the delegated credentials on that host"
+        )
+        Remediation = @(
+            "Replace the wildcard entry with the servers that need delegation, by name"
+            "Prefer Remote Credential Guard or Restricted Admin mode for Remote Desktop over delegating credentials"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the delegation lists on a computer"
+                Command = "Get-ChildItem 'HKLM:\Software\Policies\Microsoft\Windows\CredentialsDelegation' -ErrorAction SilentlyContinue | Get-ItemProperty"
+            }
+        )
+        References = @(
+            @{ Title = "Policy CSP - ADMX_CredSsp"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-credssp" }
+        )
+        MITRE = "T1556"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Logon credentials delegated to any server'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_LLMNR_ON' = @{
+        Title = "Multicast Name Resolution (LLMNR) Switched On via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Turn off multicast name resolution' to Disabled (EnableMulticast = 1), which switches LLMNR on explicitly. A computer that cannot resolve a name through DNS then asks the local network for it, and any host can answer. The answering host receives the connection - and the NTLM authentication the client sends to it."
+        Impact = @(
+            "Mistyped and stale names are answered by whoever responds first on the local network"
+            "NTLM authentication of users and computers captured for cracking or relayed"
+        )
+        Remediation = @(
+            "Set 'Turn off multicast name resolution' to Enabled"
+        )
+        References = @(
+            @{ Title = "Policy CSP - ADMX_DnsClient"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-dnsclient" }
+        )
+        Tools = @("Responder", "Inveigh")
+        MITRE = "T1557.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Multicast name resolution \(LLMNR\) switched on'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CACHED_LOGONS' = @{
+        Title = "More Cached Domain Logons Than the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A Group Policy raises 'Interactive logon: Number of previous logons to cache' above 10, the Windows default. Each cached logon is a verifier of the account's password kept on the computer so the account can sign in without a domain controller. An administrator of the computer can extract them and crack them offline - the more there are, the more accounts that computer gives away."
+        Impact = @(
+            "More accounts' password verifiers on every computer in scope, crackable offline (DCC2)"
+        )
+        Remediation = @(
+            "Keep the setting at 10 or below; computers that never leave the network need fewer"
+        )
+        References = @(
+            @{ Title = "Interactive logon: Number of previous logons to cache"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available" }
+        )
+        Tools = @("Mimikatz", "secretsdump", "hashcat")
+        MITRE = "T1003.005"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^More cached domain logons than the Windows default'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_REMOTE_ASSISTANCE_OFFER' = @{
+        Title = "Unsolicited Remote Assistance Offers Allowed via GPO"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A Group Policy enables 'Configure Offer Remote Assistance' (fAllowUnsolicited = 1). The helpers the policy lists can offer Remote Assistance to the computers in scope without the user asking for it - to view the screen, or to control it where the policy allows that. Whoever controls a helper account, or a group the list names, reaches every such computer that way."
+        Impact = @(
+            "Screen access - and with control allowed, interactive control - on every computer in scope for the listed helpers"
+        )
+        Remediation = @(
+            "Set 'Configure Offer Remote Assistance' to Disabled, or keep the helper list to a dedicated support group"
+        )
+        References = @(
+            @{ Title = "Policy CSP - RemoteAssistance"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remoteassistance" }
+        )
+        MITRE = "T1219"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Unsolicited Remote Assistance offers allowed'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_LDAP_CLIENT_SIGNING_OFF' = @{
+        Title = "LDAP Client Signing Switched Off via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Network security: LDAP client signing requirements' to None (LDAPClientIntegrity = 0). The computers in scope no longer ask for signing on their LDAP connections, which the default (Negotiate signing) does. A man in the middle can read and alter what they send to and receive from a directory server."
+        Impact = @(
+            "LDAP traffic of the computers in scope readable and alterable in transit"
+        )
+        Remediation = @(
+            "Set the setting to 'Negotiate signing' or 'Require signing'"
+        )
+        References = @(
+            @{ Title = "Network security: LDAP client signing requirements"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-ldap-client-signing-requirements" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^LDAP client signing switched off'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_KERBEROS_WEAK_ETYPES' = @{
+        Title = "Kerberos Allows DES or RC4 via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Network security: Configure encryption types allowed for Kerberos' with DES-CBC-CRC (0x1), DES-CBC-MD5 (0x2) or RC4-HMAC (0x4) among the allowed types. DES is broken; the RC4 key of an account is its NT hash. Tickets in these types are faster to crack - a Kerberoasted RC4 ticket in particular - and an NT hash alone obtains tickets (overpass-the-hash). The configured value is the bit mask; 2147483640 (0x7FFFFFF8) allows AES and future types only."
+        Impact = @(
+            "Service tickets requested in RC4, cracked offline much faster than AES"
+            "DES, where accounts are configured for it, breakable outright"
+        )
+        Remediation = @(
+            "Allow AES128_HMAC_SHA1, AES256_HMAC_SHA1 and future encryption types only, after checking that every account has AES keys"
+        )
+        References = @(
+            @{ Title = "Network security: Configure encryption types allowed for Kerberos"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-configure-encryption-types-allowed-for-kerberos" }
+        )
+        Tools = @("Rubeus", "hashcat")
+        MITRE = "T1558.003"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Kerberos encryption types include DES or RC4'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_OFFICE_MACROS_ON' = @{
+        Title = "Office Macros Run Without a Prompt via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets the VBA macro notification setting of an Office application to 'Enable all macros' (VBAWarnings = 1). Every macro in a document of that application runs when the document opens - signed or not, with no prompt. A document is the most common way in, and this removes the one question the user would otherwise be asked."
+        Impact = @(
+            "Code execution as the user from any document that reaches them - mail, download, share"
+        )
+        Remediation = @(
+            "Set the setting to 'Disable all except digitally signed macros' (3) or stricter"
+            "Block macros in files from the internet"
+        )
+        References = @(
+            @{ Title = "DISA STIG - Excel 2016 VBA macro notification (V-238191)"; Url = "https://stigviewer.com/stig/microsoft_excel_2016/2024-02-21/finding/V-238191" }
+        )
+        MITRE = "T1204.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Office macros run without a prompt'; Severity = 'Finding' }
+        )
+    }
     # ========================================================================
     # POINT AND PRINT PRINTER DRIVER POLICIES (Get-GPOPointAndPrint)
     # Triggered on the decoded attributes of PointAndPrintPolicy objects.

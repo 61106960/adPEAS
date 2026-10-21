@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 16:33:03
-    Version: 2.7.0+20261021-1633
+    Build: 2026-10-21 16:48:58
+    Version: 2.7.0+20261021-1648
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -3742,16 +3742,23 @@ function Compare-UserRightAssignment {
       GreaterThan   - DWORD value > MatchValue
       Present       - value exists at all (used for REG_SD allow-lists)
       UrlNotHttps   - REG_SZ value starts with http:// (cleartext, not https)
+      BitSet        - every bit of MatchValue is set
+      AnyBitSet     - at least one bit of MatchValue is set
+      Pattern       - the string value matches the regular expression MatchValue
 
     StoredAsString = $true marks a setting that Windows keeps as a REG_SZ holding a number
-    (AutoAdminLogon "1"). Equals then also reads the number out of the string. Every other
-    entry is a DWORD setting, and there a string is not the setting: a REG_SZ "0" written
-    to NoLmHash is not the dangerous DWORD 0, so the flag stays off for them.
+    (AutoAdminLogon "1", CachedLogonsCount "10"). The numeric matches then also read the
+    number out of the string. Every other entry is a DWORD setting, and there a string is
+    not the setting: a REG_SZ "0" written to NoLmHash is not the dangerous DWORD 0, so the
+    flag stays off for them.
 
     Hive/Key matching: the Key field holds the path WITHOUT the hive prefix. The hive is
     derived from the source (Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU) or
     read explicitly from Registry.xml. Key comparison is case-insensitive with leading
-    backslashes stripped.
+    backslashes stripped. KeyPattern takes the place of Key where one rule covers a family
+    of keys - the Office versions and applications - as a case-insensitive regular
+    expression. ValueName '*' matches every value of the key: the server lists of the
+    credential delegation policies name their entries 1, 2, 3.
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -3783,6 +3790,20 @@ function Compare-UserRightAssignment {
       - EnableScriptBlockLogging:          https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_logging?view=powershell-5.1
                                            (class Both and Disabled = 0 read from PowerShellExecutionPolicy.admx)
       - Schannel protocol Enabled values:  https://learn.microsoft.com/en-us/windows-server/security/tls/tls-registry-settings
+      - WinRM AllowUnencryptedTraffic / AllowBasic (Service and Client keys):
+                                           https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remotemanagement
+      - CredSSP AllowDefaultCredentials / AllowDefCredentialsWhenNTLMOnly server lists:
+                                           https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-credssp
+      - EnableMulticast (Turn off multicast name resolution): https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-dnsclient
+      - CachedLogonsCount (default 10):    https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available
+      - fAllowUnsolicited (Configure Offer Remote Assistance):
+                                           https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remoteassistance
+      - LDAPClientIntegrity (0 None, 1 Negotiate, 2 Require):
+                                           https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-ldap-client-signing-requirements
+      - Kerberos SupportedEncryptionTypes (0x1 DES-CBC-CRC, 0x2 DES-CBC-MD5, 0x4 RC4):
+                                           https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-configure-encryption-types-allowed-for-kerberos
+      - Office VBAWarnings (1 = enable all macros; STIG: 1 is a finding):
+                                           https://stigviewer.com/stig/microsoft_excel_2016/2024-02-21/finding/V-238191
 #>
 
 # =============================================================================
@@ -4553,6 +4574,173 @@ $Script:DangerousRegistryKeys = @(
         FindingId         = 'REGISTRY_LEGACY_TLS'
         VulnerabilityName = 'TLS 1.0 switched on for the client role'
         RiskReason        = 'These computers offer TLS 1.0 to the servers they connect to, which RFC 8996 deprecates'
+    }
+
+    # =========================================================================
+    # Remote management, credential delegation, name resolution, cached logons,
+    # LDAP client signing, Kerberos encryption types, Office macros
+    # =========================================================================
+    @{
+        Id                = 'WINRM_SERVICE_UNENCRYPTED'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Service'
+        ValueName         = 'AllowUnencryptedTraffic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_UNENCRYPTED'
+        VulnerabilityName = 'WinRM service accepts unencrypted traffic'
+        RiskReason        = 'Remote management sessions to these computers may run unencrypted over HTTP'
+    }
+    @{
+        Id                = 'WINRM_CLIENT_UNENCRYPTED'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Client'
+        ValueName         = 'AllowUnencryptedTraffic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_UNENCRYPTED'
+        VulnerabilityName = 'WinRM client sends unencrypted traffic'
+        RiskReason        = 'Remote management sessions from these computers may run unencrypted over HTTP'
+    }
+    @{
+        Id                = 'WINRM_SERVICE_BASIC'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Service'
+        ValueName         = 'AllowBasic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_BASIC'
+        VulnerabilityName = 'WinRM service accepts Basic authentication'
+        RiskReason        = 'These computers take a user name and password in Base64 - in clear text over HTTP'
+    }
+    @{
+        Id                = 'WINRM_CLIENT_BASIC'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Client'
+        ValueName         = 'AllowBasic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_BASIC'
+        VulnerabilityName = 'WinRM client uses Basic authentication'
+        RiskReason        = 'These computers may send a user name and password in Base64 - in clear text over HTTP'
+    }
+    @{
+        # One value per server entry, named 1, 2, 3. "*" or "TERMSRV/*" - any host, or any
+        # host for that service - is the entry that reaches a host an attacker controls.
+        Id                = 'CREDSSP_DEFAULT_ANY'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\CredentialsDelegation\AllowDefaultCredentials'
+        ValueName         = '*'
+        Match             = 'Pattern'
+        MatchValue        = '^\s*([^/\s]+/)?\*\s*$'
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_CREDSSP_DELEGATE_ANY'
+        VulnerabilityName = 'Logon credentials delegated to any server (CredSSP)'
+        RiskReason        = 'Every user signed in to these computers hands their logon credentials to any host the entry names, an attacker host among them'
+    }
+    @{
+        Id                = 'CREDSSP_DEFAULT_NTLM_ANY'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\CredentialsDelegation\AllowDefCredentialsWhenNTLMOnly'
+        ValueName         = '*'
+        Match             = 'Pattern'
+        MatchValue        = '^\s*([^/\s]+/)?\*\s*$'
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_CREDSSP_DELEGATE_ANY'
+        VulnerabilityName = 'Logon credentials delegated to any server (CredSSP, NTLM-only servers)'
+        RiskReason        = 'Every user signed in to these computers hands their logon credentials to any host the entry names, even one that proved its identity by NTLM only'
+    }
+    @{
+        Id                = 'LLMNR_ON'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\DNSClient'
+        ValueName         = 'EnableMulticast'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LLMNR_ON'
+        VulnerabilityName = 'Multicast name resolution (LLMNR) switched on'
+        RiskReason        = 'Names DNS cannot resolve are asked for on the local network, and whoever answers receives the authentication that follows'
+    }
+    @{
+        Id                = 'CACHED_LOGONS'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+        ValueName         = 'CachedLogonsCount'
+        Match             = 'GreaterThan'
+        MatchValue        = 10
+        # A REG_SZ holding the number, as the Security Option writes it.
+        StoredAsString    = $true
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_CACHED_LOGONS'
+        VulnerabilityName = 'More cached domain logons than the Windows default'
+        RiskReason        = 'Each cached logon leaves a hash on the computer that can be cracked offline; the default keeps 10'
+    }
+    @{
+        Id                = 'REMOTE_ASSISTANCE_OFFER'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\Terminal Services'
+        ValueName         = 'fAllowUnsolicited'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_REMOTE_ASSISTANCE_OFFER'
+        VulnerabilityName = 'Unsolicited Remote Assistance offers allowed'
+        RiskReason        = 'The helpers the policy names can offer Remote Assistance to these computers without a request from the user'
+    }
+    @{
+        Id                = 'LDAP_CLIENT_SIGNING_OFF'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LDAP'
+        ValueName         = 'LDAPClientIntegrity'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LDAP_CLIENT_SIGNING_OFF'
+        VulnerabilityName = 'LDAP client signing switched off'
+        RiskReason        = 'These computers do not ask for signing on their LDAP connections, which a man in the middle can then read and alter'
+    }
+    @{
+        Id                = 'KERBEROS_WEAK_ETYPES'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters'
+        ValueName         = 'SupportedEncryptionTypes'
+        Match             = 'AnyBitSet'
+        MatchValue        = 0x7
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_KERBEROS_WEAK_ETYPES'
+        VulnerabilityName = 'Kerberos encryption types include DES or RC4'
+        RiskReason        = 'Tickets may be issued with DES or RC4, whose keys are weak or the NT hash itself - cracking and overpass-the-hash get easier'
+    }
+    @{
+        # Every Office version and application, one rule: HKCU\Software\Policies\Microsoft\
+        # Office\<version>\<application>\Security.
+        Id                = 'OFFICE_MACROS_ON'
+        Hive              = 'HKCU'
+        KeyPattern        = '^Software\\Policies\\Microsoft\\Office\\\d+\.\d+\\[^\\]+\\Security$'
+        ValueName         = 'VBAWarnings'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_OFFICE_MACROS_ON'
+        VulnerabilityName = 'Office macros run without a prompt'
+        RiskReason        = 'Every macro in a document runs as soon as it is opened - signed or not, from the internet or not'
     }
 )
 
@@ -23662,6 +23850,213 @@ $acl.Access | Where-Object {
         )
     }
 
+    'REGISTRY_WINRM_UNENCRYPTED' = @{
+        Title = "WinRM Allows Unencrypted Traffic via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Allow unencrypted traffic' for the WinRM service or the WinRM client (AllowUnencryptedTraffic = 1). Remote management - PowerShell remoting among it - may then run over HTTP without message encryption. With Kerberos or NTLM the logon itself stays protected; what crosses the network in clear is everything after it: the commands, their output, and any secret they carry. With Basic authentication allowed as well, the password crosses with them."
+        Impact = @(
+            "Commands and output of remote management sessions readable on the network"
+            "Together with Basic authentication: user names and passwords in clear text"
+        )
+        Remediation = @(
+            "Set 'Allow unencrypted traffic' to Disabled for the WinRM service and the WinRM client"
+            "Use WinRM over HTTPS where Kerberos is not available"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the WinRM policy values on a computer"
+                Command = "Get-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service', 'HKLM:\Software\Policies\Microsoft\Windows\WinRM\Client' -ErrorAction SilentlyContinue | Select-Object PSPath, AllowUnencryptedTraffic, AllowBasic"
+            }
+        )
+        References = @(
+            @{ Title = "Policy CSP - RemoteManagement"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remotemanagement" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^WinRM (service accepts|client sends) unencrypted traffic'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_WINRM_BASIC' = @{
+        Title = "WinRM Allows Basic Authentication via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Allow Basic authentication' for the WinRM service or the WinRM client (AllowBasic = 1). Basic authentication sends the user name and password Base64-encoded - in clear text unless the connection uses HTTPS. Microsoft: if WinRM is configured to use HTTP transport, the user name and password are sent over the network as clear text."
+        Impact = @(
+            "Passwords of the accounts that manage these computers readable on the network over HTTP"
+            "The service side accepts local accounts by password, outside Kerberos and its protections"
+        )
+        Remediation = @(
+            "Set 'Allow Basic authentication' to Disabled for the WinRM service and the WinRM client"
+        )
+        References = @(
+            @{ Title = "Policy CSP - RemoteManagement"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remotemanagement" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^WinRM (service accepts|client uses) Basic authentication'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CREDSSP_DELEGATE_ANY' = @{
+        Title = "Logon Credentials Delegated to Any Server via GPO (CredSSP)"
+        Risk = "Finding"
+        BaseScore = 50
+        Description = "A Group Policy enables 'Allow delegating default credentials' (or its NTLM-only variant) with a server list entry that names any host - '*' or 'TERMSRV/*'. CredSSP then hands the signed-in user's own credentials to every such host the user connects to, in a form the host can use to sign in elsewhere as that user. Any host - including one an attacker set up or took over - receives them."
+        Impact = @(
+            "The logon credentials of every user of these computers reach any host they connect to with CredSSP - Remote Desktop, PowerShell remoting with CredSSP"
+            "A single attacker host collects reusable credentials, domain administrators among them"
+        )
+        Attack = @(
+            "1. Stand up or take over a host the list covers - for 'TERMSRV/*', any Remote Desktop host"
+            "2. Get a user of the affected computers to connect to it"
+            "3. Recover the delegated credentials on that host"
+        )
+        Remediation = @(
+            "Replace the wildcard entry with the servers that need delegation, by name"
+            "Prefer Remote Credential Guard or Restricted Admin mode for Remote Desktop over delegating credentials"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the delegation lists on a computer"
+                Command = "Get-ChildItem 'HKLM:\Software\Policies\Microsoft\Windows\CredentialsDelegation' -ErrorAction SilentlyContinue | Get-ItemProperty"
+            }
+        )
+        References = @(
+            @{ Title = "Policy CSP - ADMX_CredSsp"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-credssp" }
+        )
+        MITRE = "T1556"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Logon credentials delegated to any server'; Severity = 'Finding' }
+        )
+    }
+
+    'REGISTRY_LLMNR_ON' = @{
+        Title = "Multicast Name Resolution (LLMNR) Switched On via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Turn off multicast name resolution' to Disabled (EnableMulticast = 1), which switches LLMNR on explicitly. A computer that cannot resolve a name through DNS then asks the local network for it, and any host can answer. The answering host receives the connection - and the NTLM authentication the client sends to it."
+        Impact = @(
+            "Mistyped and stale names are answered by whoever responds first on the local network"
+            "NTLM authentication of users and computers captured for cracking or relayed"
+        )
+        Remediation = @(
+            "Set 'Turn off multicast name resolution' to Enabled"
+        )
+        References = @(
+            @{ Title = "Policy CSP - ADMX_DnsClient"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-dnsclient" }
+        )
+        Tools = @("Responder", "Inveigh")
+        MITRE = "T1557.001"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Multicast name resolution \(LLMNR\) switched on'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_CACHED_LOGONS' = @{
+        Title = "More Cached Domain Logons Than the Windows Default via GPO"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A Group Policy raises 'Interactive logon: Number of previous logons to cache' above 10, the Windows default. Each cached logon is a verifier of the account's password kept on the computer so the account can sign in without a domain controller. An administrator of the computer can extract them and crack them offline - the more there are, the more accounts that computer gives away."
+        Impact = @(
+            "More accounts' password verifiers on every computer in scope, crackable offline (DCC2)"
+        )
+        Remediation = @(
+            "Keep the setting at 10 or below; computers that never leave the network need fewer"
+        )
+        References = @(
+            @{ Title = "Interactive logon: Number of previous logons to cache"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available" }
+        )
+        Tools = @("Mimikatz", "secretsdump", "hashcat")
+        MITRE = "T1003.005"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^More cached domain logons than the Windows default'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_REMOTE_ASSISTANCE_OFFER' = @{
+        Title = "Unsolicited Remote Assistance Offers Allowed via GPO"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A Group Policy enables 'Configure Offer Remote Assistance' (fAllowUnsolicited = 1). The helpers the policy lists can offer Remote Assistance to the computers in scope without the user asking for it - to view the screen, or to control it where the policy allows that. Whoever controls a helper account, or a group the list names, reaches every such computer that way."
+        Impact = @(
+            "Screen access - and with control allowed, interactive control - on every computer in scope for the listed helpers"
+        )
+        Remediation = @(
+            "Set 'Configure Offer Remote Assistance' to Disabled, or keep the helper list to a dedicated support group"
+        )
+        References = @(
+            @{ Title = "Policy CSP - RemoteAssistance"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remoteassistance" }
+        )
+        MITRE = "T1219"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Unsolicited Remote Assistance offers allowed'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_LDAP_CLIENT_SIGNING_OFF' = @{
+        Title = "LDAP Client Signing Switched Off via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Network security: LDAP client signing requirements' to None (LDAPClientIntegrity = 0). The computers in scope no longer ask for signing on their LDAP connections, which the default (Negotiate signing) does. A man in the middle can read and alter what they send to and receive from a directory server."
+        Impact = @(
+            "LDAP traffic of the computers in scope readable and alterable in transit"
+        )
+        Remediation = @(
+            "Set the setting to 'Negotiate signing' or 'Require signing'"
+        )
+        References = @(
+            @{ Title = "Network security: LDAP client signing requirements"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-ldap-client-signing-requirements" }
+        )
+        MITRE = "T1557"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^LDAP client signing switched off'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_KERBEROS_WEAK_ETYPES' = @{
+        Title = "Kerberos Allows DES or RC4 via GPO"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A Group Policy sets 'Network security: Configure encryption types allowed for Kerberos' with DES-CBC-CRC (0x1), DES-CBC-MD5 (0x2) or RC4-HMAC (0x4) among the allowed types. DES is broken; the RC4 key of an account is its NT hash. Tickets in these types are faster to crack - a Kerberoasted RC4 ticket in particular - and an NT hash alone obtains tickets (overpass-the-hash). The configured value is the bit mask; 2147483640 (0x7FFFFFF8) allows AES and future types only."
+        Impact = @(
+            "Service tickets requested in RC4, cracked offline much faster than AES"
+            "DES, where accounts are configured for it, breakable outright"
+        )
+        Remediation = @(
+            "Allow AES128_HMAC_SHA1, AES256_HMAC_SHA1 and future encryption types only, after checking that every account has AES keys"
+        )
+        References = @(
+            @{ Title = "Network security: Configure encryption types allowed for Kerberos"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-configure-encryption-types-allowed-for-kerberos" }
+        )
+        Tools = @("Rubeus", "hashcat")
+        MITRE = "T1558.003"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Kerberos encryption types include DES or RC4'; Severity = 'Hint' }
+        )
+    }
+
+    'REGISTRY_OFFICE_MACROS_ON' = @{
+        Title = "Office Macros Run Without a Prompt via GPO"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A Group Policy sets the VBA macro notification setting of an Office application to 'Enable all macros' (VBAWarnings = 1). Every macro in a document of that application runs when the document opens - signed or not, with no prompt. A document is the most common way in, and this removes the one question the user would otherwise be asked."
+        Impact = @(
+            "Code execution as the user from any document that reaches them - mail, download, share"
+        )
+        Remediation = @(
+            "Set the setting to 'Disable all except digitally signed macros' (3) or stricter"
+            "Block macros in files from the internet"
+        )
+        References = @(
+            @{ Title = "DISA STIG - Excel 2016 VBA macro notification (V-238191)"; Url = "https://stigviewer.com/stig/microsoft_excel_2016/2024-02-21/finding/V-238191" }
+        )
+        MITRE = "T1204.002"
+        Triggers = @(
+            @{ Attribute = 'VulnerabilityName'; Pattern = '^Office macros run without a prompt'; Severity = 'Finding' }
+        )
+    }
     # ========================================================================
     # POINT AND PRINT PRINTER DRIVER POLICIES (Get-GPOPointAndPrint)
     # Triggered on the decoded attributes of PointAndPrintPolicy objects.
@@ -29849,6 +30244,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
             "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
             "Privilege-escalation enablers (AlwaysInstallElevated, WSUS over HTTP)"
+            "Remote access and name resolution (WinRM unencrypted or Basic, CredSSP delegation to any server, LLMNR, unsolicited Remote Assistance, LDAP client signing off)"
+            "Kerberos DES or RC4, cached logons above the default, Office macros enabled without a prompt"
             "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged; -IncludeUnknown lists them"
         )
         SecureMessage = "No known vulnerable registry setting deployed via GPO. No Group Policy was found pushing one of the registry values this check knows in a state that enables an attack; values outside its list are counted, not judged."
@@ -126261,14 +126658,25 @@ function Test-DangerousRegistryRecord {
 
     if (-not (Test-RegistryRecordApplies -Record $Record)) { return $null }
 
-    $recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
+    $recKey = ([string]$Record.Key -replace '^\\+', '').TrimEnd('\')
     $recValueName = [string]$Record.ValueName
     $recHive = [string]$Record.Hive
 
     foreach ($entry in $Script:DangerousRegistryKeys) {
         if ($entry.Hive -ne $recHive) { continue }
-        if (($entry.Key -replace '^\\+', '').TrimEnd('\').ToLower() -ne $recKey) { continue }
-        if ($entry.ValueName.ToLower() -ne $recValueName.ToLower()) { continue }
+        if (-not (Test-RegistryEntryKey -Entry $entry -Key $recKey)) { continue }
+        if ($entry.ValueName -ne '*' -and $entry.ValueName -ine $recValueName) { continue }
+
+        # The number a numeric rule compares. A setting Windows keeps as a REG_SZ number
+        # (AutoAdminLogon "1", CachedLogonsCount "10") is read out of the string, by the
+        # entries that say so; see StoredAsString in the table.
+        $number = $null
+        if ($null -ne $Record.ValueInt) {
+            $number = [int64]$Record.ValueInt
+        } elseif ($entry.StoredAsString -and $null -ne $Record.ValueString) {
+            $stringNumber = [int64]0
+            if ([int64]::TryParse([string]$Record.ValueString, [ref]$stringNumber)) { $number = $stringNumber }
+        }
 
         # Value name matched - now evaluate the dangerous condition
         $isMatch = $false
@@ -126277,22 +126685,13 @@ function Test-DangerousRegistryRecord {
                 $isMatch = $true
             }
             'Equals' {
-                if ($null -ne $Record.ValueInt) {
-                    $isMatch = ([int64]$Record.ValueInt -eq [int64]$entry.MatchValue)
-                } elseif ($entry.StoredAsString -and $null -ne $Record.ValueString) {
-                    # A setting Windows keeps as a REG_SZ number (AutoAdminLogon "1"). Only
-                    # entries that say so read a string; see StoredAsString in the table.
-                    $stringNumber = [int64]0
-                    if ([int64]::TryParse([string]$Record.ValueString, [ref]$stringNumber)) {
-                        $isMatch = ($stringNumber -eq [int64]$entry.MatchValue)
-                    }
-                }
+                if ($null -ne $number) { $isMatch = ($number -eq [int64]$entry.MatchValue) }
             }
             'LessOrEqual' {
-                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -le [int64]$entry.MatchValue) }
+                if ($null -ne $number) { $isMatch = ($number -le [int64]$entry.MatchValue) }
             }
             'GreaterThan' {
-                if ($null -ne $Record.ValueInt) { $isMatch = ([int64]$Record.ValueInt -gt [int64]$entry.MatchValue) }
+                if ($null -ne $number) { $isMatch = ($number -gt [int64]$entry.MatchValue) }
             }
             'BitSet' {
                 # For a value that is a flag field rather than a setting, where one bit
@@ -126300,13 +126699,25 @@ function Test-DangerousRegistryRecord {
                 # 0x1 subject/issuer, 0x2 issuer, 0x4 UPN, 0x8 subject, and only 0x4 is
                 # ESC10. Equals would miss every combination that has the bit set next to
                 # another one, which is how the value is normally written.
-                if ($null -ne $Record.ValueInt) {
-                    $isMatch = (([int64]$Record.ValueInt -band [int64]$entry.MatchValue) -eq [int64]$entry.MatchValue)
+                if ($null -ne $number) {
+                    $isMatch = (($number -band [int64]$entry.MatchValue) -eq [int64]$entry.MatchValue)
+                }
+            }
+            'AnyBitSet' {
+                # Any one of several bits: SupportedEncryptionTypes with DES-CBC-CRC (0x1),
+                # DES-CBC-MD5 (0x2) or RC4 (0x4) among the types it allows.
+                if ($null -ne $number) {
+                    $isMatch = (($number -band [int64]$entry.MatchValue) -ne 0)
                 }
             }
             'UrlNotHttps' {
                 $sv = [string]$Record.ValueString
                 if ($sv -and $sv.Trim().ToLower().StartsWith('http://')) { $isMatch = $true }
+            }
+            'Pattern' {
+                # A string the rule describes, such as a server list entry "TERMSRV/*".
+                $sv = [string]$Record.ValueString
+                if ($sv -and $sv -match [string]$entry.MatchValue) { $isMatch = $true }
             }
         }
 
@@ -126316,6 +126727,31 @@ function Test-DangerousRegistryRecord {
     }
 
     return $null
+}
+
+# =============================================================================
+# Helper: Whether a table entry names a registry key
+# =============================================================================
+function Test-RegistryEntryKey {
+    <#
+    .SYNOPSIS
+        Whether an entry of $Script:DangerousRegistryKeys names the key, without regard to
+        case: by its Key, or - for a family of keys such as the Office versions and
+        applications - by its KeyPattern.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Entry,
+
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$Key
+    )
+
+    if ($Entry.KeyPattern) { return ($Key -match [string]$Entry.KeyPattern) }
+    return ((([string]$Entry.Key) -replace '^\\+', '').TrimEnd('\') -ieq $Key)
 }
 
 # =============================================================================
@@ -126408,8 +126844,8 @@ function Test-RegistryRecordUnjudged {
 
     foreach ($entry in $Script:DangerousRegistryKeys) {
         if ($entry.Hive -ne $recHive) { continue }
-        if ($entry.Key -ine $recKey) { continue }
-        if ($entry.ValueName -ieq $recValueName) { return $false }
+        if (-not (Test-RegistryEntryKey -Entry $entry -Key $recKey)) { continue }
+        if ($entry.ValueName -eq '*' -or $entry.ValueName -ieq $recValueName) { return $false }
     }
 
     foreach ($reader in $Script:RegistryValuesReadElsewhere) {
@@ -126493,12 +126929,19 @@ function New-RegistryFinding {
         $configured = [string]$record.ValueString
     }
 
+    # The key and the value name as the table writes them - or as the policy does, where
+    # the entry covers a family of keys (KeyPattern) or every value of one ('*').
+    $keyText = [string]$entry.Key
+    if ($entry.KeyPattern) { $keyText = ([string]$record.Key -replace '^\\+', '').TrimEnd('\') }
+    $valueNameText = [string]$entry.ValueName
+    if ($valueNameText -eq '*') { $valueNameText = [string]$record.ValueName }
+
     return [PSCustomObject][ordered]@{
         GPOName           = $RegMatch.GPOName
         GPOGUID           = $RegMatch.GPOGUID
         GPOPath           = $RegMatch.GPOPath
         SourceFile        = $RegMatch.SourceFile
-        RegistryKey       = "$($entry.Hive)\$($entry.Key)\$($entry.ValueName)"
+        RegistryKey       = "$($entry.Hive)\$keyText\$valueNameText"
         ConfiguredValue   = $configured
         VulnerabilityName = $entry.VulnerabilityName
         RiskReason        = $entry.RiskReason
@@ -150181,7 +150624,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1633"
+$Script:adPEASVersion = "2.7.0+20261021-1648"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

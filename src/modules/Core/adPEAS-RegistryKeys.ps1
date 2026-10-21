@@ -22,16 +22,23 @@
       GreaterThan   - DWORD value > MatchValue
       Present       - value exists at all (used for REG_SD allow-lists)
       UrlNotHttps   - REG_SZ value starts with http:// (cleartext, not https)
+      BitSet        - every bit of MatchValue is set
+      AnyBitSet     - at least one bit of MatchValue is set
+      Pattern       - the string value matches the regular expression MatchValue
 
     StoredAsString = $true marks a setting that Windows keeps as a REG_SZ holding a number
-    (AutoAdminLogon "1"). Equals then also reads the number out of the string. Every other
-    entry is a DWORD setting, and there a string is not the setting: a REG_SZ "0" written
-    to NoLmHash is not the dangerous DWORD 0, so the flag stays off for them.
+    (AutoAdminLogon "1", CachedLogonsCount "10"). The numeric matches then also read the
+    number out of the string. Every other entry is a DWORD setting, and there a string is
+    not the setting: a REG_SZ "0" written to NoLmHash is not the dangerous DWORD 0, so the
+    flag stays off for them.
 
     Hive/Key matching: the Key field holds the path WITHOUT the hive prefix. The hive is
     derived from the source (Machine\Registry.pol -> HKLM, User\Registry.pol -> HKCU) or
     read explicitly from Registry.xml. Key comparison is case-insensitive with leading
-    backslashes stripped.
+    backslashes stripped. KeyPattern takes the place of Key where one rule covers a family
+    of keys - the Office versions and applications - as a case-insensitive regular
+    expression. ValueName '*' matches every value of the key: the server lists of the
+    credential delegation policies name their entries 1, 2, 3.
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -63,6 +70,20 @@
       - EnableScriptBlockLogging:          https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_logging?view=powershell-5.1
                                            (class Both and Disabled = 0 read from PowerShellExecutionPolicy.admx)
       - Schannel protocol Enabled values:  https://learn.microsoft.com/en-us/windows-server/security/tls/tls-registry-settings
+      - WinRM AllowUnencryptedTraffic / AllowBasic (Service and Client keys):
+                                           https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remotemanagement
+      - CredSSP AllowDefaultCredentials / AllowDefCredentialsWhenNTLMOnly server lists:
+                                           https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-credssp
+      - EnableMulticast (Turn off multicast name resolution): https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-dnsclient
+      - CachedLogonsCount (default 10):    https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available
+      - fAllowUnsolicited (Configure Offer Remote Assistance):
+                                           https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-remoteassistance
+      - LDAPClientIntegrity (0 None, 1 Negotiate, 2 Require):
+                                           https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-ldap-client-signing-requirements
+      - Kerberos SupportedEncryptionTypes (0x1 DES-CBC-CRC, 0x2 DES-CBC-MD5, 0x4 RC4):
+                                           https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-configure-encryption-types-allowed-for-kerberos
+      - Office VBAWarnings (1 = enable all macros; STIG: 1 is a finding):
+                                           https://stigviewer.com/stig/microsoft_excel_2016/2024-02-21/finding/V-238191
 #>
 
 # =============================================================================
@@ -833,6 +854,173 @@ $Script:DangerousRegistryKeys = @(
         FindingId         = 'REGISTRY_LEGACY_TLS'
         VulnerabilityName = 'TLS 1.0 switched on for the client role'
         RiskReason        = 'These computers offer TLS 1.0 to the servers they connect to, which RFC 8996 deprecates'
+    }
+
+    # =========================================================================
+    # Remote management, credential delegation, name resolution, cached logons,
+    # LDAP client signing, Kerberos encryption types, Office macros
+    # =========================================================================
+    @{
+        Id                = 'WINRM_SERVICE_UNENCRYPTED'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Service'
+        ValueName         = 'AllowUnencryptedTraffic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_UNENCRYPTED'
+        VulnerabilityName = 'WinRM service accepts unencrypted traffic'
+        RiskReason        = 'Remote management sessions to these computers may run unencrypted over HTTP'
+    }
+    @{
+        Id                = 'WINRM_CLIENT_UNENCRYPTED'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Client'
+        ValueName         = 'AllowUnencryptedTraffic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_UNENCRYPTED'
+        VulnerabilityName = 'WinRM client sends unencrypted traffic'
+        RiskReason        = 'Remote management sessions from these computers may run unencrypted over HTTP'
+    }
+    @{
+        Id                = 'WINRM_SERVICE_BASIC'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Service'
+        ValueName         = 'AllowBasic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_BASIC'
+        VulnerabilityName = 'WinRM service accepts Basic authentication'
+        RiskReason        = 'These computers take a user name and password in Base64 - in clear text over HTTP'
+    }
+    @{
+        Id                = 'WINRM_CLIENT_BASIC'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\WinRM\Client'
+        ValueName         = 'AllowBasic'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_WINRM_BASIC'
+        VulnerabilityName = 'WinRM client uses Basic authentication'
+        RiskReason        = 'These computers may send a user name and password in Base64 - in clear text over HTTP'
+    }
+    @{
+        # One value per server entry, named 1, 2, 3. "*" or "TERMSRV/*" - any host, or any
+        # host for that service - is the entry that reaches a host an attacker controls.
+        Id                = 'CREDSSP_DEFAULT_ANY'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\CredentialsDelegation\AllowDefaultCredentials'
+        ValueName         = '*'
+        Match             = 'Pattern'
+        MatchValue        = '^\s*([^/\s]+/)?\*\s*$'
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_CREDSSP_DELEGATE_ANY'
+        VulnerabilityName = 'Logon credentials delegated to any server (CredSSP)'
+        RiskReason        = 'Every user signed in to these computers hands their logon credentials to any host the entry names, an attacker host among them'
+    }
+    @{
+        Id                = 'CREDSSP_DEFAULT_NTLM_ANY'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows\CredentialsDelegation\AllowDefCredentialsWhenNTLMOnly'
+        ValueName         = '*'
+        Match             = 'Pattern'
+        MatchValue        = '^\s*([^/\s]+/)?\*\s*$'
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_CREDSSP_DELEGATE_ANY'
+        VulnerabilityName = 'Logon credentials delegated to any server (CredSSP, NTLM-only servers)'
+        RiskReason        = 'Every user signed in to these computers hands their logon credentials to any host the entry names, even one that proved its identity by NTLM only'
+    }
+    @{
+        Id                = 'LLMNR_ON'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\DNSClient'
+        ValueName         = 'EnableMulticast'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LLMNR_ON'
+        VulnerabilityName = 'Multicast name resolution (LLMNR) switched on'
+        RiskReason        = 'Names DNS cannot resolve are asked for on the local network, and whoever answers receives the authentication that follows'
+    }
+    @{
+        Id                = 'CACHED_LOGONS'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+        ValueName         = 'CachedLogonsCount'
+        Match             = 'GreaterThan'
+        MatchValue        = 10
+        # A REG_SZ holding the number, as the Security Option writes it.
+        StoredAsString    = $true
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_CACHED_LOGONS'
+        VulnerabilityName = 'More cached domain logons than the Windows default'
+        RiskReason        = 'Each cached logon leaves a hash on the computer that can be cracked offline; the default keeps 10'
+    }
+    @{
+        Id                = 'REMOTE_ASSISTANCE_OFFER'
+        Hive              = 'HKLM'
+        Key               = 'Software\Policies\Microsoft\Windows NT\Terminal Services'
+        ValueName         = 'fAllowUnsolicited'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_REMOTE_ASSISTANCE_OFFER'
+        VulnerabilityName = 'Unsolicited Remote Assistance offers allowed'
+        RiskReason        = 'The helpers the policy names can offer Remote Assistance to these computers without a request from the user'
+    }
+    @{
+        Id                = 'LDAP_CLIENT_SIGNING_OFF'
+        Hive              = 'HKLM'
+        Key               = 'System\CurrentControlSet\Services\LDAP'
+        ValueName         = 'LDAPClientIntegrity'
+        Match             = 'Equals'
+        MatchValue        = 0
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_LDAP_CLIENT_SIGNING_OFF'
+        VulnerabilityName = 'LDAP client signing switched off'
+        RiskReason        = 'These computers do not ask for signing on their LDAP connections, which a man in the middle can then read and alter'
+    }
+    @{
+        Id                = 'KERBEROS_WEAK_ETYPES'
+        Hive              = 'HKLM'
+        Key               = 'Software\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters'
+        ValueName         = 'SupportedEncryptionTypes'
+        Match             = 'AnyBitSet'
+        MatchValue        = 0x7
+        Severity          = 'Medium'
+        ConsoleClass      = 'Hint'
+        FindingId         = 'REGISTRY_KERBEROS_WEAK_ETYPES'
+        VulnerabilityName = 'Kerberos encryption types include DES or RC4'
+        RiskReason        = 'Tickets may be issued with DES or RC4, whose keys are weak or the NT hash itself - cracking and overpass-the-hash get easier'
+    }
+    @{
+        # Every Office version and application, one rule: HKCU\Software\Policies\Microsoft\
+        # Office\<version>\<application>\Security.
+        Id                = 'OFFICE_MACROS_ON'
+        Hive              = 'HKCU'
+        KeyPattern        = '^Software\\Policies\\Microsoft\\Office\\\d+\.\d+\\[^\\]+\\Security$'
+        ValueName         = 'VBAWarnings'
+        Match             = 'Equals'
+        MatchValue        = 1
+        Severity          = 'High'
+        ConsoleClass      = 'Finding'
+        FindingId         = 'REGISTRY_OFFICE_MACROS_ON'
+        VulnerabilityName = 'Office macros run without a prompt'
+        RiskReason        = 'Every macro in a document runs as soon as it is opened - signed or not, from the internet or not'
     }
 )
 

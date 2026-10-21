@@ -1837,6 +1837,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
             "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
             "Privilege-escalation enablers (AlwaysInstallElevated, WSUS over HTTP)"
+            "Remote access and name resolution (WinRM unencrypted or Basic, CredSSP delegation to any server, LLMNR, unsolicited Remote Assistance, LDAP client signing off)"
+            "Kerberos DES or RC4, cached logons above the default, Office macros enabled without a prompt"
             "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged; -IncludeUnknown lists them"
         )
         SecureMessage = "No known vulnerable registry setting deployed via GPO. No Group Policy was found pushing one of the registry values this check knows in a state that enables an attack; values outside its list are counted, not judged."
