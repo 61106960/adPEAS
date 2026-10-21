@@ -79438,6 +79438,16 @@ function Get-GPORegistrySettings {
                 }
                 return
             }
+            $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
+                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+            $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
+            if ($unjudgedShown.Count -gt 0) {
+                $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
+                $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
+                $unjudgedText = "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
+                if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
+                Show-Line $unjudgedText -Class Note
+            }
             $findings = @(Resolve-RegistryFindings -RawMatches $rawMatches)
             if ($findings.Count -gt 0) {
                 $severityRank = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3; 'Info' = 4 }
@@ -79496,30 +79506,20 @@ function Get-GPORegistrySettings {
                 $null = Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')
                 Show-Line "No known vulnerable registry setting is deployed via GPO" -Class Note
             }
-            $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
-                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
-            $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
-            if ($unjudgedShown.Count -gt 0) {
-                $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
-                $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
-                $unjudgedText = "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
-                if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
-                Show-Line $unjudgedText -Class Note
-                if ($IncludeUnknown) {
-                    $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
-                        Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } }, @{ Expression = { [string]$_.Group[0].SourceFile } })
-                    foreach ($group in $unjudgedGroups) {
-                        $first = $group.Group[0]
-                        $inventory = [PSCustomObject][ordered]@{
-                            GPOName           = $first.GPOName
-                            GPOGUID           = $first.GPOGUID
-                            GPOPath           = $first.GPOPath
-                            SourceFile        = $first.SourceFile
-                            RegistryValues    = @($group.Group | Sort-Object -Property RegistryKey | ForEach-Object { "$($_.RegistryKey) = $($_.Value)" })
-                            _adPEASObjectType = 'GPORegistryValue'
-                        }
-                        Show-Object $inventory -Class Standard
+            if ($IncludeUnknown -and $unjudgedShown.Count -gt 0) {
+                $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
+                    Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } }, @{ Expression = { [string]$_.Group[0].SourceFile } })
+                foreach ($group in $unjudgedGroups) {
+                    $first = $group.Group[0]
+                    $inventory = [PSCustomObject][ordered]@{
+                        GPOName           = $first.GPOName
+                        GPOGUID           = $first.GPOGUID
+                        GPOPath           = $first.GPOPath
+                        SourceFile        = $first.SourceFile
+                        RegistryValues    = @($group.Group | Sort-Object -Property RegistryKey | ForEach-Object { "$($_.RegistryKey) = $($_.Value)" })
+                        _adPEASObjectType = 'GPORegistryValue'
                     }
+                    Show-Object $inventory -Class Standard
                 }
             }
         } catch {
@@ -96714,7 +96714,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1728"
+$Script:adPEASVersion = "2.7.0+20261021-1745"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

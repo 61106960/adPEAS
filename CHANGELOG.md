@@ -866,8 +866,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   values a policy deploys against a fixed list of known dangerous settings, and every other
   value - an application's settings, a Windows setting without a rule - passed without a
   word, under the all-clear "No vulnerable registry settings deployed via GPO". It counts
-  them now, over the policies that apply: "N further registry value(s) from M policies are
-  not on the list of this check - not judged", and the all-clear speaks of *known*
+  them now, over the policies that apply, in the line that opens the section like the
+  other GPO checks' notes on what they hold back: "N further registry value(s) from M
+  policies are not on the list of this check - not judged", and the all-clear speaks of *known*
   vulnerable settings. Values another check judges - Point and Print, SMB signing, LDAP
   signing and channel binding, LAPS, string values named like a password - are not
   counted, nor are values a policy deletes. The new switch `-IncludeUnknown` lists them,

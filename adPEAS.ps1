@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 17:28:19
-    Version: 2.7.0+20261021-1728
+    Build: 2026-10-21 17:45:02
+    Version: 2.7.0+20261021-1745
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -126626,6 +126626,25 @@ function Get-GPORegistrySettings {
                 return
             }
 
+            # What the table does not cover, counted over the policies that apply - see
+            # Test-RegistryRecordUnjudged. First, like what the other GPO checks hold back:
+            # it is a statement about what was left out, and the "Found ..." headline below
+            # heads the settings that are reported. It came last, under the last finding.
+            $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
+                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+            # Wrapped as a whole: an if-expression unrolls a one-element array, and .Count of
+            # the single object it leaves is $null on Windows PowerShell 5.1.
+            $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
+            if ($unjudgedShown.Count -gt 0) {
+                $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
+                $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
+                $unjudgedText = "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
+                # Invoke-adPEAS sets the context for each check and passes no -IncludeUnknown;
+                # without one the switch is reachable, as for -IncludeInactive.
+                if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
+                Show-Line $unjudgedText -Class Note
+            }
+
             # Resolve findings (handles AlwaysInstallElevated two-hive correlation)
             $findings = @(Resolve-RegistryFindings -RawMatches $rawMatches)
 
@@ -126751,40 +126770,25 @@ function Get-GPORegistrySettings {
                 Show-Line "No known vulnerable registry setting is deployed via GPO" -Class Note
             }
 
-            # What the table does not cover, counted over the policies that apply - see
-            # Test-RegistryRecordUnjudged.
-            $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
-                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
-            # Wrapped as a whole: an if-expression unrolls a one-element array, and .Count of
-            # the single object it leaves is $null on Windows PowerShell 5.1.
-            $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
-            if ($unjudgedShown.Count -gt 0) {
-                $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
-                $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
-                $unjudgedText = "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
-                # Invoke-adPEAS sets the context for each check and passes no -IncludeUnknown;
-                # without one the switch is reachable, as for -IncludeInactive.
-                if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
-                Show-Line $unjudgedText -Class Note
-
-                if ($IncludeUnknown) {
-                    # One object per policy file, its values a row each: a domain's
-                    # Administrative Templates run to hundreds of values, and an object per
-                    # value buried the few that matter. No colour - nothing here is judged.
-                    $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
-                        Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } }, @{ Expression = { [string]$_.Group[0].SourceFile } })
-                    foreach ($group in $unjudgedGroups) {
-                        $first = $group.Group[0]
-                        $inventory = [PSCustomObject][ordered]@{
-                            GPOName           = $first.GPOName
-                            GPOGUID           = $first.GPOGUID
-                            GPOPath           = $first.GPOPath
-                            SourceFile        = $first.SourceFile
-                            RegistryValues    = @($group.Group | Sort-Object -Property RegistryKey | ForEach-Object { "$($_.RegistryKey) = $($_.Value)" })
-                            _adPEASObjectType = 'GPORegistryValue'
-                        }
-                        Show-Object $inventory -Class Standard
+            # The values the count at the top stands for, with -IncludeUnknown: after the
+            # findings, which are what the check reports. One object per policy file, its
+            # values a row each - a domain's Administrative Templates run to hundreds of
+            # values, and an object per value buried the few that matter. No colour -
+            # nothing here is judged.
+            if ($IncludeUnknown -and $unjudgedShown.Count -gt 0) {
+                $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
+                    Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } }, @{ Expression = { [string]$_.Group[0].SourceFile } })
+                foreach ($group in $unjudgedGroups) {
+                    $first = $group.Group[0]
+                    $inventory = [PSCustomObject][ordered]@{
+                        GPOName           = $first.GPOName
+                        GPOGUID           = $first.GPOGUID
+                        GPOPath           = $first.GPOPath
+                        SourceFile        = $first.SourceFile
+                        RegistryValues    = @($group.Group | Sort-Object -Property RegistryKey | ForEach-Object { "$($_.RegistryKey) = $($_.Value)" })
+                        _adPEASObjectType = 'GPORegistryValue'
                     }
+                    Show-Object $inventory -Class Standard
                 }
             }
 
@@ -150908,7 +150912,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1728"
+$Script:adPEASVersion = "2.7.0+20261021-1745"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
