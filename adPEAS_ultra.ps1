@@ -8516,11 +8516,7 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
 	    Tools = @("PowerView", "LDAP queries")
 	    MITRE = "T1078"
 	    Triggers = @(
-	        @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Severity = 'Finding' }
-	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^EMPTY'; Severity = 'Finding' }
-	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
-	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Exempt'; Severity = 'Hint' }
-	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Has logged on'; Severity = 'Hint' }
+	        @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_not_precreated'; Severity = 'Finding' }
 	    )
 	}
 	'PRECREATED_COMPUTER_ACCOUNT' = @{
@@ -8565,7 +8561,7 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
 	    Tools = @("pre2k", "NetExec")
 	    MITRE = "T1078.002"
 	    Triggers = @(
-	        @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^NEVER LOGGED ON'; Severity = 'Finding' }
+	        @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_precreated'; Severity = 'Finding' }
 	    )
 	}
 	'INTERDOMAIN_TRUST_ACCOUNT' = @{
@@ -18539,6 +18535,7 @@ $acl.Access | Where-Object {
 	        @{ Attribute = 'userAccountControl'; Pattern = 'DONT_REQ_PREAUTH|ENCRYPTED_TEXT_PWD_ALLOWED'; Severity = 'Finding'; SeverityOnly = $true }
 	        @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Custom = 'is_dc_uac'; Severity = 'Hint'; SeverityOnly = $true }
 	        @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Severity = 'Finding'; SeverityOnly = $true }
+	        @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_finding'; Severity = 'Finding'; SeverityOnly = $true }
 	        @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD|DONT_EXPIRE_PASSWORD|INTERDOMAIN_TRUST_ACCOUNT'; Severity = 'Hint'; SeverityOnly = $true }
 	        @{ Attribute = 'userAccountControl'; Pattern = 'ACCOUNTDISABLE|SMARTCARD_REQUIRED|NOT_DELEGATED'; Severity = 'Secure'; SeverityOnly = $true }
 	    )
@@ -19032,6 +19029,17 @@ function Test-CustomTrigger {
 	            return $false
 	        }
 	        return $true
+	    }
+	    'passwd_notreqd_finding' {
+	        return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'PasswordNotRequired' -and
+	            [string]$SourceObject._adPEASContext -in @('NoPasswordSet', 'Privileged', 'NeverLoggedOn'))
+	    }
+	    'passwd_notreqd_precreated' {
+	        return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'PasswordNotRequired' -and
+	            [string]$SourceObject._adPEASContext -eq 'NeverLoggedOn')
+	    }
+	    'passwd_notreqd_not_precreated' {
+	        return (-not (Test-CustomTrigger -CustomType 'passwd_notreqd_precreated' -SourceObject $SourceObject))
 	    }
 	    'tier0_unprotected' {
 	        return ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'Unprotected')
@@ -70014,15 +70022,13 @@ function Get-PasswordNotRequired {
 	                }
 	                $privCheck = Test-IsPrivileged -Identity $user -IncludeOperators
 	                if ($neverSet) {
-	                    $verdict = 'EMPTY - no password has ever been set'
-	                    if ($privCheck.IsPrivileged) { $verdict = $verdict + ', and the account is privileged' }
-	                    $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue $verdict -Force
+	                    $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NoPasswordSet' -Force
 	                    $emptyPassword += $user
 	                } elseif ($privCheck.IsPrivileged) {
-	                    $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue "PRIVILEGED ($($privCheck.Category)) - exempt from the password policy" -Force
+	                    $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Privileged' -Force
 	                    $privilegedAccounts += $user
 	                } else {
-	                    $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Exempt from the password policy' -Force
+	                    $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Exempt' -Force
 	                    $ordinaryAccounts += $user
 	                }
 	            }
@@ -70051,13 +70057,13 @@ function Get-PasswordNotRequired {
 	            foreach ($computer in @($computerAccounts | Test-AccountActivity -IncludeDetails)) {
 	                $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'PasswordNotRequired' -Force
 	                if ($computer.ActivityDetails.PasswordNeverSet) {
-	                    $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'EMPTY - no password has ever been set' -Force
+	                    $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NoPasswordSet' -Force
 	                    $unusedComputers += $computer
 	                } elseif ($computer.ActivityDetails.NeverLoggedIn) {
-	                    $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'NEVER LOGGED ON - a pre-created account; created as a pre-Windows 2000 computer, its password is its name in lowercase' -Force
+	                    $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NeverLoggedOn' -Force
 	                    $unusedComputers += $computer
 	                } else {
-	                    $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Has logged on - the flag is a leftover a domain join normally clears' -Force
+	                    $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'LoggedOn' -Force
 	                    $usedComputers += $computer
 	                }
 	            }
@@ -92730,7 +92736,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1124"
+$Script:adPEASVersion = "2.7.0+20261021-1139"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

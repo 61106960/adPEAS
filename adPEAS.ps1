@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 11:24:06
-    Version: 2.7.0+20261021-1124
+    Build: 2026-10-21 11:39:14
+    Version: 2.7.0+20261021-1139
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -13066,18 +13066,13 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         Tools = @("PowerView", "LDAP queries")
         MITRE = "T1078"
         Triggers = @(
-            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Severity = 'Finding' }
-            # The per-account verdict Get-PasswordNotRequired writes. One flat list used
-            # to come out of that check: a trust account, for which this flag is the
-            # default, a kiosk account and a Domain Admin, all rendered the same way.
-            # Anchored on the first word, because two triggers on one attribute whose
-            # patterns can both match a value pick their winner by hashtable order.
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^EMPTY'; Severity = 'Finding' }
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Exempt'; Severity = 'Hint' }
-            # A computer account with the flag that has logged on. The one that has not is
-            # PRECREATED_COMPUTER_ACCOUNT.
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Has logged on'; Severity = 'Hint' }
+            # The flag itself, on every account it is shown on - except a computer account
+            # Get-PasswordNotRequired found pre-created and never logged on, whose flag is
+            # PRECREATED_COMPUTER_ACCOUNT's. Its colour is UAC_SEVERITY_OVERRIDE's: red where
+            # that check found no password ever set or a privileged account, yellow otherwise.
+            # The check used to write a verdict row for that, which repeated the line each
+            # list is shown under on every account.
+            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_not_precreated'; Severity = 'Finding' }
         )
     }
 
@@ -13123,7 +13118,9 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         Tools = @("pre2k", "NetExec")
         MITRE = "T1078.002"
         Triggers = @(
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^NEVER LOGGED ON'; Severity = 'Finding' }
+            # The flag on a computer account Get-PasswordNotRequired found never logged on.
+            # PASSWORD_NOT_REQUIRED steps back there: it scores higher and would take the row.
+            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_precreated'; Severity = 'Finding' }
         )
     }
 
@@ -24159,6 +24156,10 @@ $acl.Access | Where-Object {
             @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Custom = 'is_dc_uac'; Severity = 'Hint'; SeverityOnly = $true }
             # TRUSTED_FOR_DELEGATION on non-DC = Finding
             @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Severity = 'Finding'; SeverityOnly = $true }
+            # PASSWD_NOTREQD where Get-PasswordNotRequired found no password ever set, a
+            # privileged account or a pre-created computer = Finding. Ahead of the Hint
+            # below: the first SeverityOnly match colours the row.
+            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_finding'; Severity = 'Finding'; SeverityOnly = $true }
             # Noteworthy flags = Hint
             @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD|DONT_EXPIRE_PASSWORD|INTERDOMAIN_TRUST_ACCOUNT'; Severity = 'Hint'; SeverityOnly = $true }
             # Secure flags
@@ -25176,6 +25177,22 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+
+        # Get-PasswordNotRequired: the list it put the account on, as _adPEASContext. Only
+        # on its own objects - another check's context of the same name says something else.
+        'passwd_notreqd_finding' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'PasswordNotRequired' -and
+                [string]$SourceObject._adPEASContext -in @('NoPasswordSet', 'Privileged', 'NeverLoggedOn'))
+        }
+
+        'passwd_notreqd_precreated' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'PasswordNotRequired' -and
+                [string]$SourceObject._adPEASContext -eq 'NeverLoggedOn')
+        }
+
+        'passwd_notreqd_not_precreated' {
+            return (-not (Test-CustomTrigger -CustomType 'passwd_notreqd_precreated' -SourceObject $SourceObject))
         }
 
         'tier0_unprotected' {
@@ -114147,19 +114164,19 @@ function Get-PasswordNotRequired {
                     # the same flat list as a kiosk account.
                     $privCheck = Test-IsPrivileged -Identity $user -IncludeOperators
 
-                    # The verdicts are mutually exclusive by first word on purpose: two
-                    # triggers on one attribute whose patterns can both match a value pick
-                    # their winner by hashtable order.
+                    # The verdict is the line each list is shown under, and the context: a
+                    # row of its own repeated that line on every account. The context colours
+                    # the PASSWD_NOTREQD flag in userAccountControl - red on an account without
+                    # a password ever set and on a privileged one, yellow otherwise
+                    # (passwd_notreqd_finding). Privilege shows in memberOf.
                     if ($neverSet) {
-                        $verdict = 'EMPTY - no password has ever been set'
-                        if ($privCheck.IsPrivileged) { $verdict = $verdict + ', and the account is privileged' }
-                        $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue $verdict -Force
+                        $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NoPasswordSet' -Force
                         $emptyPassword += $user
                     } elseif ($privCheck.IsPrivileged) {
-                        $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue "PRIVILEGED ($($privCheck.Category)) - exempt from the password policy" -Force
+                        $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Privileged' -Force
                         $privilegedAccounts += $user
                     } else {
-                        $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Exempt from the password policy' -Force
+                        $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Exempt' -Force
                         $ordinaryAccounts += $user
                     }
                 }
@@ -114195,15 +114212,17 @@ function Get-PasswordNotRequired {
 
                     # Never logged on is what keeps the password the account was created
                     # with: whether that is the lowercase name or a random one, the
-                    # directory does not record.
+                    # directory does not record. The verdict is the context, as for the
+                    # users: a pre-created account's flag carries its own card
+                    # (passwd_notreqd_precreated).
                     if ($computer.ActivityDetails.PasswordNeverSet) {
-                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'EMPTY - no password has ever been set' -Force
+                        $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NoPasswordSet' -Force
                         $unusedComputers += $computer
                     } elseif ($computer.ActivityDetails.NeverLoggedIn) {
-                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'NEVER LOGGED ON - a pre-created account; created as a pre-Windows 2000 computer, its password is its name in lowercase' -Force
+                        $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NeverLoggedOn' -Force
                         $unusedComputers += $computer
                     } else {
-                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Has logged on - the flag is a leftover a domain join normally clears' -Force
+                        $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'LoggedOn' -Force
                         $usedComputers += $computer
                     }
                 }
@@ -149513,7 +149532,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1124"
+$Script:adPEASVersion = "2.7.0+20261021-1139"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

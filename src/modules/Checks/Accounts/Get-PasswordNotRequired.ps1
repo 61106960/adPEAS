@@ -113,19 +113,19 @@ function Get-PasswordNotRequired {
                     # the same flat list as a kiosk account.
                     $privCheck = Test-IsPrivileged -Identity $user -IncludeOperators
 
-                    # The verdicts are mutually exclusive by first word on purpose: two
-                    # triggers on one attribute whose patterns can both match a value pick
-                    # their winner by hashtable order.
+                    # The verdict is the line each list is shown under, and the context: a
+                    # row of its own repeated that line on every account. The context colours
+                    # the PASSWD_NOTREQD flag in userAccountControl - red on an account without
+                    # a password ever set and on a privileged one, yellow otherwise
+                    # (passwd_notreqd_finding). Privilege shows in memberOf.
                     if ($neverSet) {
-                        $verdict = 'EMPTY - no password has ever been set'
-                        if ($privCheck.IsPrivileged) { $verdict = $verdict + ', and the account is privileged' }
-                        $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue $verdict -Force
+                        $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NoPasswordSet' -Force
                         $emptyPassword += $user
                     } elseif ($privCheck.IsPrivileged) {
-                        $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue "PRIVILEGED ($($privCheck.Category)) - exempt from the password policy" -Force
+                        $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Privileged' -Force
                         $privilegedAccounts += $user
                     } else {
-                        $user | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Exempt from the password policy' -Force
+                        $user | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Exempt' -Force
                         $ordinaryAccounts += $user
                     }
                 }
@@ -161,15 +161,17 @@ function Get-PasswordNotRequired {
 
                     # Never logged on is what keeps the password the account was created
                     # with: whether that is the lowercase name or a random one, the
-                    # directory does not record.
+                    # directory does not record. The verdict is the context, as for the
+                    # users: a pre-created account's flag carries its own card
+                    # (passwd_notreqd_precreated).
                     if ($computer.ActivityDetails.PasswordNeverSet) {
-                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'EMPTY - no password has ever been set' -Force
+                        $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NoPasswordSet' -Force
                         $unusedComputers += $computer
                     } elseif ($computer.ActivityDetails.NeverLoggedIn) {
-                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'NEVER LOGGED ON - a pre-created account; created as a pre-Windows 2000 computer, its password is its name in lowercase' -Force
+                        $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NeverLoggedOn' -Force
                         $unusedComputers += $computer
                     } else {
-                        $computer | Add-Member -NotePropertyName 'passwordNotRequiredVerdict' -NotePropertyValue 'Has logged on - the flag is a leftover a domain join normally clears' -Force
+                        $computer | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'LoggedOn' -Force
                         $usedComputers += $computer
                     }
                 }

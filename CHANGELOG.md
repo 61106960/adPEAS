@@ -1321,6 +1321,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   row that says why the account is Tier-0: red on an unprotected account, green on a
   protected one, uncoloured on an excluded one.
 
+- **`Get-PasswordNotRequired` drops the `passwordNotRequiredVerdict` row.** Each account
+  carried a verdict - "Exempt from the password policy", "Has logged on - the flag is a
+  leftover a domain join normally clears", "EMPTY - no password has ever been set" - that
+  repeated the line its list is shown under. The verdict now colours the `PASSWD_NOTREQD`
+  flag in `userAccountControl` instead: red on an account without a password ever set, on
+  a privileged one and on a pre-created computer that has never logged on, which carries
+  the *Pre-Created Computer Account* card there; yellow otherwise. On an account another
+  check shows, the flag stays yellow as before.
+
 - **An encryption type of 0 shows only where it matters.** `msDS-SupportedEncryptionTypes`
   stored as 0 - which Active Directory Users and Computers writes when the AES boxes on an
   account are cleared - read "Not configured" on any account, while an account without

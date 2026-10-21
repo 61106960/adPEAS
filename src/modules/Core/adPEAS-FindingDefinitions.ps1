@@ -4594,18 +4594,13 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         Tools = @("PowerView", "LDAP queries")
         MITRE = "T1078"
         Triggers = @(
-            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Severity = 'Finding' }
-            # The per-account verdict Get-PasswordNotRequired writes. One flat list used
-            # to come out of that check: a trust account, for which this flag is the
-            # default, a kiosk account and a Domain Admin, all rendered the same way.
-            # Anchored on the first word, because two triggers on one attribute whose
-            # patterns can both match a value pick their winner by hashtable order.
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^EMPTY'; Severity = 'Finding' }
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^PRIVILEGED'; Severity = 'Finding' }
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Exempt'; Severity = 'Hint' }
-            # A computer account with the flag that has logged on. The one that has not is
-            # PRECREATED_COMPUTER_ACCOUNT.
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^Has logged on'; Severity = 'Hint' }
+            # The flag itself, on every account it is shown on - except a computer account
+            # Get-PasswordNotRequired found pre-created and never logged on, whose flag is
+            # PRECREATED_COMPUTER_ACCOUNT's. Its colour is UAC_SEVERITY_OVERRIDE's: red where
+            # that check found no password ever set or a privileged account, yellow otherwise.
+            # The check used to write a verdict row for that, which repeated the line each
+            # list is shown under on every account.
+            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_not_precreated'; Severity = 'Finding' }
         )
     }
 
@@ -4651,7 +4646,9 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         Tools = @("pre2k", "NetExec")
         MITRE = "T1078.002"
         Triggers = @(
-            @{ Attribute = 'passwordNotRequiredVerdict'; Pattern = '^NEVER LOGGED ON'; Severity = 'Finding' }
+            # The flag on a computer account Get-PasswordNotRequired found never logged on.
+            # PASSWORD_NOT_REQUIRED steps back there: it scores higher and would take the row.
+            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_precreated'; Severity = 'Finding' }
         )
     }
 
@@ -15687,6 +15684,10 @@ $acl.Access | Where-Object {
             @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Custom = 'is_dc_uac'; Severity = 'Hint'; SeverityOnly = $true }
             # TRUSTED_FOR_DELEGATION on non-DC = Finding
             @{ Attribute = 'userAccountControl'; Pattern = 'TRUSTED_FOR_DELEGATION'; Severity = 'Finding'; SeverityOnly = $true }
+            # PASSWD_NOTREQD where Get-PasswordNotRequired found no password ever set, a
+            # privileged account or a pre-created computer = Finding. Ahead of the Hint
+            # below: the first SeverityOnly match colours the row.
+            @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD'; Custom = 'passwd_notreqd_finding'; Severity = 'Finding'; SeverityOnly = $true }
             # Noteworthy flags = Hint
             @{ Attribute = 'userAccountControl'; Pattern = 'PASSWD_NOTREQD|DONT_EXPIRE_PASSWORD|INTERDOMAIN_TRUST_ACCOUNT'; Severity = 'Hint'; SeverityOnly = $true }
             # Secure flags
@@ -16704,6 +16705,22 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+
+        # Get-PasswordNotRequired: the list it put the account on, as _adPEASContext. Only
+        # on its own objects - another check's context of the same name says something else.
+        'passwd_notreqd_finding' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'PasswordNotRequired' -and
+                [string]$SourceObject._adPEASContext -in @('NoPasswordSet', 'Privileged', 'NeverLoggedOn'))
+        }
+
+        'passwd_notreqd_precreated' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'PasswordNotRequired' -and
+                [string]$SourceObject._adPEASContext -eq 'NeverLoggedOn')
+        }
+
+        'passwd_notreqd_not_precreated' {
+            return (-not (Test-CustomTrigger -CustomType 'passwd_notreqd_precreated' -SourceObject $SourceObject))
         }
 
         'tier0_unprotected' {
