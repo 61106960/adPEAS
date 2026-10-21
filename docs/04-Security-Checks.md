@@ -1304,8 +1304,10 @@ A password stored in a task (`cpassword`) is reported by `Get-CredentialExposure
 | Result | SYSTEM task | Privileged account |
 |--------|-------------|--------------------|
 | An account beyond the expected administrators can write the file or folder - listed in `UNCPathPermissions` | Finding | Finding |
-| Only privileged accounts can write it - the administrators of that server still decide what runs in scope | Hint | Finding - the account is one either way |
-| Not read: unknown host, address, unreadable path, or `-OPSEC` - the row says which | Finding | Finding |
+| Only privileged accounts can write it - the administrators of that server still decide what runs in scope; `UNCPathPermissions` reads `Privileged accounts only (NTFS)` | Hint | Finding - the account is one either way |
+| Not read: unknown host, address, unreadable path, or `-OPSEC` - `UNCPathPermissions` says which in a few words (`Not checked - could not be read`) | Finding | Finding |
+
+The colour is on the program path (`Command`), which carries the card; the full sentence (`RiskReason`) is on the HTML card only.
 
 The share permissions are not read: Windows returns a share's security descriptor to administrators of the file server only. Over the network they apply on top of the NTFS permissions and can only narrow them.
 

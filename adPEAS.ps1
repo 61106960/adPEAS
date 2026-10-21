@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 13:24:12
-    Version: 2.7.0+20261021-1324
+    Build: 2026-10-21 13:37:04
+    Version: 2.7.0+20261021-1337
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7549,8 +7549,10 @@ $Script:ExcludeAttributes = @(
     # it per finding rather than per check, and the reach verdict where a check stamps it
     # instead of partitioning. Internal bookkeeping, never a row.
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
-    # A scheduled task item that only deletes its task (Get-GPOScheduledTasks holds it back).
-    '_DeletesTask',
+    # A scheduled task item that only deletes its task (Get-GPOScheduledTasks holds it back),
+    # and the colour of a task's program path where it runs from a share as SYSTEM or a
+    # privileged account (read by the gpo_task_unc_* predicates).
+    '_DeletesTask', '_UNCSeverity',
     # Roamed credential material. These hold DPAPI master keys and DPAPI-protected private
     # keys, and Get-CredentialRoaming deliberately never retrieves them - presence comes
     # from an LDAP filter instead. Excluded here as well so that another check fetching a
@@ -19076,27 +19078,18 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("SharpGPOAbuse", "PowerView", "GPO analysis")
         MITRE = "T1053.005"
         Triggers = @(
-            # On the verdict Get-GPOScheduledTasks writes into RiskReason. The trigger named
-            # an attribute 'scheduledTasks' that no module has ever produced, so this card
-            # could not appear on any row - while the check reported exactly this case.
-            # Anchored on the verdict's opening words, because RiskReason is shared with the
-            # registry settings check.
-            #
-            # Two openings, two severities. "and uses UNC path" is the finding: an account
-            # beyond the expected administrators can write the path, or it could not be
-            # read. "from UNC path" is the hint for a path read in full that only
-            # privileged accounts can write.
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
-            # The same two openings for a task that runs as a privileged account, both a
-            # finding: the account is one, whoever may write the share. Neither matches the
-            # risky-directory verdict "Task runs as the privileged account X from C:\...",
-            # which carries no UNC path.
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ and uses UNC path'; Severity = 'Finding' }
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ from UNC path'; Severity = 'Finding' }
-            # One "path: Identity (Rights)" row per trustee that can write, written only
-            # when there is one - a bare trigger, like SysvolPermissions on a GPO.
-            @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }
+            # On the program path, where a task runs from a share as SYSTEM or a privileged
+            # account: the colour Get-GPOScheduledTasks decides (_UNCSeverity) - red where an
+            # account beyond the administrators can write the path or it could not be read,
+            # yellow where only privileged accounts can write it under a SYSTEM task, red for a
+            # privileged account either way. The card sat on RiskReason, whose sentence repeated
+            # RunAs and Command on the console; RiskReason stays on the HTML card.
+            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_finding'; Severity = 'Finding' }
+            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_hint'; Severity = 'Hint' }
+            # One "path: Identity (Rights)" row per trustee that can write - a bare trigger, like
+            # SysvolPermissions on a GPO - and the two short values that say nobody beyond the
+            # administrators can, or that it was not read, uncoloured: the path above them is.
+            @{ Attribute = 'UNCPathPermissions'; ExcludePattern = '^(Not checked|Privileged accounts only)'; Severity = 'Finding' }
         )
     }
 
@@ -25241,6 +25234,18 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+
+        # Get-GPOScheduledTasks: the colour of a task's program path where it runs from a
+        # share as SYSTEM or a privileged account. Only on its own objects.
+        'gpo_task_unc_finding' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
+                [string]$SourceObject._UNCSeverity -eq 'Finding')
+        }
+
+        'gpo_task_unc_hint' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
+                [string]$SourceObject._UNCSeverity -eq 'Hint')
         }
 
         # Get-PasswordNotRequired: the list it put the account on, as _adPEASContext. Only
@@ -66386,6 +66391,40 @@ function Get-UNCWriteAccess {
         Writers   = @($writers)
         Unchecked = @($unchecked)
     }
+}
+
+<#
+.SYNOPSIS
+    The short console value for a UNC path whose permissions were not read.
+
+.DESCRIPTION
+    Get-UNCWriteAccess reports why a path was not read as a clause that completes "Who may
+    write there was not checked, because ..." - the sentence a check prints on its HTML
+    card. A row on the console takes the value and a terse qualifier instead. Matched on
+    the clauses Read-UNCPathAccess and Get-UNCConnectHost write below; a clause it does not
+    know reads "Not checked".
+
+.PARAMETER Reason
+    One entry of the Unchecked list Get-UNCWriteAccess returns.
+#>
+function Get-UNCUncheckedShort {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Reason
+    )
+
+    if ($Reason -match '^-OPSEC')                       { return 'Not checked (-OPSEC)' }
+    if ($Reason -match 'environment variable')          { return 'Not checked - the path holds a variable' }
+    if ($Reason -match 'is an address rather than')     { return 'Not checked - an address, not a computer of the domain' }
+    if ($Reason -match 'is not an enabled computer')    { return 'Not checked - not a computer of the domain' }
+    if ($Reason -match 'has no DNS host name')          { return 'Not checked - no DNS name in the directory' }
+    if ($Reason -match 'could not be looked up')        { return 'Not checked - the directory lookup failed' }
+    if ($Reason -match '^the folder .+ could not be read$') { return 'Not checked - the folder could not be read' }
+    if ($Reason -match 'could not be read$')            { return 'Not checked - could not be read' }
+    return 'Not checked'
 }
 
 <#
@@ -124781,11 +124820,19 @@ function Parse-ScheduledTasksXML {
             $isScript = $scriptPrograms.Count -gt 0
 
             # Severity Determination (using standard adPEAS severity values)
+            #
+            # $uncSeverity is the colour of the program path on the row - where a task runs as
+            # SYSTEM or a privileged account from a share, the path is the way in, and it carries
+            # GPO_TASK_SYSTEM_UNC_PATH. The card sat on RiskReason, a sentence that repeated RunAs
+            # and Command on the console; that stays on the HTML card (decided 2026-10-21).
+            $uncSeverity = $null
             if (($isSystemAccount -or $isPrivilegedAccount) -and $uncWritable) {
                 $severity = "Finding"
+                $uncSeverity = 'Finding'
                 $risk = "Task runs as $uncTaskSubject and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as $uncRunsAs on every computer in scope. The share permissions, which can narrow this over the network, were not read"
             } elseif (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath -and -not $uncClean) {
                 $severity = "Finding"
+                $uncSeverity = 'Finding'
                 $uncReason = ''
                 if ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
                     $uncReason = ", because $(@($uncAccess.Unchecked)[0])"
@@ -124816,6 +124863,7 @@ function Parse-ScheduledTasksXML {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
                 if ($uncClean) {
+                    $uncSeverity = 'Finding'
                     # Read in full, and only privileged accounts can write what it starts. Still
                     # a finding: the task runs as a privileged account on every computer in
                     # scope, whatever it starts - the row says the share is not the way in.
@@ -124828,6 +124876,7 @@ function Parse-ScheduledTasksXML {
                 $uncFirst = [string]@($uncPaths)[0]
                 $uncHostName = ($uncFirst -replace '^\\\\([^\\]+)\\.*$', '$1')
                 $severity = "Hint"
+                $uncSeverity = 'Hint'
                 $risk = "Task runs as SYSTEM from UNC path $uncFirst - by NTFS permission only privileged accounts can write what it runs there, so whoever administers $uncHostName still controls what runs as SYSTEM on every computer in scope. The share permissions were not read"
             } elseif ($riskyPathApplies) {
                 # Any other account. A task running as a named account out of C:\Temp fell
@@ -124889,7 +124938,18 @@ function Parse-ScheduledTasksXML {
             # SysvolPermissions on a GPO, so every row on it is a finding.
             if ($uncWritable) {
                 $taskProps['UNCPathPermissions'] = (@($uncAccess.Rows) -join "`n")
+            } elseif ($uncSeverity) {
+                # And short where nobody beyond the administrators can write, or where it was not
+                # read: the reason, in full, is RiskReason's, on the HTML card.
+                $taskProps['UNCPathPermissions'] = if ($uncClean) {
+                    'Privileged accounts only (NTFS)'
+                } elseif ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
+                    Get-UNCUncheckedShort -Reason ([string]@($uncAccess.Unchecked)[0])
+                } else {
+                    'Not checked'
+                }
             }
+            if ($uncSeverity) { $taskProps['_UNCSeverity'] = $uncSeverity }
 
             # A fact about the program path, and no longer a severity. Measured on Windows 11
             # (2026-10-16): the Task Scheduler service quotes the program path itself when it
@@ -149845,7 +149905,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1324"
+$Script:adPEASVersion = "2.7.0+20261021-1337"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

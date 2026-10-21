@@ -92,6 +92,40 @@ function Get-UNCWriteAccess {
 
 <#
 .SYNOPSIS
+    The short console value for a UNC path whose permissions were not read.
+
+.DESCRIPTION
+    Get-UNCWriteAccess reports why a path was not read as a clause that completes "Who may
+    write there was not checked, because ..." - the sentence a check prints on its HTML
+    card. A row on the console takes the value and a terse qualifier instead. Matched on
+    the clauses Read-UNCPathAccess and Get-UNCConnectHost write below; a clause it does not
+    know reads "Not checked".
+
+.PARAMETER Reason
+    One entry of the Unchecked list Get-UNCWriteAccess returns.
+#>
+function Get-UNCUncheckedShort {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Reason
+    )
+
+    if ($Reason -match '^-OPSEC')                       { return 'Not checked (-OPSEC)' }
+    if ($Reason -match 'environment variable')          { return 'Not checked - the path holds a variable' }
+    if ($Reason -match 'is an address rather than')     { return 'Not checked - an address, not a computer of the domain' }
+    if ($Reason -match 'is not an enabled computer')    { return 'Not checked - not a computer of the domain' }
+    if ($Reason -match 'has no DNS host name')          { return 'Not checked - no DNS name in the directory' }
+    if ($Reason -match 'could not be looked up')        { return 'Not checked - the directory lookup failed' }
+    if ($Reason -match '^the folder .+ could not be read$') { return 'Not checked - the folder could not be read' }
+    if ($Reason -match 'could not be read$')            { return 'Not checked - could not be read' }
+    return 'Not checked'
+}
+
+<#
+.SYNOPSIS
     Reads the NTFS permissions of one UNC path and the folder it is in. The uncached half
     of Get-UNCWriteAccess.
 

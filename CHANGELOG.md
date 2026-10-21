@@ -1103,6 +1103,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   as a secure state once its members were coloured. `Type` is no longer printed on the
   console - `Mode` says which mechanism wrote the assignment - and stays on the HTML card.
 
+- **`Get-GPOScheduledTasks` no longer prints `RiskReason` on the console for a task on a
+  share.** A task that runs as SYSTEM or a privileged account from a UNC path carried a
+  sentence of several lines - "Task runs as SYSTEM and uses UNC path - whoever can write
+  that share ... Who may write there was not checked, because ..." - that repeated `RunAs`
+  and `Command`. The program path in `Command` carries the colour and the card now, and
+  `UNCPathPermissions` says in a few words what was found: the accounts that can write, as
+  before, or `Privileged accounts only (NTFS)`, or why it was not read - `Not checked -
+  could not be read`, `Not checked - not a computer of the domain`, `Not checked (-OPSEC)`.
+  The sentence stays on the HTML card.
+
 - **`Get-GPOScheduledTasks` no longer reports a task item that deletes its task.** An item
   with the action D removes the task it names from the computers in scope - nothing runs,
   and the account and the program in it are never used (MS-GPPREF 2.2.1.18). It was rated

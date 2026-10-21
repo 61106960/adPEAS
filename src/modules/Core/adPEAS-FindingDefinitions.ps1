@@ -10572,27 +10572,18 @@ foreach ($name in 'unixUserPassword', 'msSFU30Password', 'sambaNTPassword', 'sam
         Tools = @("SharpGPOAbuse", "PowerView", "GPO analysis")
         MITRE = "T1053.005"
         Triggers = @(
-            # On the verdict Get-GPOScheduledTasks writes into RiskReason. The trigger named
-            # an attribute 'scheduledTasks' that no module has ever produced, so this card
-            # could not appear on any row - while the check reported exactly this case.
-            # Anchored on the verdict's opening words, because RiskReason is shared with the
-            # registry settings check.
-            #
-            # Two openings, two severities. "and uses UNC path" is the finding: an account
-            # beyond the expected administrators can write the path, or it could not be
-            # read. "from UNC path" is the hint for a path read in full that only
-            # privileged accounts can write.
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM and uses UNC path'; Severity = 'Finding' }
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as SYSTEM from UNC path'; Severity = 'Hint' }
-            # The same two openings for a task that runs as a privileged account, both a
-            # finding: the account is one, whoever may write the share. Neither matches the
-            # risky-directory verdict "Task runs as the privileged account X from C:\...",
-            # which carries no UNC path.
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ and uses UNC path'; Severity = 'Finding' }
-            @{ Attribute = 'RiskReason'; Pattern = '^Task runs as the privileged account .+ from UNC path'; Severity = 'Finding' }
-            # One "path: Identity (Rights)" row per trustee that can write, written only
-            # when there is one - a bare trigger, like SysvolPermissions on a GPO.
-            @{ Attribute = 'UNCPathPermissions'; Severity = 'Finding' }
+            # On the program path, where a task runs from a share as SYSTEM or a privileged
+            # account: the colour Get-GPOScheduledTasks decides (_UNCSeverity) - red where an
+            # account beyond the administrators can write the path or it could not be read,
+            # yellow where only privileged accounts can write it under a SYSTEM task, red for a
+            # privileged account either way. The card sat on RiskReason, whose sentence repeated
+            # RunAs and Command on the console; RiskReason stays on the HTML card.
+            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_finding'; Severity = 'Finding' }
+            @{ Attribute = 'Command'; Custom = 'gpo_task_unc_hint'; Severity = 'Hint' }
+            # One "path: Identity (Rights)" row per trustee that can write - a bare trigger, like
+            # SysvolPermissions on a GPO - and the two short values that say nobody beyond the
+            # administrators can, or that it was not read, uncoloured: the path above them is.
+            @{ Attribute = 'UNCPathPermissions'; ExcludePattern = '^(Not checked|Privileged accounts only)'; Severity = 'Finding' }
         )
     }
 
@@ -16737,6 +16728,18 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+
+        # Get-GPOScheduledTasks: the colour of a task's program path where it runs from a
+        # share as SYSTEM or a privileged account. Only on its own objects.
+        'gpo_task_unc_finding' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
+                [string]$SourceObject._UNCSeverity -eq 'Finding')
+        }
+
+        'gpo_task_unc_hint' {
+            return ($SourceObject -and [string]$SourceObject._adPEASObjectType -eq 'GPOScheduledTask' -and
+                [string]$SourceObject._UNCSeverity -eq 'Hint')
         }
 
         # Get-PasswordNotRequired: the list it put the account on, as _adPEASContext. Only

@@ -696,11 +696,19 @@ function Parse-ScheduledTasksXML {
             $isScript = $scriptPrograms.Count -gt 0
 
             # Severity Determination (using standard adPEAS severity values)
+            #
+            # $uncSeverity is the colour of the program path on the row - where a task runs as
+            # SYSTEM or a privileged account from a share, the path is the way in, and it carries
+            # GPO_TASK_SYSTEM_UNC_PATH. The card sat on RiskReason, a sentence that repeated RunAs
+            # and Command on the console; that stays on the HTML card (decided 2026-10-21).
+            $uncSeverity = $null
             if (($isSystemAccount -or $isPrivilegedAccount) -and $uncWritable) {
                 $severity = "Finding"
+                $uncSeverity = 'Finding'
                 $risk = "Task runs as $uncTaskSubject and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as $uncRunsAs on every computer in scope. The share permissions, which can narrow this over the network, were not read"
             } elseif (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath -and -not $uncClean) {
                 $severity = "Finding"
+                $uncSeverity = 'Finding'
                 $uncReason = ''
                 if ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
                     $uncReason = ", because $(@($uncAccess.Unchecked)[0])"
@@ -731,6 +739,7 @@ function Parse-ScheduledTasksXML {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
                 if ($uncClean) {
+                    $uncSeverity = 'Finding'
                     # Read in full, and only privileged accounts can write what it starts. Still
                     # a finding: the task runs as a privileged account on every computer in
                     # scope, whatever it starts - the row says the share is not the way in.
@@ -743,6 +752,7 @@ function Parse-ScheduledTasksXML {
                 $uncFirst = [string]@($uncPaths)[0]
                 $uncHostName = ($uncFirst -replace '^\\\\([^\\]+)\\.*$', '$1')
                 $severity = "Hint"
+                $uncSeverity = 'Hint'
                 $risk = "Task runs as SYSTEM from UNC path $uncFirst - by NTFS permission only privileged accounts can write what it runs there, so whoever administers $uncHostName still controls what runs as SYSTEM on every computer in scope. The share permissions were not read"
             } elseif ($riskyPathApplies) {
                 # Any other account. A task running as a named account out of C:\Temp fell
@@ -804,7 +814,18 @@ function Parse-ScheduledTasksXML {
             # SysvolPermissions on a GPO, so every row on it is a finding.
             if ($uncWritable) {
                 $taskProps['UNCPathPermissions'] = (@($uncAccess.Rows) -join "`n")
+            } elseif ($uncSeverity) {
+                # And short where nobody beyond the administrators can write, or where it was not
+                # read: the reason, in full, is RiskReason's, on the HTML card.
+                $taskProps['UNCPathPermissions'] = if ($uncClean) {
+                    'Privileged accounts only (NTFS)'
+                } elseif ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
+                    Get-UNCUncheckedShort -Reason ([string]@($uncAccess.Unchecked)[0])
+                } else {
+                    'Not checked'
+                }
             }
+            if ($uncSeverity) { $taskProps['_UNCSeverity'] = $uncSeverity }
 
             # A fact about the program path, and no longer a severity. Measured on Windows 11
             # (2026-10-16): the Task Scheduler service quotes the program path itself when it
