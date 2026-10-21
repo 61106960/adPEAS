@@ -1295,7 +1295,7 @@ Get-GPOLocalGroupMembership
 - UNC paths: whoever can write the share, or answer for its server name, controls what the task runs
 - For a task with a UNC path that runs as SYSTEM or a privileged account: the NTFS permissions of the file and of the folder it is in (see below)
 - `cmd.exe /c` lines with an unquoted program path containing a space, which cmd.exe splits at the first space. The program field of a task is not affected: the Task Scheduler quotes it itself
-- Tasks of policies that are not linked or not enabled are held back and summarized
+- Tasks of policies that are not linked or not enabled are held back and summarized, and so are task items with the action Delete: they remove the task they name, nothing runs
 
 A password stored in a task (`cpassword`) is reported by `Get-CredentialExposure`.
 

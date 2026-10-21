@@ -3838,6 +3838,7 @@ $Script:ExcludeAttributes = @(
 	'_gmsaReaderVerdicts',
 	'_IsEffective', '_HasAnyLink',
 	'_ReachScope', '_ReachInactive', '_ReachUnlinked',
+	'_DeletesTask',
 	'msPKIAccountCredentials', 'msPKIDPAPIMasterKeys',
 	'_IsFinding',
 	'Risk', 'Severity', 'ConsoleClass',
@@ -75350,17 +75351,33 @@ function Get-GPOScheduledTasks {
 	            $scheduledTasks = @($scheduledTasks | Sort-Object -Property `
 	                @{ Expression = { if ($severityRank.ContainsKey([string]$_._Severity)) { $severityRank[[string]$_._Severity] } else { 9 } } }, `
 	                @{ Expression = { $_.GPOName } })
+	            $deleteTasks = @($scheduledTasks | Where-Object { $_.PSObject.Properties['_DeletesTask'] })
+	            $scheduledTasks = @($scheduledTasks | Where-Object { -not $_.PSObject.Properties['_DeletesTask'] })
 	            foreach ($task in $scheduledTasks) {
 	                $task | Add-Member -NotePropertyName '_ReachScope' `
 	                    -NotePropertyValue $(if ("$($task.Context)" -eq 'Machine') { 'Machine' } else { 'User' }) -Force
 	            }
 	            $split = Split-GPOFindingByReach -Finding $scheduledTasks -GPOStatusMap $gpoStatusMap `
 	                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
-	            $shown = if ($IncludeInactive) { @($scheduledTasks) } else { @($split.Active) }
+	            $shown = if ($IncludeInactive) { @($scheduledTasks) + @($deleteTasks) } else { @($split.Active) }
 	            $hasFinding = @($shown | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
 	            $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
 	            Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
 	                -Dormant $split.Dormant -Listed:$IncludeInactive
+	            if ($deleteTasks.Count -gt 0) {
+	                if ($IncludeInactive) {
+	                    Show-Line "$($deleteTasks.Count) of the task items below delete their task - nothing runs" -Class Note
+	                } else {
+	                    $deleteText = "$($deleteTasks.Count) task item(s) hidden - they delete their task, nothing runs"
+	                    if ($null -eq $Script:adPEAS_CurrentCheckContext) { $deleteText += ' (-IncludeInactive to list)' }
+	                    Show-Line "${deleteText}:" -Class Note
+	                    $deletePolicies = @(Get-GPOPolicySummary -Finding $deleteTasks).Count
+	                    $deletePolicyWord = if ($deletePolicies -eq 1) { 'policy' } else { 'policies' }
+	                    Show-GPOSuppressedGroup -Group 'Task items that delete their task' `
+	                        -Reason 'A Delete item removes the task it names from the computers in scope. The account and the program in it are never used.' `
+	                        -CountText "$deletePolicies $deletePolicyWord" -Policy $deleteTasks
+	                }
+	            }
 	            if (@($shown).Count -gt 0) {
 	                Show-Line "Found $(@($shown).Count) scheduled task(s) distributed via GPO" -Class $headerClass
 	            } else {
@@ -75416,7 +75433,15 @@ function Parse-ScheduledTasksXML {
 	        $taskNameAttribute = if ($taskNode.Properties) { [string]$taskNode.Properties.GetAttribute('name') } else { '' }
 	        $taskName = if (-not [string]::IsNullOrWhiteSpace($taskNameAttribute)) { $taskNameAttribute } else { "Unnamed Task" }
 	        $runAs = if ($taskNode.Properties.runAs) { $taskNode.Properties.runAs } else { "Unknown" }
-	        $action = if ($taskNode.Properties.action) { $taskNode.Properties.action } else { "Unknown" }
+	        $actionCode = ([string]$taskNode.Properties.action).Trim()
+	        if (-not $actionCode) { $actionCode = 'U' }
+	        $action = switch ($actionCode) {
+	            'C'     { 'Create' }
+	            'R'     { 'Replace' }
+	            'U'     { 'Update' }
+	            'D'     { 'Delete' }
+	            default { $actionCode }
+	        }
 	        $execPairs = @()
 	        if ($taskNode.Properties.Task) {
 	            $taskXml = $taskNode.Properties.Task
@@ -75456,6 +75481,23 @@ function Parse-ScheduledTasksXML {
 	        $fullCommand = (@($execPairs | ForEach-Object {
 	            if ($_.Arguments) { "$($_.Command) $($_.Arguments)" } else { [string]$_.Command }
 	        }) -join ' ; ')
+	        if ($actionCode -eq 'D') {
+	            $tasks += [PSCustomObject][ordered]@{
+	                GPOName      = $GPOName
+	                GPOGUID      = $GPOGUID
+	                GPOPath      = $GPOPath
+	                SourceFile   = Get-GPORelativePath -Path $FilePath
+	                TaskName     = $taskName
+	                Command      = $fullCommand
+	                RunAs        = $runAs
+	                Context      = $context
+	                Action       = $action
+	                _Severity    = 'Note'
+	                _Risk        = 'The item deletes the task - nothing runs'
+	                _DeletesTask = $true
+	            }
+	            continue
+	        }
 	        $severity = "Note"
 	        $risk = ""
 	        $isLocalSystem = ($runAs -match '^S-1-5-18$' -or
@@ -92877,7 +92919,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1312"
+$Script:adPEASVersion = "2.7.0+20261021-1324"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -29,7 +29,8 @@ function Get-GPOScheduledTasks {
     PSCredential object for authentication (optional, uses current user if not specified)
 
     .PARAMETER IncludeInactive
-    Also list the tasks of policies that are not linked or not enabled.
+    Also list the tasks of policies that are not linked or not enabled, and the task items
+    that only delete their task.
 
     .PARAMETER OPSEC
     Make no connection to the hosts a task names. Without it, the check reads the NTFS
@@ -306,6 +307,11 @@ function Get-GPOScheduledTasks {
                 # half switched off the task never exists. The module therefore said
                 # "User configuration disabled" on the row and counted the finding as
                 # active in the same breath.
+                # Items that delete their task run nothing - see Parse-ScheduledTasksXML. Held
+                # back like a dormant policy, and listed with -IncludeInactive.
+                $deleteTasks = @($scheduledTasks | Where-Object { $_.PSObject.Properties['_DeletesTask'] })
+                $scheduledTasks = @($scheduledTasks | Where-Object { -not $_.PSObject.Properties['_DeletesTask'] })
+
                 foreach ($task in $scheduledTasks) {
                     $task | Add-Member -NotePropertyName '_ReachScope' `
                         -NotePropertyValue $(if ("$($task.Context)" -eq 'Machine') { 'Machine' } else { 'User' }) -Force
@@ -314,7 +320,7 @@ function Get-GPOScheduledTasks {
                 $split = Split-GPOFindingByReach -Finding $scheduledTasks -GPOStatusMap $gpoStatusMap `
                     -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
 
-                $shown = if ($IncludeInactive) { @($scheduledTasks) } else { @($split.Active) }
+                $shown = if ($IncludeInactive) { @($scheduledTasks) + @($deleteTasks) } else { @($split.Active) }
 
                 $hasFinding = @($shown | Where-Object { $_._Severity -eq 'Finding' }).Count -gt 0
                 $headerClass = if ($hasFinding) { 'Finding' } else { 'Hint' }
@@ -324,6 +330,23 @@ function Get-GPOScheduledTasks {
                 # dampening block.
                 Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
                     -Dormant $split.Dormant -Listed:$IncludeInactive
+
+                if ($deleteTasks.Count -gt 0) {
+                    if ($IncludeInactive) {
+                        Show-Line "$($deleteTasks.Count) of the task items below delete their task - nothing runs" -Class Note
+                    } else {
+                        $deleteText = "$($deleteTasks.Count) task item(s) hidden - they delete their task, nothing runs"
+                        # Invoke-adPEAS sets the context for each check; without one the
+                        # switch is reachable, as in Show-GPOInactiveSummary.
+                        if ($null -eq $Script:adPEAS_CurrentCheckContext) { $deleteText += ' (-IncludeInactive to list)' }
+                        Show-Line "${deleteText}:" -Class Note
+                        $deletePolicies = @(Get-GPOPolicySummary -Finding $deleteTasks).Count
+                        $deletePolicyWord = if ($deletePolicies -eq 1) { 'policy' } else { 'policies' }
+                        Show-GPOSuppressedGroup -Group 'Task items that delete their task' `
+                            -Reason 'A Delete item removes the task it names from the computers in scope. The account and the program in it are never used.' `
+                            -CountText "$deletePolicies $deletePolicyWord" -Policy $deleteTasks
+                    }
+                }
 
                 if (@($shown).Count -gt 0) {
                     Show-Line "Found $(@($shown).Count) scheduled task(s) distributed via GPO" -Class $headerClass
@@ -415,7 +438,18 @@ function Parse-ScheduledTasksXML {
             $taskNameAttribute = if ($taskNode.Properties) { [string]$taskNode.Properties.GetAttribute('name') } else { '' }
             $taskName = if (-not [string]::IsNullOrWhiteSpace($taskNameAttribute)) { $taskNameAttribute } else { "Unnamed Task" }
             $runAs = if ($taskNode.Properties.runAs) { $taskNode.Properties.runAs } else { "Unknown" }
-            $action = if ($taskNode.Properties.action) { $taskNode.Properties.action } else { "Unknown" }
+            # C, R, U or D - Create, Replace, Update, Delete (MS-GPPREF 2.2.1.18) - and U where
+            # the attribute is missing. The letter was printed as it stood, so "Action: D"
+            # left the reader to work out that the item deletes the task.
+            $actionCode = ([string]$taskNode.Properties.action).Trim()
+            if (-not $actionCode) { $actionCode = 'U' }
+            $action = switch ($actionCode) {
+                'C'     { 'Create' }
+                'R'     { 'Replace' }
+                'U'     { 'Update' }
+                'D'     { 'Delete' }
+                default { $actionCode }
+            }
 
             # Every Exec action, not the first one. A task may carry several, and
             # $taskXml.Actions.Exec then hands over all of them at once: taking .Command off
@@ -477,6 +511,29 @@ function Parse-ScheduledTasksXML {
             $fullCommand = (@($execPairs | ForEach-Object {
                 if ($_.Arguments) { "$($_.Command) $($_.Arguments)" } else { [string]$_.Command }
             }) -join ' ; ')
+
+            # A Delete item removes the task it names from the computers in scope. Nothing
+            # runs: the account and the program apply only to Create, Replace and Update
+            # (MS-GPPREF 2.2.1.18). It was rated like a task that runs - "runs as SYSTEM and
+            # uses UNC path", in red - and the share it names was connected to for nothing.
+            # Handed back as a Note, marked, for the caller to hold back.
+            if ($actionCode -eq 'D') {
+                $tasks += [PSCustomObject][ordered]@{
+                    GPOName      = $GPOName
+                    GPOGUID      = $GPOGUID
+                    GPOPath      = $GPOPath
+                    SourceFile   = Get-GPORelativePath -Path $FilePath
+                    TaskName     = $taskName
+                    Command      = $fullCommand
+                    RunAs        = $runAs
+                    Context      = $context
+                    Action       = $action
+                    _Severity    = 'Note'
+                    _Risk        = 'The item deletes the task - nothing runs'
+                    _DeletesTask = $true
+                }
+                continue
+            }
 
             # Security Analysis
             $severity = "Note"

@@ -1103,6 +1103,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   as a secure state once its members were coloured. `Type` is no longer printed on the
   console - `Mode` says which mechanism wrote the assignment - and stays on the HTML card.
 
+- **`Get-GPOScheduledTasks` no longer reports a task item that deletes its task.** An item
+  with the action D removes the task it names from the computers in scope - nothing runs,
+  and the account and the program in it are never used (MS-GPPREF 2.2.1.18). It was rated
+  like a task that runs, in red with "Task runs as SYSTEM and uses UNC path", and the share
+  it names was connected to. Such items are held back now, summed up in a line and a card
+  naming their policies like a policy that is not linked, and listed with
+  `-IncludeInactive`. `Action` is spelled out - Create, Replace, Update, Delete - instead of
+  the letter, and an item without the attribute reads Update, its default, rather than
+  Unknown.
+
 - **A path in SYSVOL or NETLOGON under the domain's name is read on a domain
   controller.** A task, a policy script or a logon script that runs
   `\\<domain>\SYSVOL\...` or `\\<domain>\NETLOGON\...` was read over that name, which asks

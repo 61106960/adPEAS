@@ -854,6 +854,8 @@ $Script:ExcludeAttributes = @(
     # it per finding rather than per check, and the reach verdict where a check stamps it
     # instead of partitioning. Internal bookkeeping, never a row.
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
+    # A scheduled task item that only deletes its task (Get-GPOScheduledTasks holds it back).
+    '_DeletesTask',
     # Roamed credential material. These hold DPAPI master keys and DPAPI-protected private
     # keys, and Get-CredentialRoaming deliberately never retrieves them - presence comes
     # from an LDAP filter instead. Excluded here as well so that another check fetching a
