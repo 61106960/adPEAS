@@ -44039,7 +44039,12 @@ function Read-UNCPathAccess {
         }
         $uncParentRest = ''
         if ($uncRest) { $uncParentRest = $uncRest.Substring(0, $uncRest.LastIndexOf([char]0x5C)) }
-        $uncShareRoot = "\\$($target.Host)\$share"
+        $connectHost = [string]$target.Host
+        if ($target.PSObject.Properties['IsDomain'] -and $target.IsDomain -and
+            $share -match '^(SYSVOL|NETLOGON)$' -and $Script:LDAPContext.Server) {
+            $connectHost = [string]$Script:LDAPContext.Server
+        }
+        $uncShareRoot = "\\$connectHost\$share"
         $read = @(Invoke-SMBAccess -UNCPath $uncShareRoot -RetryCount 0 -Description "Reading the NTFS permissions of $Path" -ScriptBlock {
             $uncMountedRoot = $uncShareRoot
             if ($args.Count -gt 0 -and $args[0]) { $uncMountedRoot = [string]$args[0] }
@@ -44111,7 +44116,7 @@ function Get-UNCConnectHost {
     $domainNetBIOS = [string]$Script:LDAPContext.DomainNetBIOS
     $address = $null
     if ($domainFQDN -and ($HostName -ieq $domainFQDN -or ($domainNetBIOS -and $HostName -ieq $domainNetBIOS))) {
-        $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null }
+        $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null; IsDomain = $true }
     } elseif ([System.Net.IPAddress]::TryParse($HostName, [ref]$address)) {
         $answer = [PSCustomObject]@{ Host = $null; Reason = "$HostName is an address rather than a computer of this domain, and adPEAS connects to no other host" }
     } elseif ($HostName -match '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') {
@@ -95930,7 +95935,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1254"
+$Script:adPEASVersion = "2.7.0+20261021-1312"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

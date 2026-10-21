@@ -1103,6 +1103,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   as a secure state once its members were coloured. `Type` is no longer printed on the
   console - `Mode` says which mechanism wrote the assignment - and stays on the HTML card.
 
+- **A path in SYSVOL or NETLOGON under the domain's name is read on a domain
+  controller.** A task, a policy script or a logon script that runs
+  `\\<domain>\SYSVOL\...` or `\\<domain>\NETLOGON\...` was read over that name, which asks
+  for a Kerberos ticket to `cifs/<domain>` - and no account carries it: a domain member's
+  DFS client turns the name into a domain controller first, adPEAS did not. From a
+  computer outside the domain the read fell back to NTLM, and with a ticket instead of a
+  password, or where NTLM is restricted, it failed - "Who may write there was not checked,
+  because ... could not be read". Both shares are read on the domain controller the
+  session uses now: every one holds them, with the same NTFS permissions. Other shares
+  under the domain's name are namespaces whose servers need not be domain controllers and
+  are read as before.
+
 - **A Group Policy Preferences variable is no longer looked up as an account.** A
   preferences scheduled task that runs as the logged-on user names its account
   `%LogonDomain%\%LogonUser%`; `Get-GPOScheduledTasks` asked for its SID, and the lookup took

@@ -1299,7 +1299,7 @@ Get-GPOLocalGroupMembership
 
 A password stored in a task (`cpassword`) is reported by `Get-CredentialExposure`.
 
-**NTFS permissions of a UNC path**: For a task running as SYSTEM or a privileged account, adPEAS connects over SMB with the session's credentials and reads the permissions of the program and of its folder. It connects only to an enabled computer of the domain - by the DNS name the directory records for it, never by a short name - or to the domain's own name (NETLOGON, domain-based DFS). An IP address or a host the domain does not know is not contacted, and `-OPSEC` connects to nothing.
+**NTFS permissions of a UNC path**: For a task running as SYSTEM or a privileged account, adPEAS connects over SMB with the session's credentials and reads the permissions of the program and of its folder. It connects only to an enabled computer of the domain - by the DNS name the directory records for it, never by a short name - or to the domain's own name (NETLOGON, domain-based DFS). SYSVOL and NETLOGON under the domain's own name are read on the domain controller the session uses: every domain controller holds both with the same NTFS permissions, and `\\<domain>` itself asks for a Kerberos ticket to `cifs/<domain>`, which no account carries - from a computer outside the domain, or with a ticket instead of a password, that read would fail. An IP address or a host the domain does not know is not contacted, and `-OPSEC` connects to nothing.
 
 | Result | SYSTEM task | Privileged account |
 |--------|-------------|--------------------|

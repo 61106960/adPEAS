@@ -157,7 +157,21 @@ function Read-UNCPathAccess {
         $uncParentRest = ''
         if ($uncRest) { $uncParentRest = $uncRest.Substring(0, $uncRest.LastIndexOf([char]0x5C)) }
 
-        $uncShareRoot = "\\$($target.Host)\$share"
+        # SYSVOL and NETLOGON under the domain's own name are read on the domain controller
+        # the session uses. \\<domain>\SYSVOL asks for a ticket to cifs/<domain>, which no
+        # account carries: a domain member's DFS client turns the name into a domain
+        # controller first, adPEAS - often on a computer outside the domain, and with a
+        # ticket rather than a password - fell back to NTLM or read nothing. Both shares are
+        # on every domain controller, and DFS Replication carries the NTFS permissions with
+        # the files. Any other share under the domain's name is a namespace whose servers
+        # need not be domain controllers, and is left as it is.
+        $connectHost = [string]$target.Host
+        if ($target.PSObject.Properties['IsDomain'] -and $target.IsDomain -and
+            $share -match '^(SYSVOL|NETLOGON)$' -and $Script:LDAPContext.Server) {
+            $connectHost = [string]$Script:LDAPContext.Server
+        }
+
+        $uncShareRoot = "\\$connectHost\$share"
 
         # The scriptblock gets the root Invoke-SMBAccess mounted, which is not always the
         # one it was given: a SimpleBind session with its own DNS server swaps the host
@@ -234,7 +248,8 @@ function Read-UNCPathAccess {
     only a host the directory vouches for is connected to:
 
       the domain's own name, DNS or NetBIOS - a domain controller, and the namespace a
-        domain-based DFS share and NETLOGON live in
+        domain-based DFS share and NETLOGON live in. IsDomain marks it: SYSVOL and NETLOGON
+        there are read on the domain controller the session uses (Read-UNCPathAccess)
       an enabled computer of the domain - looked up by dNSHostName for a dotted name and
         by sAMAccountName for a short one, and connected to by the dNSHostName the
         directory records, so that a short name is never left to LLMNR or NetBIOS
@@ -269,7 +284,8 @@ function Get-UNCConnectHost {
     $address = $null
 
     if ($domainFQDN -and ($HostName -ieq $domainFQDN -or ($domainNetBIOS -and $HostName -ieq $domainNetBIOS))) {
-        $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null }
+        # IsDomain: Read-UNCPathAccess reads SYSVOL and NETLOGON here on a domain controller.
+        $answer = [PSCustomObject]@{ Host = $domainFQDN; Reason = $null; IsDomain = $true }
     } elseif ([System.Net.IPAddress]::TryParse($HostName, [ref]$address)) {
         $answer = [PSCustomObject]@{ Host = $null; Reason = "$HostName is an address rather than a computer of this domain, and adPEAS connects to no other host" }
     } elseif ($HostName -match '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$') {
