@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 11:12:59
-    Version: 2.7.0+20261021-1112
+    Build: 2026-10-21 11:24:06
+    Version: 2.7.0+20261021-1124
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7419,14 +7419,14 @@ $Script:PrimaryAttributes = @{
 }
 
 # A Tier-0 account (Get-ProtectedUsersStatus) is a user with rows of its own: the Tier-0
-# groups that make it one, whether Protected Users covers it, and why an account cannot be.
-# Without an entry here it fell back to the User list, and tier0Groups - the answer to "why
-# is this account Tier-0" - and excludedReason went to the Extended block, which the console
-# never shows.
+# groups that make it one, and why an account cannot be in Protected Users. Without an
+# entry here it fell back to the User list, and tier0Groups - the answer to "why is this
+# account Tier-0" - and excludedReason went to the Extended block, which the console never
+# shows. Whether Protected Users covers it is no row: the line above the accounts says it.
 # Built from the User list so that the two cannot drift apart.
 $tier0AccountRows = [System.Collections.ArrayList]$Script:PrimaryAttributes['User']
 $tier0AccountRows.Insert($tier0AccountRows.IndexOf('privilegedGroups') + 1, 'tier0Groups')
-$Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('protectedUsersStatus', 'excludedReason')
+$Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('excludedReason')
 Remove-Variable -Name tier0AccountRows
 
 # Object types with strict attribute display: ONLY PrimaryAttributes are shown, no Extended overflow.
@@ -20902,11 +20902,12 @@ $acl.Access | Where-Object {
         Tools = @("BloodHound", "mimikatz", "Rubeus")
         MITRE = "T1003.001"
         Triggers = @(
-            # The attribute the check already writes on every Tier-0 account it reports.
-            # 'Protected' is the earned verdict and reads as Secure; the excluded accounts
-            # carry excludedReason instead and match neither.
-            @{ Attribute = 'protectedUsersStatus'; Pattern = '^NOT PROTECTED$'; Severity = 'Finding' }
-            @{ Attribute = 'protectedUsersStatus'; Pattern = '^Protected$'; Severity = 'Secure' }
+            # The row that says why the account is Tier-0, on the list the check put it in -
+            # a row saying NOT PROTECTED repeated the line above the accounts on every one
+            # of them. A protected account is the earned verdict and reads as Secure; the
+            # excluded accounts carry no tier0Groups and match neither.
+            @{ Attribute = 'tier0Groups'; Custom = 'tier0_unprotected'; Severity = 'Finding' }
+            @{ Attribute = 'tier0Groups'; Custom = 'tier0_protected'; Severity = 'Secure' }
         )
     }
 
@@ -25175,6 +25176,16 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+
+        'tier0_unprotected' {
+            # Get-ProtectedUsersStatus: a Tier-0 account outside Protected Users. The verdict
+            # is the list the check put the account on.
+            return ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'Unprotected')
+        }
+
+        'tier0_protected' {
+            return ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'Protected')
         }
 
         'dangerous_rights_expected' {
@@ -111829,13 +111840,15 @@ function Get-ProtectedUsersStatus {
                 foreach ($item in $unprotectedTier0) {
                     $account = $item.Account
                     # Add tier0Groups property for display
+                    # No row saying NOT PROTECTED: the line above says it of every account it
+                    # lists. The context carries the verdict, and the tier0Groups row - why the
+                    # account is Tier-0 - carries the card (tier0_unprotected).
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
-                    $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'NOT PROTECTED' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unprotected' -Force
                     # Finding, whatever the coverage line above says. That line rates the
                     # domain's posture and turns Secure above 80 percent; this object is one
-                    # account outside Protected Users, and its NOT PROTECTED row is red.
+                    # account outside Protected Users, and its tier0Groups row is red.
                     Show-Object $account -Class Finding
                 }
             } else {
@@ -111850,8 +111863,8 @@ function Get-ProtectedUsersStatus {
 
                 foreach ($item in $protectedTier0) {
                     $account = $item.Account
+                    # Its tier0Groups row is green (tier0_protected) - see above.
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
-                    $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'Protected' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Protected' -Force
                     Show-Object $account -Class Secure
@@ -149500,7 +149513,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1112"
+$Script:adPEASVersion = "2.7.0+20261021-1124"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

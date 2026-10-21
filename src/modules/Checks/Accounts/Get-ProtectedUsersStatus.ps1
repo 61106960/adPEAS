@@ -370,13 +370,15 @@ function Get-ProtectedUsersStatus {
                 foreach ($item in $unprotectedTier0) {
                     $account = $item.Account
                     # Add tier0Groups property for display
+                    # No row saying NOT PROTECTED: the line above says it of every account it
+                    # lists. The context carries the verdict, and the tier0Groups row - why the
+                    # account is Tier-0 - carries the card (tier0_unprotected).
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
-                    $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'NOT PROTECTED' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unprotected' -Force
                     # Finding, whatever the coverage line above says. That line rates the
                     # domain's posture and turns Secure above 80 percent; this object is one
-                    # account outside Protected Users, and its NOT PROTECTED row is red.
+                    # account outside Protected Users, and its tier0Groups row is red.
                     Show-Object $account -Class Finding
                 }
             } else {
@@ -391,8 +393,8 @@ function Get-ProtectedUsersStatus {
 
                 foreach ($item in $protectedTier0) {
                     $account = $item.Account
+                    # Its tier0Groups row is green (tier0_protected) - see above.
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
-                    $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'Protected' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Protected' -Force
                     Show-Object $account -Class Secure

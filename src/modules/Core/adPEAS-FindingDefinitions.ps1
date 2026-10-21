@@ -12430,11 +12430,12 @@ $acl.Access | Where-Object {
         Tools = @("BloodHound", "mimikatz", "Rubeus")
         MITRE = "T1003.001"
         Triggers = @(
-            # The attribute the check already writes on every Tier-0 account it reports.
-            # 'Protected' is the earned verdict and reads as Secure; the excluded accounts
-            # carry excludedReason instead and match neither.
-            @{ Attribute = 'protectedUsersStatus'; Pattern = '^NOT PROTECTED$'; Severity = 'Finding' }
-            @{ Attribute = 'protectedUsersStatus'; Pattern = '^Protected$'; Severity = 'Secure' }
+            # The row that says why the account is Tier-0, on the list the check put it in -
+            # a row saying NOT PROTECTED repeated the line above the accounts on every one
+            # of them. A protected account is the earned verdict and reads as Secure; the
+            # excluded accounts carry no tier0Groups and match neither.
+            @{ Attribute = 'tier0Groups'; Custom = 'tier0_unprotected'; Severity = 'Finding' }
+            @{ Attribute = 'tier0Groups'; Custom = 'tier0_protected'; Severity = 'Secure' }
         )
     }
 
@@ -16703,6 +16704,16 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+
+        'tier0_unprotected' {
+            # Get-ProtectedUsersStatus: a Tier-0 account outside Protected Users. The verdict
+            # is the list the check put the account on.
+            return ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'Unprotected')
+        }
+
+        'tier0_protected' {
+            return ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'Protected')
         }
 
         'dangerous_rights_expected' {

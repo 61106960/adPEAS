@@ -1314,6 +1314,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `lastLogon`, `lastLogonTimestamp` and `badPasswordTime` at 0; `lockoutTime` 0 reads "Not
   locked out". Display only - the checks read the values as before.
 
+- **`Get-ProtectedUsersStatus` drops the `protectedUsersStatus` row.** Every account under
+  "Found N unprotected Tier-0 account(s)" carried a red `NOT PROTECTED`, every one under
+  "Protected Tier-0 accounts" a green `Protected` - what the line above them had already
+  said. The card *Tier-0 Account Not in Protected Users* now hangs on `tier0Groups`, the
+  row that says why the account is Tier-0: red on an unprotected account, green on a
+  protected one, uncoloured on an excluded one.
+
 - **An encryption type of 0 shows only where it matters.** `msDS-SupportedEncryptionTypes`
   stored as 0 - which Active Directory Users and Computers writes when the AES boxes on an
   account are cleared - read "Not configured" on any account, while an account without

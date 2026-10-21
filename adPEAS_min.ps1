@@ -3808,7 +3808,7 @@ $Script:PrimaryAttributes = @{
 }
 $tier0AccountRows = [System.Collections.ArrayList]$Script:PrimaryAttributes['User']
 $tier0AccountRows.Insert($tier0AccountRows.IndexOf('privilegedGroups') + 1, 'tier0Groups')
-$Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('protectedUsersStatus', 'excludedReason')
+$Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('excludedReason')
 Remove-Variable -Name tier0AccountRows
 $Script:StrictAttributeTypes = @(
     'SMBSigning',
@@ -15687,8 +15687,8 @@ $acl.Access | Where-Object {
         Tools = @("BloodHound", "mimikatz", "Rubeus")
         MITRE = "T1003.001"
         Triggers = @(
-            @{ Attribute = 'protectedUsersStatus'; Pattern = '^NOT PROTECTED$'; Severity = 'Finding' }
-            @{ Attribute = 'protectedUsersStatus'; Pattern = '^Protected$'; Severity = 'Secure' }
+            @{ Attribute = 'tier0Groups'; Custom = 'tier0_unprotected'; Severity = 'Finding' }
+            @{ Attribute = 'tier0Groups'; Custom = 'tier0_protected'; Severity = 'Secure' }
         )
     }
     'OPERATOR_GROUP_MEMBERS' = @{
@@ -19052,6 +19052,12 @@ function Test-CustomTrigger {
                 return $false
             }
             return $true
+        }
+        'tier0_unprotected' {
+            return ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'Unprotected')
+        }
+        'tier0_protected' {
+            return ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'Protected')
         }
         'dangerous_rights_expected' {
             if ($SourceObject -and $SourceObject.dangerousRightsSeverity) {
@@ -71225,7 +71231,6 @@ function Get-ProtectedUsersStatus {
                 foreach ($item in $unprotectedTier0) {
                     $account = $item.Account
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
-                    $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'NOT PROTECTED' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unprotected' -Force
                     Show-Object $account -Class Finding
@@ -71239,7 +71244,6 @@ function Get-ProtectedUsersStatus {
                 foreach ($item in $protectedTier0) {
                     $account = $item.Account
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
-                    $account | Add-Member -NotePropertyName 'protectedUsersStatus' -NotePropertyValue 'Protected' -Force
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Protected' -Force
                     Show-Object $account -Class Secure
@@ -95783,7 +95787,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1112"
+$Script:adPEASVersion = "2.7.0+20261021-1124"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
