@@ -9,10 +9,9 @@ function Get-GPOScheduledTasks {
 
     Focuses on security-critical configurations:
     - Tasks running as SYSTEM or privileged accounts
-    - Tasks that name a UNC path (whoever can write the share controls what runs)
-    - For a task with a UNC path that runs as SYSTEM or a privileged account: the NTFS
-      permissions of the file and of the folder it is in, read over SMB where the host is
-      a computer of the domain
+    - Tasks that name a UNC path (whoever can write the share controls what runs). Who
+      may write it is not read: that read broke on host names, tickets, wildcards and
+      copy sources in too many places (removed 2026-10-21)
     - Tasks starting code from a directory in which every user may change or add files
       by Windows default (the permissions on the hosts themselves are not read)
     - Every Exec action of a task, not only the first one
@@ -32,20 +31,11 @@ function Get-GPOScheduledTasks {
     Also list the tasks of policies that are not linked or not enabled, and the task items
     that only delete their task.
 
-    .PARAMETER OPSEC
-    Make no connection to the hosts a task names. Without it, the check reads the NTFS
-    permissions of a UNC path a task running as SYSTEM or a privileged account starts from -
-    with the session's credentials, and only on a host that is an enabled computer of the
-    domain, by the DNS name the directory records for it.
-
     .EXAMPLE
     Get-GPOScheduledTasks
 
     .EXAMPLE
     Get-GPOScheduledTasks -Domain "contoso.com" -Credential (Get-Credential)
-
-    .EXAMPLE
-    Get-GPOScheduledTasks -OPSEC
 
     .NOTES
     Category: GPO
@@ -66,10 +56,7 @@ function Get-GPOScheduledTasks {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$OPSEC
+        [switch]$IncludeInactive
     )
 
     begin {
@@ -124,7 +111,7 @@ function Get-GPOScheduledTasks {
 
     process {
         try {
-            # Connection parameters only. -IncludeInactive and -OPSEC belong to this check
+            # Connection parameters only. -IncludeInactive belongs to this check
             # and neither of the two callees below has a parameter by those names, so splatting
             # $PSBoundParameters failed to bind - a terminating error before the first line
             # of output, which showed up as a check that silently produced nothing.
@@ -140,11 +127,6 @@ function Get-GPOScheduledTasks {
 
             $domainFQDN = $Script:LDAPContext.Domain
             $Script:_gpoScheduledTasks = [System.Collections.ArrayList]::new()
-
-            # What the hosts and UNC paths of this run turned out to be - see
-            # Get-UNCWriteAccess. Fresh per run: permissions read in an earlier one may
-            # have changed since.
-            $Script:_uncWriteAccess = @{ Hosts = @{}; Paths = @{} }
 
             Show-SubHeader "Searching for GPO scheduled tasks..." -ObjectType "GPOScheduledTask"
 
@@ -203,7 +185,7 @@ function Get-GPOScheduledTasks {
 
                         try {
                             Write-Log "[Get-GPOScheduledTasks] Reading: $($file.FullName)"
-                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()] -OPSEC:$OPSEC
+                            $taskFindings = Parse-ScheduledTasksXML -FilePath $file.FullName -GPOName $gpoName -GPOGUID $gpoGUID -GPOPath $gpoPathMap[([string]$gpoGUID).ToUpper()]
 
                             if ($taskFindings) {
                                 # $null-guarded, and three-valued. Get-GPOLinkage returns $null
@@ -273,7 +255,6 @@ function Get-GPOScheduledTasks {
             $sysvolAccessible = $Script:sysvolAccessible
             $Script:_gpoScheduledTasks = $null
             $Script:sysvolAccessible = $null
-            $Script:_uncWriteAccess = $null
 
             if (-not $sysvolAccessible) {
                 if ((Test-SysvolAccessible) -eq $false) {
@@ -412,11 +393,7 @@ function Parse-ScheduledTasksXML {
         # Optional: a GPO whose gPCFileSysPath the directory does not record yields an
         # empty string here, and an empty row is skipped rather than printed blank.
         [Parameter(Mandatory=$false)]
-        [string]$GPOPath,
-
-        # Passed on to Get-UNCWriteAccess: connect to no host a task names.
-        [Parameter(Mandatory=$false)]
-        [switch]$OPSEC
+        [string]$GPOPath
     )
 
     try {
@@ -564,8 +541,10 @@ function Parse-ScheduledTasksXML {
                 $isSystemAccount = $true
             }
 
-            # Try to resolve the account name to SID, then check if privileged
+            # Try to resolve the account name to SID, then check if privileged. The category
+            # also colours the RunAs row (_RunAsSeverity).
             $isPrivilegedAccount = $false
+            $runAsCategory = $null
             if (-not $isSystemAccount -and $runAs -ne "Unknown" -and -not [string]::IsNullOrEmpty($runAs)) {
                 try {
                     # Try to resolve account name to SID
@@ -583,8 +562,8 @@ function Parse-ScheduledTasksXML {
 
                     if ($accountSID) {
                         # Check if account is in a privileged category
-                        $category = (Test-IsPrivileged -Identity $accountSID).Category
-                        $isPrivilegedAccount = $category -in @('Privileged', 'Operator')
+                        $runAsCategory = [string](Test-IsPrivileged -Identity $accountSID).Category
+                        $isPrivilegedAccount = $runAsCategory -in @('Privileged', 'Operator')
                     }
                 } catch {
                     Write-Log "[Parse-ScheduledTasksXML] Could not resolve account '$runAs' to SID: $_"
@@ -657,27 +636,13 @@ function Parse-ScheduledTasksXML {
                 }
             }
 
-            # A task with a UNC path that runs as SYSTEM or as a privileged account: who may
-            # write there, where adPEAS may look. Three outcomes, and the ladder below keeps
-            # them apart - an account beyond the expected administrators can write it (a
-            # finding that names them), a path that could not be read in full (the finding as
-            # it always was, with the reason), and a path only privileged accounts can write.
-            # That last one is a hint for SYSTEM - the administrators of that server still
-            # decide what runs everywhere the policy applies - and stays a finding for a
-            # privileged account, which is a finding on its own.
-            $uncAccess = $null
-            if (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath) {
-                try {
-                    $uncAccess = Get-UNCWriteAccess -Path $uncPaths -OPSEC:$OPSEC
-                } catch {
-                    Write-Log "[Parse-ScheduledTasksXML] Could not assess the UNC paths of '$taskName': $_"
-                }
-            }
-            $uncWritable = ($null -ne $uncAccess) -and (@($uncAccess.Writers).Count -gt 0)
-            $uncClean = ($null -ne $uncAccess) -and (-not $uncWritable) -and (@($uncAccess.Unchecked).Count -eq 0)
-
-            # Who the share's content runs as, in the words the UNC verdicts below use. The
-            # SYSTEM wording is the one the card's triggers have always matched.
+            # Who may write a share a task starts from is not read. The read - NTFS over SMB,
+            # on the host the path names - broke on host names, tickets, wildcards and copy
+            # sources in too many places to be worth its connections (user decision
+            # 2026-10-21). A task that runs as SYSTEM or a privileged account from a share is
+            # the finding it was before the read.
+            #
+            # Who the share's content runs as, in the words the UNC verdict below uses.
             $uncTaskSubject = 'SYSTEM'
             $uncRunsAs = 'SYSTEM'
             if (-not $isSystemAccount) {
@@ -687,33 +652,18 @@ function Parse-ScheduledTasksXML {
 
             $isPowerShell = (@($allCommands) -join ' ') -match 'powershell|pwsh'
 
-            # A script started from a share whose permissions were just read is not the open
-            # question "check if script is modifiable" asks - the answer is on the row.
             $scriptPrograms = @($allCommands | Where-Object { $_ -match '\.(bat|cmd|vbs|vbe|ps1|wsf)$' })
-            if ($uncClean) {
-                $scriptPrograms = @($scriptPrograms | Where-Object { $_.Trim().Trim('"') -notmatch '^\\\\' })
-            }
             $isScript = $scriptPrograms.Count -gt 0
 
             # Severity Determination (using standard adPEAS severity values)
             #
-            # $uncSeverity is the colour of the program path on the row - where a task runs as
-            # SYSTEM or a privileged account from a share, the path is the way in, and it carries
-            # GPO_TASK_SYSTEM_UNC_PATH. The card sat on RiskReason, a sentence that repeated RunAs
-            # and Command on the console; that stays on the HTML card (decided 2026-10-21).
-            $uncSeverity = $null
-            if (($isSystemAccount -or $isPrivilegedAccount) -and $uncWritable) {
+            # $uncFinding marks the task whose program path carries GPO_TASK_SYSTEM_UNC_PATH:
+            # one that runs as SYSTEM or a privileged account from a share.
+            $uncFinding = $false
+            if (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath) {
                 $severity = "Finding"
-                $uncSeverity = 'Finding'
-                $risk = "Task runs as $uncTaskSubject and uses UNC path - $(@($uncAccess.Writers) -join ', ') can change what it runs there by NTFS permission (see UNCPathPermissions), and so control what runs as $uncRunsAs on every computer in scope. The share permissions, which can narrow this over the network, were not read"
-            } elseif (($isSystemAccount -or $isPrivilegedAccount) -and $hasUNCPath -and -not $uncClean) {
-                $severity = "Finding"
-                $uncSeverity = 'Finding'
-                $uncReason = ''
-                if ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
-                    $uncReason = ", because $(@($uncAccess.Unchecked)[0])"
-                }
-                $risk = "Task runs as $uncTaskSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $uncRunsAs on every computer in scope. Who may write there was not checked$uncReason"
+                $uncFinding = $true
+                $risk = "Task runs as $uncTaskSubject and uses UNC path - whoever can write that share, or answer for its server name, controls what runs as $uncRunsAs on every computer in scope. Who may write there was not checked"
             } elseif ($isSystemAccount -and $riskyPathApplies) {
                 $severity = "Finding"
                 $risk = "Task runs as SYSTEM $riskyPathText as SYSTEM"
@@ -738,22 +688,6 @@ function Parse-ScheduledTasksXML {
             } elseif ($isPrivilegedAccount) {
                 $severity = "Finding"
                 $risk = "Task runs as privileged account"
-                if ($uncClean) {
-                    $uncSeverity = 'Finding'
-                    # Read in full, and only privileged accounts can write what it starts. Still
-                    # a finding: the task runs as a privileged account on every computer in
-                    # scope, whatever it starts - the row says the share is not the way in.
-                    $risk = "Task runs as the privileged account $runAsLabel from UNC path $([string]@($uncPaths)[0]) - by NTFS permission only privileged accounts can write what it runs there. The share permissions were not read"
-                }
-            } elseif ($uncClean) {
-                # SYSTEM with a UNC path that was read in full and only privileged accounts
-                # can write. After the SYSTEM findings above, so a local script or a risky
-                # directory in another action of the same task keeps its finding.
-                $uncFirst = [string]@($uncPaths)[0]
-                $uncHostName = ($uncFirst -replace '^\\\\([^\\]+)\\.*$', '$1')
-                $severity = "Hint"
-                $uncSeverity = 'Hint'
-                $risk = "Task runs as SYSTEM from UNC path $uncFirst - by NTFS permission only privileged accounts can write what it runs there, so whoever administers $uncHostName still controls what runs as SYSTEM on every computer in scope. The share permissions were not read"
             } elseif ($riskyPathApplies) {
                 # Any other account. A task running as a named account out of C:\Temp fell
                 # through every branch to a Note with an empty reason, although whoever puts
@@ -809,23 +743,20 @@ function Parse-ScheduledTasksXML {
                 _Risk      = $risk
             }
 
-            # The rows behind the UNC finding: which file or folder, who, and the rights an
-            # administrator sees in Explorer. Written only where somebody can write, like
-            # SysvolPermissions on a GPO, so every row on it is a finding.
-            if ($uncWritable) {
-                $taskProps['UNCPathPermissions'] = (@($uncAccess.Rows) -join "`n")
-            } elseif ($uncSeverity) {
-                # And short where nobody beyond the administrators can write, or where it was not
-                # read: the reason, in full, is RiskReason's, on the HTML card.
-                $taskProps['UNCPathPermissions'] = if ($uncClean) {
-                    'Privileged accounts only (NTFS)'
-                } elseif ($null -ne $uncAccess -and @($uncAccess.Unchecked).Count -gt 0) {
-                    Get-UNCUncheckedShort -Reason ([string]@($uncAccess.Unchecked)[0])
-                } else {
-                    'Not checked'
-                }
+            # The program path carries the UNC card where the task runs as SYSTEM or a
+            # privileged account from a share (gpo_task_unc_finding); every program path is
+            # yellow (GPO_TASK_FIELD_SEVERITY).
+            if ($uncFinding) { $taskProps['_UNCFinding'] = $true }
+
+            # The account the task runs as, coloured by its privilege, as an identity is
+            # elsewhere: a Tier 0 account red, an operator account and the machine's own
+            # accounts - SYSTEM, LOCAL SERVICE, NETWORK SERVICE - yellow, anything else not at
+            # all (gpo_task_runas_*).
+            if ($runAsCategory -eq 'Privileged') {
+                $taskProps['_RunAsSeverity'] = 'Finding'
+            } elseif ($runAsCategory -eq 'Operator' -or $isSystemAccount) {
+                $taskProps['_RunAsSeverity'] = 'Hint'
             }
-            if ($uncSeverity) { $taskProps['_UNCSeverity'] = $uncSeverity }
 
             # A fact about the program path, and no longer a severity. Measured on Windows 11
             # (2026-10-16): the Task Scheduler service quotes the program path itself when it

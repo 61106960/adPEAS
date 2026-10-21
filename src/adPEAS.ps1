@@ -360,7 +360,7 @@ function Invoke-adPEAS {
 .PARAMETER OPSEC
     Skips OPSEC-critical and heavy-load checks (Kerberoast, ASREPRoast, BloodHound collection, PasswordInDescription, NonDefaultOwners, OutdatedComputers).
     These checks enumerate thousands of objects and generate significant LDAP traffic.
-    Also makes no SMB connection to the file servers a GPO scheduled task or a GPO script names, or to NETLOGON for the logon scripts of accounts: without -OPSEC, the NTFS permissions of a program a task running as SYSTEM or a privileged account starts from a share, of a script a policy runs from NETLOGON or a share, and of the logon script an account's scriptPath names are read, on computers of the domain only.
+    Also makes no SMB connection to the file servers a GPO script names, or to NETLOGON for the logon scripts of accounts: without -OPSEC, the NTFS permissions of a script a policy runs from NETLOGON or a share, and of the logon script an account's scriptPath names are read, on computers of the domain only.
 
 .PARAMETER NoColor
     Disables colored console output. Useful for logging or terminals that don't support ANSI colors.
@@ -1202,7 +1202,7 @@ try {
         try {
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPermissions' -Title 'GPO Permissions' -Check { Get-GPOPermissions -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOLocalGroupMembership' -Title 'GPO Local Group Membership' -Check { Get-GPOLocalGroupMembership }
-            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks -OPSEC:$OPSEC }
+            Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScheduledTasks' -Title 'GPO Scheduled Tasks' -Check { Get-GPOScheduledTasks }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOScriptPaths' -Title 'GPO Script Paths' -Check { Get-GPOScriptPaths -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPORegistrySettings' -Title 'GPO Registry Settings' -Check { Get-GPORegistrySettings }
             Invoke-CheckWithContext -Category 'GPO' -CheckName 'Get-GPOPointAndPrint' -Title 'Point and Print Policies' -Check { Get-GPOPointAndPrint -IncludeDefaults:$IncludePrivileged }

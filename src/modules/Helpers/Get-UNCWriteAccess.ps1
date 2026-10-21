@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Reads who may write the UNC paths a check names - the program a GPO task starts, the
-    script a policy or an account runs - where adPEAS may connect.
+    Reads who may write the UNC paths a check names - the script a policy or an account
+    runs - where adPEAS may connect.
 
 .DESCRIPTION
     Whoever can write a program or script that something runs from a share controls what
@@ -18,12 +18,13 @@
     to sit in a dozen policies. A check sets the cache up when it starts and clears it when
     it ends, so permissions read in an earlier run are not reused.
 
-    Moved here from Get-GPOScheduledTasks, where it was written for the program a task
-    starts, when Get-GPOScriptPaths needed the same answer for scripts.
+    Written for the program a GPO scheduled task starts, and moved here when
+    Get-GPOScriptPaths needed the same answer for scripts. Get-GPOScheduledTasks no longer
+    reads it (user decision 2026-10-21): a task's command line names shares as copy
+    sources, wildcards and arguments, and the read broke on too many of them.
 
 .PARAMETER Path
-    The UNC paths to read, each naming at least \\host\share - Get-TaskUNCPaths returns
-    them for a task.
+    The UNC paths to read, each naming at least \\host\share.
 
 .PARAMETER OPSEC
     Connect to nothing; every path is reported as not checked.
@@ -33,7 +34,7 @@
 
 .PARAMETER Runner
     What runs the path, for the reason given when the path holds an environment variable:
-    "the task", "the script".
+    "the script", "the logon script".
 
 .OUTPUTS
     [PSCustomObject] with
@@ -56,7 +57,7 @@ function Get-UNCWriteAccess {
         [string]$Caller = 'Get-UNCWriteAccess',
 
         [Parameter(Mandatory = $false)]
-        [string]$Runner = 'the task'
+        [string]$Runner = 'the script'
     )
 
     if ($null -eq $Script:_uncWriteAccess) {
@@ -88,40 +89,6 @@ function Get-UNCWriteAccess {
         Writers   = @($writers)
         Unchecked = @($unchecked)
     }
-}
-
-<#
-.SYNOPSIS
-    The short console value for a UNC path whose permissions were not read.
-
-.DESCRIPTION
-    Get-UNCWriteAccess reports why a path was not read as a clause that completes "Who may
-    write there was not checked, because ..." - the sentence a check prints on its HTML
-    card. A row on the console takes the value and a terse qualifier instead. Matched on
-    the clauses Read-UNCPathAccess and Get-UNCConnectHost write below; a clause it does not
-    know reads "Not checked".
-
-.PARAMETER Reason
-    One entry of the Unchecked list Get-UNCWriteAccess returns.
-#>
-function Get-UNCUncheckedShort {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string]$Reason
-    )
-
-    if ($Reason -match '^-OPSEC')                       { return 'Not checked (-OPSEC)' }
-    if ($Reason -match 'environment variable')          { return 'Not checked - the path holds a variable' }
-    if ($Reason -match 'is an address rather than')     { return 'Not checked - an address, not a computer of the domain' }
-    if ($Reason -match 'is not an enabled computer')    { return 'Not checked - not a computer of the domain' }
-    if ($Reason -match 'has no DNS host name')          { return 'Not checked - no DNS name in the directory' }
-    if ($Reason -match 'could not be looked up')        { return 'Not checked - the directory lookup failed' }
-    if ($Reason -match '^the folder .+ could not be read$') { return 'Not checked - the folder could not be read' }
-    if ($Reason -match 'could not be read$')            { return 'Not checked - could not be read' }
-    return 'Not checked'
 }
 
 <#
@@ -160,7 +127,7 @@ function Read-UNCPathAccess {
         [string]$Caller = 'Get-UNCWriteAccess',
 
         [Parameter(Mandatory = $false)]
-        [string]$Runner = 'the task'
+        [string]$Runner = 'the script'
     )
 
     $findings = @()
@@ -242,7 +209,7 @@ function Read-UNCPathAccess {
         }
         $read = $read[0]
 
-        # Rows name the path as the task does, not by the host name the connection used.
+        # Rows name the path as the policy does, not by the host name the connection used.
         $originalRoot = "\\$uncHost\$share"
         $folderObject = $originalRoot + $uncParentRest
         if ($read.Kind -eq 'Folder') { $folderObject = $originalRoot + $uncRest }

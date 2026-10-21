@@ -47,18 +47,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   of another forest stays its foreign security principal. The help of `-ShowMembers`
   promised a formatted list with member types; it says what it returns now.
 
-- **`Get-GPOScheduledTasks` reads who may write the UNC path a task running as SYSTEM or
-  as a privileged account starts from.** **This is a new outgoing connection: adPEAS now
-  connects over SMB, with the session's credentials, to the file servers such tasks
-  name** - only to enabled computers of the domain, by the DNS name the directory records
-  for them, or to the domain's own name. Addresses and hosts the domain does not know are
-  never contacted, and `-OPSEC` (on the check and on `Invoke-adPEAS`) suppresses the
-  connection entirely. An account beyond the expected administrators that can write the
-  file or its folder makes the task a finding and is listed in the new
-  `UNCPathPermissions` row; a path only privileged accounts can write is reported as a
-  hint for a SYSTEM task and stays a finding for a privileged account. The share
-  permissions are not read - Windows returns them to administrators of the file server
-  only.
 
 - **GPO findings say whether the policy reaches a domain controller.** In the seven GPO
   checks, each `LinkedOUs` entry that puts a domain controller in the policy's scope - the
@@ -288,9 +276,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Get-GPOScriptPaths` reads who may write a script that runs from outside the policy
   store.** A script in NETLOGON, in SYSVOL outside a GPO folder or on a file share follows
   the NTFS permissions of that file, not the GPO's, and the check said only that they
-  were not checked. It now reads them over SMB the way `Get-GPOScheduledTasks` reads the
-  program of a task - from the domain's own name and enabled computers of the domain only,
-  and not under the new `-OPSEC` switch, which `Invoke-adPEAS -OPSEC` passes on. A
+  were not checked. It now reads them over SMB. **This is a new outgoing connection: adPEAS
+  connects, with the session's credentials, to the file servers such scripts name** - only
+  to enabled computers of the domain, by the DNS name the directory records for them, or to
+  the domain's own name; addresses and hosts the domain does not know are never contacted,
+  and the new `-OPSEC` switch, which `Invoke-adPEAS -OPSEC` passes on, suppresses the
+  connection entirely. A
   principal beyond the administrators that may write the script or its folder makes the
   script a finding in either context and is named in the new `scriptPathPermissions` row;
   a script in NETLOGON only administrators may change is a note, one on another server a
@@ -636,7 +627,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   scored 30 like the other hints of the table.
 
 - **An SMB access made from inside another one no longer ends the connection of the
-  first.** `Get-GPOScheduledTasks` reads who may write a task's UNC path while it reads
+  first.** `Get-GPOScriptPaths` reads who may write a script's UNC path while it reads
   SYSVOL, and that path can be on the very SYSVOL share it is reading. The inner access
   mounted the share a second time and removed it again, and for a drive mounted with
   credentials removing it cancels every connection to that share without a drive letter -
@@ -1106,12 +1097,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Get-GPOScheduledTasks` no longer prints `RiskReason` on the console for a task on a
   share.** A task that runs as SYSTEM or a privileged account from a UNC path carried a
   sentence of several lines - "Task runs as SYSTEM and uses UNC path - whoever can write
-  that share ... Who may write there was not checked, because ..." - that repeated `RunAs`
-  and `Command`. The program path in `Command` carries the colour and the card now, and
-  `UNCPathPermissions` says in a few words what was found: the accounts that can write, as
-  before, or `Privileged accounts only (NTFS)`, or why it was not read - `Not checked -
-  could not be read`, `Not checked - not a computer of the domain`, `Not checked (-OPSEC)`.
-  The sentence stays on the HTML card.
+  that share, or answer for its server name, controls what runs as SYSTEM ..." - that
+  repeated `RunAs` and `Command`. The program path in `Command` carries the card now; the
+  sentence stays on the HTML card.
+
+- **`Get-GPOScheduledTasks` colours the program path and the account of every task.**
+  `Command` was coloured by patterns on the path and stayed plain where a line started with
+  `cmd.exe`, `powershell` or anything else the patterns did not expect; it is yellow on
+  every task that runs now. `RunAs` takes the colour of the account's privilege, as an
+  identity does elsewhere: red for a Tier 0 account, yellow for an operator account and for
+  SYSTEM, LOCAL SERVICE and NETWORK SERVICE.
 
 - **Two notes of `Get-GPOScheduledTasks` stay on the HTML card.** `gpoTaskUnquotedPath` -
   a paragraph saying that a program path with a space is quoted by the Task Scheduler and
@@ -1126,15 +1121,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Get-GPOScheduledTasks` no longer reports a task item that deletes its task.** An item
   with the action D removes the task it names from the computers in scope - nothing runs,
   and the account and the program in it are never used (MS-GPPREF 2.2.1.18). It was rated
-  like a task that runs, in red with "Task runs as SYSTEM and uses UNC path", and the share
-  it names was connected to. Such items are held back now, summed up in a line and a card
-  naming their policies like a policy that is not linked, and listed with
-  `-IncludeInactive`. `Action` is spelled out - Create, Replace, Update, Delete - instead of
-  the letter, and an item without the attribute reads Update, its default, rather than
-  Unknown.
+  like a task that runs, in red with "Task runs as SYSTEM and uses UNC path". Such items are
+  held back now, summed up in a line and a card naming their policies like a policy that
+  is not linked, and listed with `-IncludeInactive`. `Action` is spelled out - Create,
+  Replace, Update, Delete - instead of the letter, and an item without the attribute reads
+  Update, its default, rather than Unknown.
 
 - **A path in SYSVOL or NETLOGON under the domain's name is read on a domain
-  controller.** A task, a policy script or a logon script that runs
+  controller.** A policy script or a logon script that runs
   `\\<domain>\SYSVOL\...` or `\\<domain>\NETLOGON\...` was read over that name, which asks
   for a Kerberos ticket to `cifs/<domain>` - and no account carries it: a domain member's
   DFS client turns the name into a domain controller first, adPEAS did not. From a

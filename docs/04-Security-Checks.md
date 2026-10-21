@@ -1044,7 +1044,7 @@ Get-NonDefaultUserOwners -IncludeHealthMailboxes
 
 **What it checks**:
 - The `scriptPath` of every enabled account; a relative path is resolved to `\\<domain>\NETLOGON\<path>`
-- The NTFS permissions of each distinct script and of the folder it is in, read over SMB from the domain's own name and enabled computers of the domain - the same reader the GPO script and scheduled task checks use
+- The NTFS permissions of each distinct script and of the folder it is in, read over SMB from the domain's own name and enabled computers of the domain - the same reader the GPO script check uses
 - Writers beyond the administrators and privileged accounts, how many accounts run the script, and the privileged accounts among them by name
 
 **Security Impact**: Windows runs an account's logon script at every logon of that account, as that account. Whoever may change the script runs code as every account that has it set - an administrator among them with the administrator's rights. NETLOGON is the scripts folder of SYSVOL, and its file permissions are nobody's GPO permissions.
@@ -1292,24 +1292,13 @@ Get-GPOLocalGroupMembership
 - Every Exec action of a task - regular and immediate tasks, both file formats - and the account it runs as, from the Preferences item or from the task's own principal
 - Tasks running as SYSTEM, LOCAL SERVICE, NETWORK SERVICE or a privileged account
 - Programs started from a directory in which every user may change files (`C:\Temp`, `C:\Users\Public`, ...) or add files (`C:\ProgramData`, `C:\Windows\Temp`, ...) by Windows default
-- UNC paths: whoever can write the share, or answer for its server name, controls what the task runs
-- For a task with a UNC path that runs as SYSTEM or a privileged account: the NTFS permissions of the file and of the folder it is in (see below)
+- UNC paths: whoever can write the share, or answer for its server name, controls what the task runs. A task that runs from a share as SYSTEM or a privileged account is a finding, with any other account a hint. Who may write the share is not read: a task's command line names shares as programs, arguments, copy sources and wildcards, and the read broke on too many of them
 - `cmd.exe /c` lines with an unquoted program path containing a space, which cmd.exe splits at the first space. The program field of a task is not affected: the Task Scheduler quotes it itself
 - Tasks of policies that are not linked or not enabled are held back and summarized, and so are task items with the action Delete: they remove the task they name, nothing runs
 
 A password stored in a task (`cpassword`) is reported by `Get-CredentialExposure`.
 
-**NTFS permissions of a UNC path**: For a task running as SYSTEM or a privileged account, adPEAS connects over SMB with the session's credentials and reads the permissions of the program and of its folder. It connects only to an enabled computer of the domain - by the DNS name the directory records for it, never by a short name - or to the domain's own name (NETLOGON, domain-based DFS). SYSVOL and NETLOGON under the domain's own name are read on the domain controller the session uses: every domain controller holds both with the same NTFS permissions, and `\\<domain>` itself asks for a Kerberos ticket to `cifs/<domain>`, which no account carries - from a computer outside the domain, or with a ticket instead of a password, that read would fail. An IP address or a host the domain does not know is not contacted, and `-OPSEC` connects to nothing.
-
-| Result | SYSTEM task | Privileged account |
-|--------|-------------|--------------------|
-| An account beyond the expected administrators can write the file or folder - listed in `UNCPathPermissions` | Finding | Finding |
-| Only privileged accounts can write it - the administrators of that server still decide what runs in scope; `UNCPathPermissions` reads `Privileged accounts only (NTFS)` | Hint | Finding - the account is one either way |
-| Not read: unknown host, address, unreadable path, or `-OPSEC` - `UNCPathPermissions` says which in a few words (`Not checked - could not be read`) | Finding | Finding |
-
-The colour is on the program path (`Command`), which carries the card; the full sentence (`RiskReason`) is on the HTML card only.
-
-The share permissions are not read: Windows returns a share's security descriptor to administrators of the file server only. Over the network they apply on top of the NTFS permissions and can only narrow them.
+**Console colours**: The program path (`Command`) is yellow on every task that runs, and carries the card of a task that runs from a share as SYSTEM or a privileged account. The account (`RunAs`) is red for a Tier 0 account, and yellow for an operator account and for SYSTEM, LOCAL SERVICE and NETWORK SERVICE. The full sentence (`RiskReason`) is on the HTML card only.
 
 **Security Impact**: A task runs on every computer the policy reaches. Whoever can replace what a SYSTEM task starts runs code as SYSTEM on all of them; for a task that runs as a privileged domain account, as that account - for a domain administrator, that is the domain.
 
@@ -1319,9 +1308,6 @@ Get-GPOScheduledTasks
 
 # Also list the tasks of policies that are not linked or not enabled
 Get-GPOScheduledTasks -IncludeInactive
-
-# Make no SMB connection to the file servers a task names
-Get-GPOScheduledTasks -OPSEC
 ```
 
 **Parameters**:
@@ -1329,7 +1315,6 @@ Get-GPOScheduledTasks -OPSEC
 | Parameter | Description |
 |-----------|-------------|
 | `-IncludeInactive` | Also list the tasks of policies that are not linked or not enabled |
-| `-OPSEC` | Connect to no host a task names; UNC paths are reported as not checked |
 
 ---
 
@@ -1342,7 +1327,7 @@ Get-GPOScheduledTasks -OPSEC
 - Logon/Logoff scripts (run in user context)
 - Scripts loaded from UNC paths (credential exposure risk)
 - PowerShell scripts configured via psscripts.ini
-- Who may write a script that runs from outside the policy's own folder - NETLOGON, SYSVOL outside a GPO folder, or a file share: the NTFS permissions of the file and of its folder are read over SMB from the domain's own name and enabled computers of the domain. A principal beyond the administrators that may write them makes the script a finding and is named in `scriptPathPermissions`; a script in NETLOGON only administrators may change is a note, one on another server a hint (its administrators decide what runs). The share permissions are not read, and a local path is not read over the network.
+- Who may write a script that runs from outside the policy's own folder - NETLOGON, SYSVOL outside a GPO folder, or a file share: the NTFS permissions of the file and of its folder are read over SMB from the domain's own name and enabled computers of the domain - by the DNS name the directory records, never by a short name, and never from an address or a host the domain does not know. SYSVOL and NETLOGON under the domain's own name are read on the domain controller the session uses: `\\<domain>` itself asks for a Kerberos ticket to `cifs/<domain>`, which no account carries. A principal beyond the administrators that may write them makes the script a finding and is named in `scriptPathPermissions`; a script in NETLOGON only administrators may change is a note, one on another server a hint (its administrators decide what runs). The share permissions are not read, and a local path is not read over the network.
 
 **Security Impact**: GPO scripts execute automatically on target systems. Startup and Shutdown scripts run as SYSTEM, making them high-value targets for privilege escalation. Scripts loaded from UNC paths expose machine credentials on the network.
 

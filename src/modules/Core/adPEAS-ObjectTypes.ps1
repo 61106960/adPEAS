@@ -1799,10 +1799,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Scheduled tasks in GPO configurations, every Exec action of each"
             "Execution context (SYSTEM, a privileged account, any other account)"
             "Whether a path lies in a directory where every user may change or add files by Windows default"
-            "UNC paths, whose share decides what the task runs"
-            "For a task running as SYSTEM or a privileged account: the NTFS permissions of the UNC file and of the folder it is in, read over SMB on enabled computers of the domain only, and not under -OPSEC"
+            "UNC paths, whose share decides what the task runs - who may write the share is not read"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
-            "Not tested: the permissions on the hosts themselves, and the share permissions of a UNC path - they are returned to administrators of the file server only"
+            "Not tested: the permissions on the hosts themselves, and who may write the share a UNC path names"
         )
         SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
     }

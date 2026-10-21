@@ -441,7 +441,7 @@ $Script:PrimaryAttributes = @{
 
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
-        'GPOName', 'GPOGUID', 'GPOPath', 'TaskName', 'Command', 'UNCPathPermissions',
+        'GPOName', 'GPOGUID', 'GPOPath', 'TaskName', 'Command',
         'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
@@ -867,9 +867,9 @@ $Script:ExcludeAttributes = @(
     # instead of partitioning. Internal bookkeeping, never a row.
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
     # A scheduled task item that only deletes its task (Get-GPOScheduledTasks holds it back),
-    # and the colour of a task's program path where it runs from a share as SYSTEM or a
-    # privileged account (read by the gpo_task_unc_* predicates).
-    '_DeletesTask', '_UNCSeverity',
+    # whether a task runs from a share as SYSTEM or a privileged account, and the colour of
+    # the account it runs as (read by the gpo_task_* predicates).
+    '_DeletesTask', '_UNCFinding', '_RunAsSeverity',
     # Roamed credential material. These hold DPAPI master keys and DPAPI-protected private
     # keys, and Get-CredentialRoaming deliberately never retrieves them - presence comes
     # from an LDAP filter instead. Excluded here as well so that another check fetching a
