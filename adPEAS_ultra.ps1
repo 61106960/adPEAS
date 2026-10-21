@@ -2285,6 +2285,30 @@ $Script:DangerousRegistryKeys = @(
 	    RiskReason        = 'These computers offer TLS 1.0 to the servers they connect to, which RFC 8996 deprecates'
 	}
 )
+$Script:RegistryValuesReadElsewhere = @(
+	@{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+	   ValueNames = @('Restricted', 'TrustedServers', 'ServerList', 'InForest', 'NoWarningNoElevationOnInstall', 'UpdatePromptSettings', 'RestrictDriverInstallationToAdministrators') }
+	@{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers\PackagePointAndPrint'
+	   ValueNames = @('PackagePointAndPrintOnly', 'PackagePointAndPrintServerList') }
+	@{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers\PackagePointAndPrint\ListofServers'
+	   ValueNames = @('*') }
+	@{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers'
+	   ValueNames = @('RegisterSpoolerRemoteRpcEndPoint', 'CopyFilesPolicy', 'DisableWebPnPDownload', 'DisableHTTPPrinting') }
+	@{ Check = 'Get-GPOPointAndPrint'; Key = 'System\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+	   ValueNames = @('AddPrinterDrivers') }
+	@{ Check = 'Get-SMBSigningStatus'; Key = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+	   ValueNames = @('RequireSecuritySignature', 'EnableSecuritySignature') }
+	@{ Check = 'Get-SMBSigningStatus'; Key = 'System\CurrentControlSet\Services\LanmanWorkstation\Parameters'
+	   ValueNames = @('RequireSecuritySignature', 'EnableSecuritySignature') }
+	@{ Check = 'Get-LDAPConfiguration'; Key = 'System\CurrentControlSet\Services\NTDS\Parameters'
+	   ValueNames = @('LDAPServerIntegrity', 'LdapEnforceChannelBinding') }
+	@{ Check = 'Get-LAPSConfiguration'; Key = 'Software\Policies\Microsoft Services\AdmPwd'
+	   ValueNames = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays', 'AdmPwdEnabled', 'PwdExpirationProtectionEnabled') }
+	@{ Check = 'Get-LAPSConfiguration'; Key = 'Software\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+	   ValueNames = @('AdministratorAccountName', 'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
+	                  'BackupDirectory', 'ADPasswordEncryptionEnabled', 'ADPasswordEncryptionPrincipal',
+	                  'PasswordExpirationProtectionEnabled', 'PostAuthenticationActions', 'BackupDsrmPassword') }
+)
 $Script:Win32ErrorCodes = @{
 	0     = @{ Name = 'ERROR_SUCCESS';                    Message = 'Success';                        Category = 'Success' }
 	5     = @{ Name = 'ERROR_ACCESS_DENIED';              Message = 'Access denied';                  Category = 'AccessDenied' }
@@ -22456,8 +22480,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
 	        "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
 	        "Privilege-escalation enablers (AlwaysInstallElevated, WSUS over HTTP)"
+	        "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged"
 	    )
-	    SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
+	    SecureMessage = "No known vulnerable registry setting deployed via GPO. No Group Policy was found pushing one of the registry values this check knows in a state that enables an attack; values outside its list are counted, not judged."
 	}
 	'PointAndPrintPolicy' = @{
 	    TitleFormat = "Point and Print GPO: {Name}"
@@ -76134,6 +76159,7 @@ function Get-GPORegistrySettings {
 	            return
 	        }
 	        $Script:_gpoRegMatches = [System.Collections.ArrayList]::new()
+	        $Script:_gpoRegUnjudged = [System.Collections.ArrayList]::new()
 	        Show-SubHeader "Searching for vulnerable registry settings deployed via GPO..." -ObjectType "GPORegistrySetting"
 	        $gpos = Get-DomainGPO @connectionParams
 	        if (-not $gpos) {
@@ -76194,6 +76220,15 @@ function Get-GPORegistrySettings {
 	                                Entry      = $entry
 	                                Record     = $record
 	                            })
+	                        } elseif (Test-RegistryRecordUnjudged -Record $record) {
+	                            $unjudgedKey = "$($record.Hive)\$(([string]$record.Key) -replace '^\\+', '')\$($record.ValueName)"
+	                            [void]$Script:_gpoRegUnjudged.Add([PSCustomObject]@{
+	                                GPOGUID     = $gpoGUID
+	                                GPOName     = $gpoName
+	                                SourceFile  = $source
+	                                RegistryKey = $unjudgedKey
+	                                _ReachScope = (Get-GPOHalfFromSource -SourceFile $source -RegistryKey $unjudgedKey)
+	                            })
 	                        }
 	                    }
 	                } catch {
@@ -76203,8 +76238,10 @@ function Get-GPORegistrySettings {
 	            if ($totalFiles -gt $Script:ProgressThreshold) { Show-Progress -Activity "Scanning GPO registry settings" -Completed }
 	        }
 	        $rawMatches = @($Script:_gpoRegMatches)
+	        $unjudged = @($Script:_gpoRegUnjudged)
 	        $sysvolAccessible = $Script:sysvolAccessible
 	        $Script:_gpoRegMatches = $null
+	        $Script:_gpoRegUnjudged = $null
 	        $Script:sysvolAccessible = $null
 	        if (-not $sysvolAccessible) {
 	            if ((Test-SysvolAccessible) -eq $false) {
@@ -76234,7 +76271,7 @@ function Get-GPORegistrySettings {
 	            if (@($shown).Count -gt 0) {
 	                Show-Line "Found $(@($shown).Count) vulnerable registry setting(s) deployed via GPO" -Class $headerClass
 	            } else {
-	                Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
+	                Show-Line "No known vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
 	            }
 	            foreach ($finding in $shown) {
 	                $linkedOUs = $null
@@ -76270,7 +76307,15 @@ function Get-GPORegistrySettings {
 	            }
 	        } else {
 	            $null = Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')
-	            Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
+	            Show-Line "No known vulnerable registry setting is deployed via GPO" -Class Note
+	        }
+	        $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
+	            -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+	        $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
+	        if ($unjudgedShown.Count -gt 0) {
+	            $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
+	            $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
+	            Show-Line "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged" -Class Note
 	        }
 	    } catch {
 	        Show-Line "Error during check - registry settings deployed via GPO could not be evaluated: $_" -Class Finding
@@ -76283,8 +76328,7 @@ function Test-DangerousRegistryRecord {
 	    [Parameter(Mandatory=$true)]
 	    $Record
 	)
-	if ($Record.PSObject.Properties['Action'] -and [string]$Record.Action -eq 'D') { return $null }
-	if ($Record.PSObject.Properties['Disabled'] -and $Record.Disabled) { return $null }
+	if (-not (Test-RegistryRecordApplies -Record $Record)) { return $null }
 	$recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
 	$recValueName = [string]$Record.ValueName
 	$recHive = [string]$Record.Hive
@@ -76328,6 +76372,49 @@ function Test-DangerousRegistryRecord {
 	    }
 	}
 	return $null
+}
+function Test-RegistryRecordApplies {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Record
+	)
+	if ($Record.PSObject.Properties['Action'] -and [string]$Record.Action -eq 'D') { return $false }
+	if ($Record.PSObject.Properties['Disabled'] -and $Record.Disabled) { return $false }
+	if (([string]$Record.ValueName).StartsWith('**')) { return $false }
+	if (-not [string]$Record.ValueName -and $null -eq $Record.ValueInt -and -not [string]$Record.ValueString) { return $false }
+	return $true
+}
+function Test-RegistryRecordUnjudged {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    $Record
+	)
+	if (-not (Test-RegistryRecordApplies -Record $Record)) { return $false }
+	$recKey = ([string]$Record.Key -replace '^\\+', '').TrimEnd('\')
+	$recValueName = [string]$Record.ValueName
+	$recHive = [string]$Record.Hive
+	foreach ($entry in $Script:DangerousRegistryKeys) {
+	    if ($entry.Hive -ne $recHive) { continue }
+	    if ($entry.Key -ine $recKey) { continue }
+	    if ($entry.ValueName -ieq $recValueName) { return $false }
+	}
+	foreach ($reader in $Script:RegistryValuesReadElsewhere) {
+	    if ($reader.Key -ine $recKey) { continue }
+	    if (@($reader.ValueNames) -contains '*' -or @($reader.ValueNames) -contains $recValueName) { return $false }
+	}
+	if ($recValueName -match '(?i)(password|passwd|pwd)$') {
+	    $isString = if ($Record.Type -is [string]) {
+	        $Record.Type -match '^REG_(EXPAND_|MULTI_)?SZ$'
+	    } else {
+	        @(1, 2, 7) -contains [int64]$Record.Type
+	    }
+	    if ($isString) { return $false }
+	}
+	return $true
 }
 function Resolve-RegistryFindings {
 	[CmdletBinding()]
@@ -92961,7 +93048,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1549"
+$Script:adPEASVersion = "2.7.0+20261021-1623"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

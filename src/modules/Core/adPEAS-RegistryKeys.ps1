@@ -835,3 +835,38 @@ $Script:DangerousRegistryKeys = @(
         RiskReason        = 'These computers offer TLS 1.0 to the servers they connect to, which RFC 8996 deprecates'
     }
 )
+
+# =============================================================================
+# REGISTRY VALUES OTHER CHECKS JUDGE
+# =============================================================================
+# Get-GPORegistrySettings judges the values in $Script:DangerousRegistryKeys and counts
+# every other value a policy deploys as not judged. These are judged, by the check named:
+# counting them would claim a gap that is not there. Key without hive, compared without
+# regard to case. The value names mirror what each check reads - see the suite that holds
+# the lists against those checks. Values whose name says they hold a password are read by
+# Get-CredentialExposure; Test-RegistryRecordUnjudged decides those by name.
+$Script:RegistryValuesReadElsewhere = @(
+    @{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+       ValueNames = @('Restricted', 'TrustedServers', 'ServerList', 'InForest', 'NoWarningNoElevationOnInstall', 'UpdatePromptSettings', 'RestrictDriverInstallationToAdministrators') }
+    @{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers\PackagePointAndPrint'
+       ValueNames = @('PackagePointAndPrintOnly', 'PackagePointAndPrintServerList') }
+    # Every value of this key is a server name.
+    @{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers\PackagePointAndPrint\ListofServers'
+       ValueNames = @('*') }
+    @{ Check = 'Get-GPOPointAndPrint'; Key = 'Software\Policies\Microsoft\Windows NT\Printers'
+       ValueNames = @('RegisterSpoolerRemoteRpcEndPoint', 'CopyFilesPolicy', 'DisableWebPnPDownload', 'DisableHTTPPrinting') }
+    @{ Check = 'Get-GPOPointAndPrint'; Key = 'System\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+       ValueNames = @('AddPrinterDrivers') }
+    @{ Check = 'Get-SMBSigningStatus'; Key = 'System\CurrentControlSet\Services\LanmanServer\Parameters'
+       ValueNames = @('RequireSecuritySignature', 'EnableSecuritySignature') }
+    @{ Check = 'Get-SMBSigningStatus'; Key = 'System\CurrentControlSet\Services\LanmanWorkstation\Parameters'
+       ValueNames = @('RequireSecuritySignature', 'EnableSecuritySignature') }
+    @{ Check = 'Get-LDAPConfiguration'; Key = 'System\CurrentControlSet\Services\NTDS\Parameters'
+       ValueNames = @('LDAPServerIntegrity', 'LdapEnforceChannelBinding') }
+    @{ Check = 'Get-LAPSConfiguration'; Key = 'Software\Policies\Microsoft Services\AdmPwd'
+       ValueNames = @('AdminAccountName', 'PasswordComplexity', 'PasswordLength', 'PasswordAgeDays', 'AdmPwdEnabled', 'PwdExpirationProtectionEnabled') }
+    @{ Check = 'Get-LAPSConfiguration'; Key = 'Software\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+       ValueNames = @('AdministratorAccountName', 'PasswordComplexity', 'PasswordLength', 'PassphraseLength', 'PasswordAgeDays',
+                      'BackupDirectory', 'ADPasswordEncryptionEnabled', 'ADPasswordEncryptionPrincipal',
+                      'PasswordExpirationProtectionEnabled', 'PostAuthenticationActions', 'BackupDsrmPassword') }
+)

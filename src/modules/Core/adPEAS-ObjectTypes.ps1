@@ -1837,8 +1837,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Credential-theft enablers (WDigest, LM/NTLMv1, LSA/Credential Guard disabled)"
             "Lateral-movement enablers (Remote UAC, RDP Restricted Admin, Zerologon allow-list)"
             "Privilege-escalation enablers (AlwaysInstallElevated, WSUS over HTTP)"
+            "Not tested: every value outside the list - an application's settings, Windows settings without a rule. Counted, not judged"
         )
-        SecureMessage = "No vulnerable registry settings deployed via GPO. No Group Policy was found pushing a registry value in a state that enables an attack."
+        SecureMessage = "No known vulnerable registry setting deployed via GPO. No Group Policy was found pushing one of the registry values this check knows in a state that enables an attack; values outside its list are counted, not judged."
     }
 
     'PointAndPrintPolicy' = @{

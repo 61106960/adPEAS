@@ -30,6 +30,12 @@ function Get-GPORegistrySettings {
     WSUS-over-HTTP, and explicitly disabled defenses. Point and Print has its own check
     (Get-GPOPointAndPrint) because its exploitability depends on a combination of values.
 
+    Every other value a policy deploys is not judged - an application's settings among
+    them, and Windows settings outside the table. Such values are counted, so that "none
+    of the known vulnerable settings" is not read as "nothing vulnerable is deployed".
+    Values another check judges ($Script:RegistryValuesReadElsewhere, and string values
+    named like a password, which Get-CredentialExposure reads) are not counted.
+
     Note: this check sees only what is DEPLOYED via GPO. Values set locally/directly on a
     host (no Remote Registry) are out of scope by design.
 
@@ -93,6 +99,7 @@ function Get-GPORegistrySettings {
             }
 
             $Script:_gpoRegMatches = [System.Collections.ArrayList]::new()
+            $Script:_gpoRegUnjudged = [System.Collections.ArrayList]::new()
 
             Show-SubHeader "Searching for vulnerable registry settings deployed via GPO..." -ObjectType "GPORegistrySetting"
 
@@ -188,6 +195,17 @@ function Get-GPORegistrySettings {
                                     Entry      = $entry
                                     Record     = $record
                                 })
+                            } elseif (Test-RegistryRecordUnjudged -Record $record) {
+                                $unjudgedKey = "$($record.Hive)\$(([string]$record.Key) -replace '^\\+', '')\$($record.ValueName)"
+                                [void]$Script:_gpoRegUnjudged.Add([PSCustomObject]@{
+                                    GPOGUID     = $gpoGUID
+                                    GPOName     = $gpoName
+                                    SourceFile  = $source
+                                    RegistryKey = $unjudgedKey
+                                    # The half of the policy the value depends on, as for a
+                                    # finding - see the _ReachScope assignment below.
+                                    _ReachScope = (Get-GPOHalfFromSource -SourceFile $source -RegistryKey $unjudgedKey)
+                                })
                             }
                         }
                     } catch {
@@ -200,8 +218,10 @@ function Get-GPORegistrySettings {
 
             # Retrieve results and clean up Script-scoped temp variables
             $rawMatches = @($Script:_gpoRegMatches)
+            $unjudged = @($Script:_gpoRegUnjudged)
             $sysvolAccessible = $Script:sysvolAccessible
             $Script:_gpoRegMatches = $null
+            $Script:_gpoRegUnjudged = $null
             $Script:sysvolAccessible = $null
 
             if (-not $sysvolAccessible) {
@@ -264,7 +284,7 @@ function Get-GPORegistrySettings {
                 } else {
                     # Not "none deployed". Every one of them is deployed by a policy that
                     # does not apply, which is a different statement.
-                    Show-Line "No vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
+                    Show-Line "No known vulnerable registry setting is deployed by a policy that is linked and enabled" -Class Note
                 }
 
                 foreach ($finding in $shown) {
@@ -333,7 +353,22 @@ function Get-GPORegistrySettings {
                 # could not be read or parsed, so "no vulnerable settings" is not mistaken
                 # for "all settings were examined".
                 $null = Show-SYSVOLCoverageNote -FileFilter @('Registry.pol', 'Registry.xml', 'GptTmpl.inf')
-                Show-Line "No vulnerable registry settings deployed via GPO" -Class Note
+                # "Known": the table is a list, not the registry. It read "No vulnerable
+                # registry settings deployed via GPO" over every value it has no rule for.
+                Show-Line "No known vulnerable registry setting is deployed via GPO" -Class Note
+            }
+
+            # What the table does not cover, counted over the policies that apply - see
+            # Test-RegistryRecordUnjudged.
+            $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
+                -GPOLinkage $gpoLinkage -ScopeProperty '_ReachScope'
+            # Wrapped as a whole: an if-expression unrolls a one-element array, and .Count of
+            # the single object it leaves is $null on Windows PowerShell 5.1.
+            $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
+            if ($unjudgedShown.Count -gt 0) {
+                $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
+                $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
+                Show-Line "$($unjudgedShown.Count) further registry value(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged" -Class Note
             }
 
         } catch {
@@ -357,16 +392,7 @@ function Test-DangerousRegistryRecord {
         $Record
     )
 
-    # The GPP semantics, which this check's own design principle requires: "only
-    # POSITIVELY SET values are flagged". action="D" deletes the value and disabled="1"
-    # means Group Policy never applies the item, and both used to arrive here as ordinary
-    # configured values - so a GPO that REMOVES EnableLUA, the cleanup an administrator
-    # performs after an audit, was reported as "User Account Control disabled" with
-    # severity High, and a preference item switched off in the editor read as an active
-    # misconfiguration. Registry.pol says the same thing with a "**del." value name, and
-    # Parse-PRegRecords has always skipped those.
-    if ($Record.PSObject.Properties['Action'] -and [string]$Record.Action -eq 'D') { return $null }
-    if ($Record.PSObject.Properties['Disabled'] -and $Record.Disabled) { return $null }
+    if (-not (Test-RegistryRecordApplies -Record $Record)) { return $null }
 
     $recKey = ($Record.Key -replace '^\\+', '').TrimEnd('\').ToLower()
     $recValueName = [string]$Record.ValueName
@@ -423,6 +449,90 @@ function Test-DangerousRegistryRecord {
     }
 
     return $null
+}
+
+# =============================================================================
+# Helper: Whether a registry record writes a value at all
+# =============================================================================
+function Test-RegistryRecordApplies {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Record
+    )
+
+    # The GPP semantics, which this check's own design principle requires: "only
+    # POSITIVELY SET values are flagged". action="D" deletes the value and disabled="1"
+    # means Group Policy never applies the item, and both used to arrive here as ordinary
+    # configured values - so a GPO that REMOVES EnableLUA, the cleanup an administrator
+    # performs after an audit, was reported as "User Account Control disabled" with
+    # severity High, and a preference item switched off in the editor read as an active
+    # misconfiguration.
+    if ($Record.PSObject.Properties['Action'] -and [string]$Record.Action -eq 'D') { return $false }
+    if ($Record.PSObject.Properties['Disabled'] -and $Record.Disabled) { return $false }
+
+    # Registry.pol says the same with pseudo-values - "**del.<name>", "**delvals.",
+    # "**DeleteValues" and the like. Parse-PRegRecords hands them on; a rule never matched
+    # one only because no rule names a value starting with "**".
+    if (([string]$Record.ValueName).StartsWith('**')) { return $false }
+
+    # A key without a value name and without data creates the key and sets nothing.
+    if (-not [string]$Record.ValueName -and $null -eq $Record.ValueInt -and -not [string]$Record.ValueString) { return $false }
+
+    return $true
+}
+
+# =============================================================================
+# Helper: Whether a registry record is one nothing in adPEAS judges
+# =============================================================================
+function Test-RegistryRecordUnjudged {
+    <#
+    .SYNOPSIS
+        $true for a deployed registry value no rule of this check and no other check reads.
+    .DESCRIPTION
+        A value with a rule in $Script:DangerousRegistryKeys is judged whatever it holds -
+        LmCompatibilityLevel 5 was looked at and is fine. So is a value another check reads
+        ($Script:RegistryValuesReadElsewhere), and a string value named like a password,
+        which Get-CredentialExposure reports. Everything else is the part of the registry
+        no list covers: an application's settings, and Windows settings without a rule.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$true)]
+        $Record
+    )
+
+    if (-not (Test-RegistryRecordApplies -Record $Record)) { return $false }
+
+    $recKey = ([string]$Record.Key -replace '^\\+', '').TrimEnd('\')
+    $recValueName = [string]$Record.ValueName
+    $recHive = [string]$Record.Hive
+
+    foreach ($entry in $Script:DangerousRegistryKeys) {
+        if ($entry.Hive -ne $recHive) { continue }
+        if ($entry.Key -ine $recKey) { continue }
+        if ($entry.ValueName -ieq $recValueName) { return $false }
+    }
+
+    foreach ($reader in $Script:RegistryValuesReadElsewhere) {
+        if ($reader.Key -ine $recKey) { continue }
+        if (@($reader.ValueNames) -contains '*' -or @($reader.ValueNames) -contains $recValueName) { return $false }
+    }
+
+    # Get-RegistryPasswordCredential: a string value whose name ends in password, passwd
+    # or pwd. Registry.xml names the type, Registry.pol and GptTmpl.inf number it.
+    if ($recValueName -match '(?i)(password|passwd|pwd)$') {
+        $isString = if ($Record.Type -is [string]) {
+            $Record.Type -match '^REG_(EXPAND_|MULTI_)?SZ$'
+        } else {
+            @(1, 2, 7) -contains [int64]$Record.Type
+        }
+        if ($isString) { return $false }
+    }
+
+    return $true
 }
 
 # =============================================================================

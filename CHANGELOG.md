@@ -844,6 +844,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   objectSid as bytes: the attribute indexer of a search result returns a string for a SID
   whose bytes happen to be valid UTF-8, and the SID was lost.
 
+- **`Get-GPORegistrySettings` says what it does not judge.** The check compares the registry
+  values a policy deploys against a fixed list of known dangerous settings, and every other
+  value - an application's settings, a Windows setting without a rule - passed without a
+  word, under the all-clear "No vulnerable registry settings deployed via GPO". It counts
+  them now, over the policies that apply: "N further registry value(s) from M policies are
+  not on the list of this check - not judged", and the all-clear speaks of *known*
+  vulnerable settings. Values another check judges - Point and Print, SMB signing, LDAP
+  signing and channel binding, LAPS, string values named like a password - are not
+  counted, nor are values a policy deletes.
 - **A session bound as another account than the Windows logon says so - with Windows
   authentication only.** The session summary's "Local Identity" and "Identity Mismatch:
   DETECTED" rows could never appear: nothing wrote the two values they read. With
