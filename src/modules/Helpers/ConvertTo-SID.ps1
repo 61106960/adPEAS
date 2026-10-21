@@ -77,6 +77,15 @@ function ConvertTo-SID {
             return $Identity
         }
 
+        # A Group Policy Preferences variable - %LogonDomain%\%LogonUser%, %ComputerName% -
+        # is no account: the client fills it in when it applies the policy, so nothing can
+        # resolve it. Asked anyway, Resolve-CrossDomainIdentity took %LogonDomain% for the
+        # NetBIOS name of a foreign domain and printed a warning in the middle of a check.
+        if ($Identity -match '%[A-Za-z][A-Za-z0-9_]*%') {
+            Write-Log "[ConvertTo-SID] Group Policy Preferences variable, not an account: $Identity"
+            return $null
+        }
+
         # Check LDAP connection FIRST - fail fast if no session
         # (Some lookups below don't need LDAP, but most do - better to check upfront)
         if (-not $Script:LdapConnection) {

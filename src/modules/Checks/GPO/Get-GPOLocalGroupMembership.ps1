@@ -878,6 +878,9 @@ function Parse-GPPGroups {
         $xmlContent.Load($FilePath)
         $findings = @()
 
+        # How the logged-on user is shown, whichever way the item names it.
+        $currentUserName = 'Current user'
+
         $groups = $xmlContent.Groups.Group
 
         foreach ($group in $groups) {
@@ -939,7 +942,9 @@ function Parse-GPPGroups {
                     # silently. It is reported separately below.
                     if ($member.action -eq 'REMOVE') {
                         $removedName = [string]$member.name
-                        if ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
+                        if ($removedName -match '(?i)%LogonUser%') {
+                            $removedName = $currentUserName
+                        } elseif ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
                             $removedName = $Script:RiskySIDs[[string]$member.sid]
                         } elseif (-not $removedName -and $member.sid) {
                             $removedName = ConvertFrom-SID -SID ([string]$member.sid)
@@ -953,6 +958,18 @@ function Parse-GPPGroups {
 
                     $memberName = $member.name
                     $memberSID = $member.sid
+
+                    # The logged-on user, written as a variable: whoever logs on to a
+                    # computer in scope is added on it - broad, as Everyone is. There is no
+                    # SID to ask, and asking for one put a warning on the console.
+                    if ([string]$memberName -match '(?i)%LogonUser%') {
+                        if ($members -notcontains $currentUserName) {
+                            $members += $currentUserName
+                            $memberVerdicts += 'Broad'
+                            $riskyMembers += $currentUserName
+                        }
+                        continue
+                    }
 
                     # A Member with a name but no SID used to skip the whole risk
                     # classification, so "Domain Users" written without its SID was not
@@ -990,6 +1007,23 @@ function Parse-GPPGroups {
                         $members += $memberName
                         $memberVerdicts += $memberVerdict
                     }
+                }
+            }
+
+            # "Add the current user" and "Remove the current user" of an item under User
+            # Configuration: userAction ADD or REMOVE (MS-GPPREF 2.2.1.11.1), unless
+            # removeAccounts=1 says to leave the current user alone. Never read, so the
+            # item that makes every user local administrator of the computer they log on
+            # to was reported with no member at all, or not at all.
+            if ([string]$group.Properties.removeAccounts -ne '1') {
+                # -eq ignores case, so "add" is read as ADD.
+                $userAction = [string]$group.Properties.userAction
+                if ($userAction -eq 'ADD' -and $members -notcontains $currentUserName) {
+                    $members += $currentUserName
+                    $memberVerdicts += 'Broad'
+                    $riskyMembers += $currentUserName
+                } elseif ($userAction -eq 'REMOVE' -and $removedMembers -notcontains $currentUserName) {
+                    $removedMembers += $currentUserName
                 }
             }
 

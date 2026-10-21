@@ -16925,7 +16925,7 @@ $acl.Access | Where-Object {
 	    Title = "Broad Principal Added to a Local Group by Group Policy"
 	    Risk = "Finding"
 	    BaseScore = 70
-	    Description = "A Group Policy adds a principal that covers most or all of the domain - Everyone, Authenticated Users, Anonymous Logon or Domain Users - to a privileged local group on every computer the policy reaches. Membership in a local group is granted by the policy itself, so it is re-applied on every refresh and survives being removed by hand on the machine."
+	    Description = "A Group Policy adds a principal that covers most or all of the domain - Everyone, Authenticated Users, Anonymous Logon or Domain Users - to a privileged local group on every computer the policy reaches. Membership in a local group is granted by the policy itself, so it is re-applied on every refresh and survives being removed by hand on the machine. The current user of a preferences item under User Configuration ('Add the current user', or a member written as %LogonDomain%\%LogonUser%) counts as one: whoever logs on to a computer in scope is added to the group on it."
 	    Impact = @(
 	        "Every domain user holds the group's privileges on every computer in scope"
 	        "In the local Administrators group that is local administrator everywhere the policy is linked, which makes credential theft from LSASS and lateral movement across those machines routine"
@@ -38284,6 +38284,9 @@ function ConvertTo-SID {
 	    }
 	    if ($Identity -match '^S-1-\d+-') {
 	        return $Identity
+	    }
+	    if ($Identity -match '%[A-Za-z][A-Za-z0-9_]*%') {
+	        return $null
 	    }
 	    if (-not $Script:LdapConnection) {
 	        Show-NoSessionError -Context "ConvertTo-SID"
@@ -75087,6 +75090,7 @@ function Parse-GPPGroups {
 	    $xmlContent = New-Object System.Xml.XmlDocument
 	    $xmlContent.Load($FilePath)
 	    $findings = @()
+	    $currentUserName = 'Current user'
 	    $groups = $xmlContent.Groups.Group
 	    foreach ($group in $groups) {
 	        $groupSID = [string]$group.Properties.groupSid
@@ -75115,7 +75119,9 @@ function Parse-GPPGroups {
 	            foreach ($member in $group.Properties.Members.Member) {
 	                if ($member.action -eq 'REMOVE') {
 	                    $removedName = [string]$member.name
-	                    if ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
+	                    if ($removedName -match '(?i)%LogonUser%') {
+	                        $removedName = $currentUserName
+	                    } elseif ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
 	                        $removedName = $Script:RiskySIDs[[string]$member.sid]
 	                    } elseif (-not $removedName -and $member.sid) {
 	                        $removedName = ConvertFrom-SID -SID ([string]$member.sid)
@@ -75126,6 +75132,14 @@ function Parse-GPPGroups {
 	                if ($member.action -ne 'ADD') { continue }
 	                $memberName = $member.name
 	                $memberSID = $member.sid
+	                if ([string]$memberName -match '(?i)%LogonUser%') {
+	                    if ($members -notcontains $currentUserName) {
+	                        $members += $currentUserName
+	                        $memberVerdicts += 'Broad'
+	                        $riskyMembers += $currentUserName
+	                    }
+	                    continue
+	                }
 	                if (-not $memberSID -and $memberName) {
 	                    $memberSID = ConvertTo-SID -Identity ([string]$memberName)
 	                }
@@ -75141,6 +75155,16 @@ function Parse-GPPGroups {
 	                    $members += $memberName
 	                    $memberVerdicts += $memberVerdict
 	                }
+	            }
+	        }
+	        if ([string]$group.Properties.removeAccounts -ne '1') {
+	            $userAction = [string]$group.Properties.userAction
+	            if ($userAction -eq 'ADD' -and $members -notcontains $currentUserName) {
+	                $members += $currentUserName
+	                $memberVerdicts += 'Broad'
+	                $riskyMembers += $currentUserName
+	            } elseif ($userAction -eq 'REMOVE' -and $removedMembers -notcontains $currentUserName) {
+	                $removedMembers += $currentUserName
 	            }
 	        }
 	        $clearsGroup = ($deleteAllUsers -or $deleteAllGroups)
@@ -92848,7 +92872,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1241"
+$Script:adPEASVersion = "2.7.0+20261021-1254"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 12:41:51
-    Version: 2.7.0+20261021-1241
+    Build: 2026-10-21 12:54:49
+    Version: 2.7.0+20261021-1254
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -22415,7 +22415,7 @@ $acl.Access | Where-Object {
         Title = "Broad Principal Added to a Local Group by Group Policy"
         Risk = "Finding"
         BaseScore = 70
-        Description = "A Group Policy adds a principal that covers most or all of the domain - Everyone, Authenticated Users, Anonymous Logon or Domain Users - to a privileged local group on every computer the policy reaches. Membership in a local group is granted by the policy itself, so it is re-applied on every refresh and survives being removed by hand on the machine."
+        Description = "A Group Policy adds a principal that covers most or all of the domain - Everyone, Authenticated Users, Anonymous Logon or Domain Users - to a privileged local group on every computer the policy reaches. Membership in a local group is granted by the policy itself, so it is re-applied on every refresh and survives being removed by hand on the machine. The current user of a preferences item under User Configuration ('Add the current user', or a member written as %LogonDomain%\%LogonUser%) counts as one: whoever logs on to a computer in scope is added to the group on it."
         Impact = @(
             "Every domain user holds the group's privileges on every computer in scope"
             "In the local Administrators group that is local administrator everywhere the policy is linked, which makes credential theft from LSASS and lateral movement across those machines routine"
@@ -57960,6 +57960,15 @@ function ConvertTo-SID {
         if ($Identity -match '^S-1-\d+-') {
             Write-Log "[ConvertTo-SID] Input is already a SID: $Identity"
             return $Identity
+        }
+
+        # A Group Policy Preferences variable - %LogonDomain%\%LogonUser%, %ComputerName% -
+        # is no account: the client fills it in when it applies the policy, so nothing can
+        # resolve it. Asked anyway, Resolve-CrossDomainIdentity took %LogonDomain% for the
+        # NetBIOS name of a foreign domain and printed a warning in the middle of a check.
+        if ($Identity -match '%[A-Za-z][A-Za-z0-9_]*%') {
+            Write-Log "[ConvertTo-SID] Group Policy Preferences variable, not an account: $Identity"
+            return $null
         }
 
         # Check LDAP connection FIRST - fail fast if no session
@@ -123839,6 +123848,9 @@ function Parse-GPPGroups {
         $xmlContent.Load($FilePath)
         $findings = @()
 
+        # How the logged-on user is shown, whichever way the item names it.
+        $currentUserName = 'Current user'
+
         $groups = $xmlContent.Groups.Group
 
         foreach ($group in $groups) {
@@ -123900,7 +123912,9 @@ function Parse-GPPGroups {
                     # silently. It is reported separately below.
                     if ($member.action -eq 'REMOVE') {
                         $removedName = [string]$member.name
-                        if ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
+                        if ($removedName -match '(?i)%LogonUser%') {
+                            $removedName = $currentUserName
+                        } elseif ($member.sid -and $Script:RiskySIDs.ContainsKey([string]$member.sid)) {
                             $removedName = $Script:RiskySIDs[[string]$member.sid]
                         } elseif (-not $removedName -and $member.sid) {
                             $removedName = ConvertFrom-SID -SID ([string]$member.sid)
@@ -123914,6 +123928,18 @@ function Parse-GPPGroups {
 
                     $memberName = $member.name
                     $memberSID = $member.sid
+
+                    # The logged-on user, written as a variable: whoever logs on to a
+                    # computer in scope is added on it - broad, as Everyone is. There is no
+                    # SID to ask, and asking for one put a warning on the console.
+                    if ([string]$memberName -match '(?i)%LogonUser%') {
+                        if ($members -notcontains $currentUserName) {
+                            $members += $currentUserName
+                            $memberVerdicts += 'Broad'
+                            $riskyMembers += $currentUserName
+                        }
+                        continue
+                    }
 
                     # A Member with a name but no SID used to skip the whole risk
                     # classification, so "Domain Users" written without its SID was not
@@ -123951,6 +123977,23 @@ function Parse-GPPGroups {
                         $members += $memberName
                         $memberVerdicts += $memberVerdict
                     }
+                }
+            }
+
+            # "Add the current user" and "Remove the current user" of an item under User
+            # Configuration: userAction ADD or REMOVE (MS-GPPREF 2.2.1.11.1), unless
+            # removeAccounts=1 says to leave the current user alone. Never read, so the
+            # item that makes every user local administrator of the computer they log on
+            # to was reported with no member at all, or not at all.
+            if ([string]$group.Properties.removeAccounts -ne '1') {
+                # -eq ignores case, so "add" is read as ADD.
+                $userAction = [string]$group.Properties.userAction
+                if ($userAction -eq 'ADD' -and $members -notcontains $currentUserName) {
+                    $members += $currentUserName
+                    $memberVerdicts += 'Broad'
+                    $riskyMembers += $currentUserName
+                } elseif ($userAction -eq 'REMOVE' -and $removedMembers -notcontains $currentUserName) {
+                    $removedMembers += $currentUserName
                 }
             }
 
@@ -149727,7 +149770,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1241"
+$Script:adPEASVersion = "2.7.0+20261021-1254"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

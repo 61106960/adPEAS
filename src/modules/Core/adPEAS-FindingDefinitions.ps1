@@ -13913,7 +13913,7 @@ $acl.Access | Where-Object {
         Title = "Broad Principal Added to a Local Group by Group Policy"
         Risk = "Finding"
         BaseScore = 70
-        Description = "A Group Policy adds a principal that covers most or all of the domain - Everyone, Authenticated Users, Anonymous Logon or Domain Users - to a privileged local group on every computer the policy reaches. Membership in a local group is granted by the policy itself, so it is re-applied on every refresh and survives being removed by hand on the machine."
+        Description = "A Group Policy adds a principal that covers most or all of the domain - Everyone, Authenticated Users, Anonymous Logon or Domain Users - to a privileged local group on every computer the policy reaches. Membership in a local group is granted by the policy itself, so it is re-applied on every refresh and survives being removed by hand on the machine. The current user of a preferences item under User Configuration ('Add the current user', or a member written as %LogonDomain%\%LogonUser%) counts as one: whoever logs on to a computer in scope is added to the group on it."
         Impact = @(
             "Every domain user holds the group's privileges on every computer in scope"
             "In the local Administrators group that is local administrator everywhere the policy is linked, which makes credential theft from LSASS and lateral movement across those machines routine"

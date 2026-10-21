@@ -1103,6 +1103,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   as a secure state once its members were coloured. `Type` is no longer printed on the
   console - `Mode` says which mechanism wrote the assignment - and stays on the HTML card.
 
+- **A Group Policy Preferences variable is no longer looked up as an account.** A
+  preferences scheduled task that runs as the logged-on user names its account
+  `%LogonDomain%\%LogonUser%`; `Get-GPOScheduledTasks` asked for its SID, and the lookup took
+  `%LogonDomain%` for the NetBIOS name of a foreign domain and printed "Failed to resolve
+  NetBIOS name '%LogonDomain%'" in the middle of the check. `ConvertTo-SID` answers nothing
+  for a name with such a variable in it, without a query and without a warning.
+  `Get-GPOLocalGroupMembership` reads the logged-on user of a preferences item under User
+  Configuration - "Add the current user" (`userAction`, which it never read) or a member
+  written as `%LogonDomain%\%LogonUser%` - as `Current user`, a broad member like Everyone:
+  whoever logs on to a computer in scope is added to the group on it. "Remove the current
+  user" is listed among the removed members.
+
 - **No GPO check prints `SourceFile` on the console any more.** The file inside the policy
   a finding was read from - `Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf`,
   `Machine\Preferences\Groups\Groups.xml` - was a row of every GPO finding, beside
