@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 08:55:03
-    Version: 2.7.0+20261021-0855
+    Build: 2026-10-21 08:58:17
+    Version: 2.7.0+20261021-0858
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6714,7 +6714,12 @@ $Script:PrimaryAttributes = @{
         # 2. GROUP MEMBERSHIPS (security-critical)
         # memberOfNested: the primary group and the nested groups, from
         # Get-DomainUser -ResolveGroups.
-        'memberOf', 'memberOfNested', 'privilegedGroups',
+        #
+        # adminCount: the mark SDProp leaves on a member of a protected group. It reached
+        # the console only when the ADMIN_COUNT_INDICATOR trigger promoted it - an account
+        # with the mark and no protected membership - so on the Administrator, whose
+        # membership explains it, it was in the collapsed block alone and read as absent.
+        'memberOf', 'memberOfNested', 'privilegedGroups', 'adminCount',
 
         # 3. SERVICE PRINCIPAL NAMES (Kerberoasting indicator)
         #
@@ -6770,8 +6775,8 @@ $Script:PrimaryAttributes = @{
 
         # 3. GROUP MEMBERSHIPS
         # memberOfNested: a managed service account from Get-DomainUser -GMSA -ResolveGroups
-        # is rendered as a computer.
-        'memberOf', 'memberOfNested', 'privilegedGroups',
+        # is rendered as a computer. adminCount as on a user.
+        'memberOf', 'memberOfNested', 'privilegedGroups', 'adminCount',
 
         # 4. CREDENTIAL EXPOSURE (LAPS)
         # Note: servicePrincipalName moved to extended view (too verbose for primary display)
@@ -149311,7 +149316,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-0855"
+$Script:adPEASVersion = "2.7.0+20261021-0858"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
