@@ -2171,9 +2171,12 @@ function Connect-adPEAS {
                 # LDAP-verified identity
                 Write-Log "[Connect-adPEAS] Authenticated as: $($Connection.AuthenticatedUser)"
 
-                # Show identity mismatch warning if detected
-                if ($Connection.IdentityMismatch) {
-                    Write-Warning "[Connect-adPEAS] Identity Mismatch Detected (see warning above)"
+                # Bound as another account than the Windows logon - see
+                # Test-SessionIdentityMismatch. The session summary below names both; with
+                # -Quiet there is none, so the warning does. It used to read "Identity
+                # Mismatch Detected (see warning above)", with nothing above it.
+                if ($Connection.IdentityMismatch -and $Quiet) {
+                    Write-Warning "[Connect-adPEAS] Bound as $($Connection.AuthenticatedUser), not as the Windows logon $($Connection.LocalIdentity) - this session's network credentials are not the logon's"
                 }
             }
             else {

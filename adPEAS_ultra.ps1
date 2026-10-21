@@ -24900,17 +24900,13 @@ function Connect-LDAP {
 	            $DomainInfo['AuthenticatedUserSAM'] = $AuthenticatedUserSAM
 	            $DomainInfo['AuthenticatedUserSID'] = $AuthenticatedUserSID
 	            $DomainInfo['AuthenticatedUserUPN'] = $AuthenticatedUserUPN
-	            if (-not $Credential) {
-	                $LocalIdentity = $null
-	                if ($env:USERDOMAIN -and $env:USERNAME) {
-	                    $LocalIdentity = "$($env:USERDOMAIN)\$($env:USERNAME)"
-	                }
-	                $DomainInfo['LocalIdentity'] = $LocalIdentity
-	                $DomainInfo['IdentityMismatch'] = (
-	                    $LocalIdentity -and $AuthenticatedUser -and
-	                    $AuthenticatedUser -notlike '*[[]*Unknown*' -and
-	                    $LocalIdentity -ne $AuthenticatedUser)
+	            $LocalIdentity = $null
+	            if ($env:USERDOMAIN -and $env:USERNAME) {
+	                $LocalIdentity = "$($env:USERDOMAIN)\$($env:USERNAME)"
 	            }
+	            $DomainInfo['LocalIdentity'] = $LocalIdentity
+	            $DomainInfo['IdentityMismatch'] = Test-SessionIdentityMismatch -AuthenticatedUser $AuthenticatedUser `
+	                -LocalIdentity $LocalIdentity -Credential $Credential
 	            if ($AuthenticatedUser -notmatch '^\[' -and -not $Credential) {
 	                $DomainInfo['DetectedKerberos'] = $true
 	            } else {
@@ -25128,6 +25124,27 @@ function Get-BoundAccountName {
 	if ($namePart.StartsWith('[')) { return $null }
 	if (-not [string]::Equals($domainPart, $DomainNetBIOS, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
 	return $namePart
+}
+function Test-SessionIdentityMismatch {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$AuthenticatedUser,
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string]$LocalIdentity,
+	    [Parameter(Mandatory = $false)]
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	if ($Credential) { return $false }
+	if ($Script:AuthInfo -and $Script:AuthInfo.ParameterSet -and [string]$Script:AuthInfo.ParameterSet -ne 'WindowsAuth') { return $false }
+	if (-not $LocalIdentity -or -not $AuthenticatedUser) { return $false }
+	if ($AuthenticatedUser.Contains('[')) { return $false }
+	return ($LocalIdentity -ne $AuthenticatedUser)
 }
 function Connect-adPEAS {
 	[CmdletBinding(DefaultParameterSetName='WindowsAuth')]
@@ -26320,8 +26337,8 @@ function Connect-adPEAS {
 	        }
 	        $sessionEstablished = $true
 	        if ($Connection.AuthenticatedUser) {
-	            if ($Connection.IdentityMismatch) {
-	                Write-Warning "[Connect-adPEAS] Identity Mismatch Detected (see warning above)"
+	            if ($Connection.IdentityMismatch -and $Quiet) {
+	                Write-Warning "[Connect-adPEAS] Bound as $($Connection.AuthenticatedUser), not as the Windows logon $($Connection.LocalIdentity) - this session's network credentials are not the logon's"
 	            }
 	        }
 	        else {
@@ -92931,7 +92948,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261021-1455"
+$Script:adPEASVersion = "2.7.0+20261021-1516"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

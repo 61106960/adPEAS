@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-21 14:55:14
-    Version: 2.7.0+20261021-1455
+    Build: 2026-10-21 15:16:31
+    Version: 2.7.0+20261021-1516
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -34620,23 +34620,15 @@ function Connect-LDAP {
                 $DomainInfo['AuthenticatedUserUPN'] = $AuthenticatedUserUPN
 
                 # Who the operating system thinks we are, against who the directory
-                # answered. Only meaningful without an explicit credential: with one the
-                # two differ by definition, and that is the point of passing it. Without
-                # one they differ when the tickets in the cache are not the logon's -
-                # after a pass-the-ticket, which is exactly when an operator wants to be
-                # told. Get-adPEASSession has always had the row for it; nothing wrote
-                # the two keys it reads.
-                if (-not $Credential) {
-                    $LocalIdentity = $null
-                    if ($env:USERDOMAIN -and $env:USERNAME) {
-                        $LocalIdentity = "$($env:USERDOMAIN)\$($env:USERNAME)"
-                    }
-                    $DomainInfo['LocalIdentity'] = $LocalIdentity
-                    $DomainInfo['IdentityMismatch'] = (
-                        $LocalIdentity -and $AuthenticatedUser -and
-                        $AuthenticatedUser -notlike '*[[]*Unknown*' -and
-                        $LocalIdentity -ne $AuthenticatedUser)
+                # answered - see Test-SessionIdentityMismatch for when the difference means
+                # something. Get-adPEASSession shows the two where it does.
+                $LocalIdentity = $null
+                if ($env:USERDOMAIN -and $env:USERNAME) {
+                    $LocalIdentity = "$($env:USERDOMAIN)\$($env:USERNAME)"
                 }
+                $DomainInfo['LocalIdentity'] = $LocalIdentity
+                $DomainInfo['IdentityMismatch'] = Test-SessionIdentityMismatch -AuthenticatedUser $AuthenticatedUser `
+                    -LocalIdentity $LocalIdentity -Credential $Credential
 
                 # Detect if Kerberos was used for authentication
                 if ($AuthenticatedUser -notmatch '^\[' -and -not $Credential) {
@@ -35017,6 +35009,60 @@ function Get-BoundAccountName {
     if ($namePart.StartsWith('[')) { return $null }
     if (-not [string]::Equals($domainPart, $DomainNetBIOS, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
     return $namePart
+}
+
+<#
+.SYNOPSIS
+    Says whether a session is bound as another account than the Windows logon, where that
+    means something.
+.DESCRIPTION
+    With Windows authentication the bind uses the network credentials of the logon session.
+    They belong to another account after a pass-the-ticket outside adPEAS or under
+    runas /netonly - which is when an operator wants to be told.
+
+    Wherever the account was chosen for adPEAS, the two differ by design. A credential is one
+    way to choose it, and Connect-adPEAS has more: a password, a key, a certificate or a
+    ticket file all end in a bind without a credential, as the account named, whose ticket
+    Connect-adPEAS imported into this logon session. Asked only "was a credential passed?",
+    the comparison flagged every such login - "Identity Mismatch Detected" straight after
+    Connect-adPEAS -Username. $Script:AuthInfo carries the parameter set Connect-adPEAS was
+    called with; without it, Connect-LDAP was called on its own, as Ensure-LDAPConnection
+    does, with the logon session's credentials.
+
+    A placeholder such as "CONTOSO\[Kerberos Authenticated]" names no account and is compared
+    with nothing.
+.PARAMETER AuthenticatedUser
+    The identity the directory answered, e.g. "CONTOSO\jdoe".
+.PARAMETER LocalIdentity
+    The Windows logon, "USERDOMAIN\USERNAME".
+.PARAMETER Credential
+    The credential the bind used, if any.
+.OUTPUTS
+    Boolean
+#>
+function Test-SessionIdentityMismatch {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$AuthenticatedUser,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$LocalIdentity,
+
+        [Parameter(Mandatory = $false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    if ($Credential) { return $false }
+    if ($Script:AuthInfo -and $Script:AuthInfo.ParameterSet -and [string]$Script:AuthInfo.ParameterSet -ne 'WindowsAuth') { return $false }
+    if (-not $LocalIdentity -or -not $AuthenticatedUser) { return $false }
+    if ($AuthenticatedUser.Contains('[')) { return $false }
+    return ($LocalIdentity -ne $AuthenticatedUser)
 }
 
 
@@ -37196,9 +37242,12 @@ function Connect-adPEAS {
                 # LDAP-verified identity
                 Write-Log "[Connect-adPEAS] Authenticated as: $($Connection.AuthenticatedUser)"
 
-                # Show identity mismatch warning if detected
-                if ($Connection.IdentityMismatch) {
-                    Write-Warning "[Connect-adPEAS] Identity Mismatch Detected (see warning above)"
+                # Bound as another account than the Windows logon - see
+                # Test-SessionIdentityMismatch. The session summary below names both; with
+                # -Quiet there is none, so the warning does. It used to read "Identity
+                # Mismatch Detected (see warning above)", with nothing above it.
+                if ($Connection.IdentityMismatch -and $Quiet) {
+                    Write-Warning "[Connect-adPEAS] Bound as $($Connection.AuthenticatedUser), not as the Windows logon $($Connection.LocalIdentity) - this session's network credentials are not the logon's"
                 }
             }
             else {
@@ -149865,7 +149914,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261021-1455"
+$Script:adPEASVersion = "2.7.0+20261021-1516"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

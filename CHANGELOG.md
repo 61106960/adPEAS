@@ -844,6 +844,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   objectSid as bytes: the attribute indexer of a search result returns a string for a SID
   whose bytes happen to be valid UTF-8, and the SID was lost.
 
+- **A session bound as another account than the Windows logon says so - with Windows
+  authentication only.** The session summary's "Local Identity" and "Identity Mismatch:
+  DETECTED" rows could never appear: nothing wrote the two values they read. With
+  `-UseWindowsAuth`, or a check that connects on its own, the bind uses the logon session's
+  network credentials, and they belong to another account after a pass-the-ticket outside
+  adPEAS or under `runas /netonly`; the summary names both accounts then, and
+  `Connect-adPEAS -Quiet`, which shows no summary, warns with both. A password, NT hash,
+  key, certificate or ticket file names the account itself and is never reported - while
+  the rows were being wired up, every such login warned "Identity Mismatch Detected (see
+  warning above)", with nothing above it.
 - **The token groups of the session are read at all.** `Get-CurrentUserTokenGroups`, the
   fast path of the encrypted-LAPS check that compares the decryptor a blob names against
   the scanning account's groups, had never returned a SID from a real domain. It read
