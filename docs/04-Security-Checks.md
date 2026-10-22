@@ -1641,11 +1641,20 @@ rather than a default. `-OPSEC` skips it entirely.
    Group Policy Preferences password, a Winlogon value, an answer file, a VNC password, a
    `net use` line and a password assignment are found the same way here as there.
 
-**What it shows while it runs**: the console carries one progress line through all five
+**What it shows while it runs**: the console carries one progress line through all six
 phases - looking for the active computers, checking port 445 (with how many have answered so
-far), enumerating shares, probing each share, and searching each share by name. There is no
-item threshold on the last two: one share on an unresponsive host can take as long as thirty
-on a healthy one, and what the display is for is saying which host is being waited for.
+far), enumerating shares, probing each share, collecting the files of each share, and
+searching each file by name. There is no item threshold on the per-share phases: one share on
+an unresponsive host can take as long as thirty on a healthy one, and what the display is for
+is saying which host is being waited for. The search is counted over all the shares together,
+because what a reader wants there is how much of it is done.
+
+**`-ShareName`**: searches the shares of that name instead of whatever the computers offer,
+and enumerates nothing - it goes straight to `\\<computer>\<name>`. That is shorter, and it
+is the one way in where a server refuses `NetShareEnum` (Win32 5) but serves the share
+itself, which is a common configuration. A name given there is searched whatever it is, so
+`-ShareName C$` needs no `-IncludeAdmin` and `-ShareName SYSVOL` no `-IncludeSysvol`. Names
+are literal - there is no listing to match a wildcard against, so give several names.
 
 **`-ListSharesOnly`**: stops after the list of readable shares - no file is read and no
 credential is searched for. The first pass over an unknown domain, where the list of shares
@@ -1673,6 +1682,8 @@ Invoke-ShareHunt -ActiveDays 14 -MaxMinutes 20
 Invoke-ShareHunt -ListSharesOnly
 'fs01.contoso.com' | Invoke-ShareHunt -ListSharesOnly
 Get-DomainComputer -OperatingSystem '*Server*' | Invoke-ShareHunt
+Invoke-ShareHunt -ComputerName fs01.contoso.com -ShareName Finance
+Invoke-ShareHunt -ShareName Finance, 'Profiles$'
 Invoke-adPEAS -Module Shares
 ```
 

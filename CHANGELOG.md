@@ -1763,6 +1763,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   drive share such as `D$` - the latter two for a server that presents such a name without
   the flag.
 
+  **Also fixed:** the phase that reads every file had no progress display at all, so the
+  second section sat silent for as long as the walk had taken. It is counted now over all
+  the shares together, with the file being read named - and the walk's own phase is called
+  "collecting files" rather than "searching", which is what it actually does.
+
+  **New `-ShareName`:** searches the shares of that name instead of whatever the computers
+  offer, and enumerates nothing - straight to `\\<computer>\<name>`. Shorter, and the one
+  way in where a server refuses `NetShareEnum` but serves the share itself. A name given
+  there is searched whatever it is, so `-ShareName C$` needs no `-IncludeAdmin`. A named
+  share that cannot be read is reported as "not there or cannot be read", because unlike a
+  listed one it may simply not exist on that computer.
+
 ---
 
 ## [2.7.0] - 2026-10-08

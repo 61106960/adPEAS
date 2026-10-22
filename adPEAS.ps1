@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-22 14:20:28
-    Version: 2.7.0+20261022-1420
+    Build: 2026-10-22 14:38:48
+    Version: 2.7.0+20261022-1438
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -28689,6 +28689,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "File servers, deployment shares and the shares administrators make for themselves are where scripts and configuration files with credentials end up, and unlike SYSVOL no one reviews who may read them. A share this account can read is a share every account with the same rights can read."
         WhatWeCheck = @(
             "Enabled Windows computers with a logon in the last 30 days (-ActiveDays), by DNS name - only a name below the domain's own, since the computer account may write dNSHostName itself"
+            "-ShareName searches the shares of that name instead of whatever the computers offer, and enumerates nothing: it goes straight to \\<computer>\<name>, which is the one way in where a server refuses NetShareEnum but serves the share. A name given there is searched whatever it is, so it needs neither -IncludeAdmin nor -IncludeSysvol"
             "Or the computers given instead: -ComputerName, or anything piped in - a name, or an object with a dNSHostName, as every Get-Domain* function returns. A name given that way is not checked against the domain's DNS name; the caller named it on purpose. An empty pipeline searches nothing rather than falling back to the domain"
             "Who answers on port 445: one sweep with a deadline per block of hosts rather than per host, so hosts that do not answer cost one timeout per block"
             "The shares of each, enumerated through NetShareEnum at level 1 - the level an ordinary account may call - in parallel, with one deadline for the pass"
@@ -124747,6 +124748,20 @@ function Invoke-ShareHunt {
     "Get-DomainComputer -OperatingSystem '*Server 2012*' | Invoke-ShareHunt" in a domain
     with no such computer would otherwise sweep every computer there is.
 
+    .PARAMETER ShareName
+    The shares to search, by name, instead of whatever the computers offer. Given this, the
+    check does not enumerate at all: it goes straight to \\<computer>\<name>. That is not
+    only shorter - it is the one way in where a server refuses NetShareEnum (Win32 5) but
+    serves the share itself, which is a common configuration and left the check with
+    nothing to look at.
+
+    A share named here is searched whatever it is: the selection rules do not apply, so
+    -ShareName C$ needs no -IncludeAdmin and -ShareName SYSVOL no -IncludeSysvol. The
+    caller named it on purpose.
+
+    Names are literal - no wildcards, since there is no listing to match them against. Give
+    several names instead.
+
     .PARAMETER ActiveDays
     How recent the last logon of a computer must be, in days. Default: 30.
 
@@ -124794,6 +124809,14 @@ function Invoke-ShareHunt {
     Invoke-ShareHunt -ComputerName fs01.contoso.com, fs02.contoso.com -MaxDepth 8
 
     .EXAMPLE
+    Invoke-ShareHunt -ComputerName fs01.contoso.com -ShareName Finance
+    One share on one computer, without enumerating anything.
+
+    .EXAMPLE
+    Invoke-ShareHunt -ShareName Finance, 'Profiles$'
+    Which of the domain's computers serve either of those two, and what is in them.
+
+    .EXAMPLE
     'fs01.contoso.com' | Invoke-ShareHunt -ListSharesOnly
 
     .EXAMPLE
@@ -124829,6 +124852,9 @@ function Invoke-ShareHunt {
         [AllowEmptyString()]
         [AllowNull()]
         [string[]]$ComputerName,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$ShareName,
 
         [Parameter(Mandatory=$false)]
         [ValidateRange(1, 3650)]
@@ -124979,23 +125005,45 @@ function Invoke-ShareHunt {
             Write-Log "[Invoke-ShareHunt] $($reachable.Count) of $($targets.Count) computer(s) answer on port 445"
 
             # ===== Their shares, and the ones worth reading =====
+            $listFailed = @{}
+            $leftOutAdmin = 0
+            $leftOutSysvol = 0
+            $candidates = New-Object System.Collections.Generic.List[object]
+            $namedShares = @($ShareName | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ } | Sort-Object -Unique)
+
+            if ($namedShares.Count -gt 0) {
+                # Named on purpose: no enumeration, and none of the selection rules. Whether
+                # the share is there at all is answered by the readability probe below, which
+                # had to run anyway.
+                foreach ($computer in $reachable) {
+                    foreach ($name in $namedShares) {
+                        $candidates.Add([PSCustomObject]@{
+                            Computer = $computer
+                            Name     = $name
+                            Remark   = ''
+                            Path     = "\\$computer\$name"
+                            Walk     = $null
+                        })
+                    }
+                }
+                Write-Log "[Invoke-ShareHunt] $($namedShares.Count) share name(s) given - not enumerating"
+            }
+
             # In chunks of a few pool loads, again so the count advances - and a stalled
             # host then costs its chunk's deadline rather than the whole pass's. The pool
             # is opened once per chunk, which is why the chunk is several loads and not one.
             $listingChunk = [Math]::Max(1, $ThrottleLimit) * 4
             $listings = New-Object System.Collections.Generic.List[object]
-            for ($offset = 0; $offset -lt $reachable.Count; $offset += $listingChunk) {
-                Show-Progress -Activity 'Share hunt' -Current $offset -Total $reachable.Count `
-                    -Status "Enumerating shares: $offset of $($reachable.Count) computer(s)"
-                $last = [Math]::Min($offset + $listingChunk, $reachable.Count) - 1
-                foreach ($listing in @(Get-SMBShareListMany -Target $reachable[$offset..$last] -ThrottleLimit $ThrottleLimit)) {
-                    $listings.Add($listing)
+            if ($namedShares.Count -eq 0) {
+                for ($offset = 0; $offset -lt $reachable.Count; $offset += $listingChunk) {
+                    Show-Progress -Activity 'Share hunt' -Current $offset -Total $reachable.Count `
+                        -Status "Enumerating shares: $offset of $($reachable.Count) computer(s)"
+                    $last = [Math]::Min($offset + $listingChunk, $reachable.Count) - 1
+                    foreach ($listing in @(Get-SMBShareListMany -Target $reachable[$offset..$last] -ThrottleLimit $ThrottleLimit)) {
+                        $listings.Add($listing)
+                    }
                 }
             }
-            $listFailed = @{}
-            $leftOutAdmin = 0
-            $leftOutSysvol = 0
-            $candidates = New-Object System.Collections.Generic.List[object]
             foreach ($listing in $listings) {
                 if ($listing.Error) {
                     if (-not $listFailed.ContainsKey($listing.Error)) { $listFailed[$listing.Error] = 0 }
@@ -125048,7 +125096,7 @@ function Invoke-ShareHunt {
                     # Every share, whatever the count: one of them may take the full
                     # per-share budget on its own.
                     Show-Progress -Activity 'Share hunt' -Current $index -Total $readable.Count `
-                        -Status "Searching share $index of $($readable.Count)" -ObjectName $share.Path
+                        -Status "Collecting files on share $index of $($readable.Count)" -ObjectName $share.Path
                     $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
                     if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
                     $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
@@ -125085,7 +125133,14 @@ function Invoke-ShareHunt {
                 Show-Line $text -Class Note
             }
             if ($notReadable -gt 0) {
-                Show-Line "$notReadable share(s) are listed but cannot be read by this account" -Class Note
+                # Different sentences, because they are different facts: a listed share
+                # that cannot be read is a permission, a named one that cannot be read may
+                # simply not exist on that computer.
+                if ($namedShares.Count -gt 0) {
+                    Show-Line "$notReadable named share(s) are not there or cannot be read by this account" -Class Note
+                } else {
+                    Show-Line "$notReadable share(s) are listed but cannot be read by this account" -Class Note
+                }
             }
 
             if ($readable.Count -eq 0) {
@@ -125135,9 +125190,21 @@ function Invoke-ShareHunt {
             $unreadable = 0
             $tooLarge = 0
             $results = New-Object System.Collections.Generic.List[object]
+
+            # Counted over all the shares first, so the display says how much of the search
+            # is done rather than which share it is in. This is the phase that reads every
+            # file, and it had no display at all: on a share with a few thousand candidates
+            # the second section sat silent for as long as the walk had taken.
+            $fileTotal = 0
+            foreach ($share in $readable) { $fileTotal += @($share.Walk.Files).Count }
+            $fileIndex = 0
+
             foreach ($share in $readable) {
                 $tooLarge += [int]$share.Walk.SkippedLarge
                 foreach ($file in @($share.Walk.Files)) {
+                    $fileIndex++
+                    Show-Progress -Activity 'Share hunt' -Current $fileIndex -Total $fileTotal `
+                        -Status "Searching file $fileIndex of $fileTotal" -ObjectName $file.FullName
                     try {
                         $found = @()
                         if ($file.Extension -ieq '.xml') {
@@ -125165,6 +125232,9 @@ function Invoke-ShareHunt {
                     }
                 }
             }
+
+            Show-Progress -Activity 'Share hunt' -Completed
+            Write-Log "[Invoke-ShareHunt] $fileTotal file(s) searched, $($results.Count) finding(s)"
 
             if ($unreadable -gt 0) {
                 Show-Line "$unreadable file(s) could not be read" -Class Note
@@ -153289,7 +153359,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261022-1420"
+$Script:adPEASVersion = "2.7.0+20261022-1438"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

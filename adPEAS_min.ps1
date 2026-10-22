@@ -21442,6 +21442,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhyItMatters = "File servers, deployment shares and the shares administrators make for themselves are where scripts and configuration files with credentials end up, and unlike SYSVOL no one reviews who may read them. A share this account can read is a share every account with the same rights can read."
         WhatWeCheck = @(
             "Enabled Windows computers with a logon in the last 30 days (-ActiveDays), by DNS name - only a name below the domain's own, since the computer account may write dNSHostName itself"
+            "-ShareName searches the shares of that name instead of whatever the computers offer, and enumerates nothing: it goes straight to \\<computer>\<name>, which is the one way in where a server refuses NetShareEnum but serves the share. A name given there is searched whatever it is, so it needs neither -IncludeAdmin nor -IncludeSysvol"
             "Or the computers given instead: -ComputerName, or anything piped in - a name, or an object with a dNSHostName, as every Get-Domain* function returns. A name given that way is not checked against the domain's DNS name; the caller named it on purpose. An empty pipeline searches nothing rather than falling back to the domain"
             "Who answers on port 445: one sweep with a deadline per block of hosts rather than per host, so hosts that do not answer cost one timeout per block"
             "The shares of each, enumerated through NetShareEnum at level 1 - the level an ordinary account may call - in parallel, with one deadline for the pass"
@@ -78318,6 +78319,8 @@ function Invoke-ShareHunt {
         [AllowNull()]
         [string[]]$ComputerName,
         [Parameter(Mandatory=$false)]
+        [string[]]$ShareName,
+        [Parameter(Mandatory=$false)]
         [ValidateRange(1, 3650)]
         [int]$ActiveDays = 30,
         [Parameter(Mandatory=$false)]
@@ -78413,20 +78416,37 @@ function Invoke-ShareHunt {
             $reachable = @($reachableList)
             $unreachable = $targets.Count - $reachable.Count
             Write-Log "[Invoke-ShareHunt] $($reachable.Count) of $($targets.Count) computer(s) answer on port 445"
-            $listingChunk = [Math]::Max(1, $ThrottleLimit) * 4
-            $listings = New-Object System.Collections.Generic.List[object]
-            for ($offset = 0; $offset -lt $reachable.Count; $offset += $listingChunk) {
-                Show-Progress -Activity 'Share hunt' -Current $offset -Total $reachable.Count `
-                    -Status "Enumerating shares: $offset of $($reachable.Count) computer(s)"
-                $last = [Math]::Min($offset + $listingChunk, $reachable.Count) - 1
-                foreach ($listing in @(Get-SMBShareListMany -Target $reachable[$offset..$last] -ThrottleLimit $ThrottleLimit)) {
-                    $listings.Add($listing)
-                }
-            }
             $listFailed = @{}
             $leftOutAdmin = 0
             $leftOutSysvol = 0
             $candidates = New-Object System.Collections.Generic.List[object]
+            $namedShares = @($ShareName | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ } | Sort-Object -Unique)
+            if ($namedShares.Count -gt 0) {
+                foreach ($computer in $reachable) {
+                    foreach ($name in $namedShares) {
+                        $candidates.Add([PSCustomObject]@{
+                            Computer = $computer
+                            Name     = $name
+                            Remark   = ''
+                            Path     = "\\$computer\$name"
+                            Walk     = $null
+                        })
+                    }
+                }
+                Write-Log "[Invoke-ShareHunt] $($namedShares.Count) share name(s) given - not enumerating"
+            }
+            $listingChunk = [Math]::Max(1, $ThrottleLimit) * 4
+            $listings = New-Object System.Collections.Generic.List[object]
+            if ($namedShares.Count -eq 0) {
+                for ($offset = 0; $offset -lt $reachable.Count; $offset += $listingChunk) {
+                    Show-Progress -Activity 'Share hunt' -Current $offset -Total $reachable.Count `
+                        -Status "Enumerating shares: $offset of $($reachable.Count) computer(s)"
+                    $last = [Math]::Min($offset + $listingChunk, $reachable.Count) - 1
+                    foreach ($listing in @(Get-SMBShareListMany -Target $reachable[$offset..$last] -ThrottleLimit $ThrottleLimit)) {
+                        $listings.Add($listing)
+                    }
+                }
+            }
             foreach ($listing in $listings) {
                 if ($listing.Error) {
                     if (-not $listFailed.ContainsKey($listing.Error)) { $listFailed[$listing.Error] = 0 }
@@ -78466,7 +78486,7 @@ function Invoke-ShareHunt {
                 foreach ($share in $readable) {
                     $index++
                     Show-Progress -Activity 'Share hunt' -Current $index -Total $readable.Count `
-                        -Status "Searching share $index of $($readable.Count)" -ObjectName $share.Path
+                        -Status "Collecting files on share $index of $($readable.Count)" -ObjectName $share.Path
                     $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
                     if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
                     $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
@@ -78501,7 +78521,11 @@ function Invoke-ShareHunt {
                 Show-Line $text -Class Note
             }
             if ($notReadable -gt 0) {
-                Show-Line "$notReadable share(s) are listed but cannot be read by this account" -Class Note
+                if ($namedShares.Count -gt 0) {
+                    Show-Line "$notReadable named share(s) are not there or cannot be read by this account" -Class Note
+                } else {
+                    Show-Line "$notReadable share(s) are listed but cannot be read by this account" -Class Note
+                }
             }
             if ($readable.Count -eq 0) {
                 Show-Line "No readable share found" -Class Note
@@ -78536,9 +78560,15 @@ function Invoke-ShareHunt {
             $unreadable = 0
             $tooLarge = 0
             $results = New-Object System.Collections.Generic.List[object]
+            $fileTotal = 0
+            foreach ($share in $readable) { $fileTotal += @($share.Walk.Files).Count }
+            $fileIndex = 0
             foreach ($share in $readable) {
                 $tooLarge += [int]$share.Walk.SkippedLarge
                 foreach ($file in @($share.Walk.Files)) {
+                    $fileIndex++
+                    Show-Progress -Activity 'Share hunt' -Current $fileIndex -Total $fileTotal `
+                        -Status "Searching file $fileIndex of $fileTotal" -ObjectName $file.FullName
                     try {
                         $found = @()
                         if ($file.Extension -ieq '.xml') {
@@ -78562,6 +78592,8 @@ function Invoke-ShareHunt {
                     }
                 }
             }
+            Show-Progress -Activity 'Share hunt' -Completed
+            Write-Log "[Invoke-ShareHunt] $fileTotal file(s) searched, $($results.Count) finding(s)"
             if ($unreadable -gt 0) {
                 Show-Line "$unreadable file(s) could not be read" -Class Note
             }
@@ -97872,7 +97904,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261022-1420"
+$Script:adPEASVersion = "2.7.0+20261022-1438"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
