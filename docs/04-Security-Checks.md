@@ -1614,7 +1614,12 @@ rather than a default. `-OPSEC` skips it entirely.
 1. **The computers**: enabled Windows computers with a logon in the last 30 days
    (`-ActiveDays`), by `dNSHostName` - only a name below the domain's own DNS name, since
    the computer account may write that attribute itself. Or the computers named with
-   `-ComputerName`.
+   `-ComputerName`, or anything piped in: a name, a list of them, or the objects a
+   `Get-Domain*` function returns, which are read by their `dNSHostName`. A name given that
+   way is not checked against the domain's DNS name - the caller named it on purpose. An
+   empty pipeline searches nothing and does not fall back to the domain, so
+   `Get-DomainComputer -OperatingSystem '*Server 2012*' | Invoke-ShareHunt` in a domain with
+   no such computer sweeps nothing rather than everything.
 2. **Who answers on port 445**: one sweep with a deadline per *block* of hosts rather than
    per host, so a few hundred dead addresses cost one timeout each block instead of one
    each.
@@ -1663,6 +1668,8 @@ Invoke-ShareHunt
 Invoke-ShareHunt -ComputerName fs01.contoso.com, fs02.contoso.com -MaxDepth 8
 Invoke-ShareHunt -ActiveDays 14 -MaxMinutes 20
 Invoke-ShareHunt -ListSharesOnly
+'fs01.contoso.com' | Invoke-ShareHunt -ListSharesOnly
+Get-DomainComputer -OperatingSystem '*Server*' | Invoke-ShareHunt
 Invoke-adPEAS -Module Shares
 ```
 

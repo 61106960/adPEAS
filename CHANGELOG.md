@@ -1742,6 +1742,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   back in the time the sweep and the enumeration take. The report says that nothing was
   read, so the absence of credentials is not mistaken for a result.
 
+  `-ComputerName` now takes the pipeline as well, by value and by property name, with the
+  aliases `Test-RemoteAdminAccess` uses - so a name, a list of names, or the objects a
+  `Get-Domain*` function returns all work, the latter read by their `dNSHostName` rather
+  than their short `Name`. The check collects the pipeline and then runs once: from
+  `process{}` it would sweep the network, enumerate shares and print both its sections
+  once per piped computer. An empty pipeline searches nothing and deliberately does not
+  fall back to the domain - `Get-DomainComputer -OperatingSystem '*Server 2012*' |
+  Invoke-ShareHunt` in a domain with no such computer would otherwise sweep every computer
+  there is.
+
 ---
 
 ## [2.7.0] - 2026-10-08

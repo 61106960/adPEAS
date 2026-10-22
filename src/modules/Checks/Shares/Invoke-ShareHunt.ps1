@@ -97,7 +97,17 @@ function Invoke-ShareHunt {
     PSCredential object for authentication (optional, uses current user if not specified)
 
     .PARAMETER ComputerName
-    The computers to search, instead of the domain's active Windows computers.
+    The computers to search, instead of the domain's active Windows computers. One name, a
+    list of them, or whatever comes down the pipeline - a string, or an object with a
+    dNSHostName, Name, CN or IPAddress, which is what every Get-Domain* function returns.
+    The same aliases Test-RemoteAdminAccess accepts, so the two read the same piped object.
+
+    A name given here is not checked against the domain's DNS name the way a name read from
+    the directory is: the caller named it on purpose.
+
+    An empty pipeline searches nothing. It deliberately does not fall back to the domain -
+    "Get-DomainComputer -OperatingSystem '*Server 2012*' | Invoke-ShareHunt" in a domain
+    with no such computer would otherwise sweep every computer there is.
 
     .PARAMETER ActiveDays
     How recent the last logon of a computer must be, in days. Default: 30.
@@ -146,6 +156,13 @@ function Invoke-ShareHunt {
     Invoke-ShareHunt -ComputerName fs01.contoso.com, fs02.contoso.com -MaxDepth 8
 
     .EXAMPLE
+    'fs01.contoso.com' | Invoke-ShareHunt -ListSharesOnly
+
+    .EXAMPLE
+    Get-DomainComputer -OperatingSystem '*Server*' | Invoke-ShareHunt
+    The servers of the domain, by their dNSHostName.
+
+    .EXAMPLE
     Invoke-ShareHunt -ActiveDays 14 -MaxMinutes 20
 
     .EXAMPLE
@@ -168,7 +185,11 @@ function Invoke-ShareHunt {
         [Parameter(Mandatory=$false)]
         [System.Management.Automation.PSCredential]$Credential,
 
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [Alias('DNSHostName', 'Name', 'CN', 'IPAddress')]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [AllowNull()]
         [string[]]$ComputerName,
 
         [Parameter(Mandatory=$false)]
@@ -218,9 +239,29 @@ function Invoke-ShareHunt {
 
     begin {
         Write-Log "[Invoke-ShareHunt] Starting check"
+
+        # Filled by process{}, used once by end{}.
+        $givenTargets = New-Object System.Collections.Generic.List[string]
+        $givenNameless = 0
+        $targetsWereGiven = $false
     }
 
     process {
+        # Collects and nothing else. The check belongs in end{}: run from process{} it
+        # would sweep the network, enumerate shares and print both its sections once per
+        # piped computer.
+        if (-not $PSBoundParameters.ContainsKey('ComputerName')) { return }
+        $targetsWereGiven = $true
+        foreach ($one in @($ComputerName)) {
+            $trimmed = ([string]$one).Trim()
+            # An object whose dNSHostName is empty binds the empty string rather than
+            # falling back to its Name, and guessing a short name for it is not better
+            # than counting it as nameless.
+            if ($trimmed) { $givenTargets.Add($trimmed) } else { $givenNameless++ }
+        }
+    }
+
+    end {
         try {
             # Connection parameters only: Ensure-LDAPConnection and the Get-Domain* functions
             # have none of the others, and splatting $PSBoundParameters would fail to bind.
@@ -249,8 +290,14 @@ function Invoke-ShareHunt {
             # ===== The computers =====
             $outsideDomain = 0
             $withoutName = 0
-            if ($PSBoundParameters.ContainsKey('ComputerName')) {
-                $targets = @($ComputerName | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ } | Sort-Object -Unique)
+            # ExpectingInput as well as the flag: an empty pipeline binds nothing, so the
+            # flag alone cannot tell "@() | Invoke-ShareHunt" from a call with no targets at
+            # all - and the difference is between searching nothing and searching a whole
+            # domain. Measured on Windows PowerShell 5.1: for an empty pipeline process{}
+            # never runs and ExpectingInput is still true.
+            if ($targetsWereGiven -or $PSCmdlet.MyInvocation.ExpectingInput) {
+                $targets = @($givenTargets | Sort-Object -Unique)
+                $withoutName = $givenNameless
             } else {
                 $domainFQDN = ([string]$Script:LDAPContext.Domain).Trim().TrimEnd('.').ToLowerInvariant()
                 $since = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
@@ -507,9 +554,7 @@ function Invoke-ShareHunt {
             Write-Log "[Invoke-ShareHunt] Error: $_" -Level Error
             Show-Line "Error during check - the shares could not be searched: $_" -Class Finding
         }
-    }
 
-    end {
         Write-Log "[Invoke-ShareHunt] Check completed"
     }
 }
