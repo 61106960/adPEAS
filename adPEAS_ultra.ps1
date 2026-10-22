@@ -82167,9 +82167,9 @@ function Get-CredentialExposure {
 	                                $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
 	                                if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
 	                                Show-Line "Found net use credential" -Class Finding
-	                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-	                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-	                                    Show-Object $credObj -Class Finding
+	                                $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
+	                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
+	                                Show-Object $credObj -Class Finding
 	                                $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
 	                            }
 	                        }
@@ -94182,7 +94182,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261022-1028"
+$Script:adPEASVersion = "2.7.0+20261022-1035"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

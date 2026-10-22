@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-22 10:28:50
-    Version: 2.7.0+20261022-1028
+    Build: 2026-10-22 10:35:06
+    Version: 2.7.0+20261022-1035
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -136486,9 +136486,12 @@ function Get-CredentialExposure {
                                     $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
                                     if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                     Show-Line "Found net use credential" -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-                                        Show-Object $credObj -Class Finding
+                                    # SYSVOLCredential, as in the domain scan: a net use
+                                    # line is a script line. GPPCredential is the preference
+                                    # files' section, and its help text was the wrong one.
+                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
+                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
+                                    Show-Object $credObj -Class Finding
                                     # The whole line, not the match. The guard below compares
                                     # lines, and a net use match covers only the command - as
                                     # a key it was a substring of any later line that
@@ -151840,7 +151843,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261022-1028"
+$Script:adPEASVersion = "2.7.0+20261022-1035"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -799,9 +799,12 @@ function Get-CredentialExposure {
                                     $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
                                     if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
                                     Show-Line "Found net use credential" -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-                                        Show-Object $credObj -Class Finding
+                                    # SYSVOLCredential, as in the domain scan: a net use
+                                    # line is a script line. GPPCredential is the preference
+                                    # files' section, and its help text was the wrong one.
+                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
+                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
+                                    Show-Object $credObj -Class Finding
                                     # The whole line, not the match. The guard below compares
                                     # lines, and a net use match covers only the command - as
                                     # a key it was a substring of any later line that

@@ -1680,6 +1680,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   values and with a card that says what an OU-linked policy does to the computers below
   it.
 
+- **`Get-CredentialExposure -Path` files a net use password under the script findings.**
+  In custom path mode a password found on a `net use` line was tagged as a Group Policy
+  Preferences credential and got that section's help text; the domain scan, and every other
+  finding from a script in custom path mode, file it with the script findings.
+
 ---
 
 ## [2.7.0] - 2026-10-08
