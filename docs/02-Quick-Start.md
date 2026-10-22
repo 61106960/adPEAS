@@ -329,6 +329,13 @@ Get-ADCSVulnerabilities        # Find ADCS misconfigurations
 Get-...
 ```
 
+A fast TCP port scan needs no session when the targets are given:
+
+```powershell
+Invoke-PortScan -Target 10.1.2.0/24                  # 16 key ports, one deadline per block
+Invoke-PortScan 10.1.2.10-50 -Port 22,445,3389,8000-8100
+```
+
 ---
 
 ## Reading the Output

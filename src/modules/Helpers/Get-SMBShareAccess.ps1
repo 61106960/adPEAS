@@ -6,7 +6,8 @@
     The three steps Invoke-ShareHunt needs before it reads a single file, each callable on
     its own:
 
-    - Test-TcpPortReachable: which hosts answer on port 445 at all
+    - Test-TcpPortReachable: which hosts answer on port 445 at all - or on any ports, which
+      is what Invoke-PortScan asks it
     - Get-SMBShareList: the shares of one host (NetShareEnum, MS-SRVS 3.1.4.8)
     - Test-ShareWorthScanning: which of those a credential scan should look at
 
@@ -73,23 +74,29 @@ function Start-TcpConnectAttempt {
 function Test-TcpPortReachable {
     <#
     .SYNOPSIS
-    Tells which of many hosts answer on a TCP port, in blocks with one deadline each.
+    Tells which of many hosts answer on which TCP ports, in blocks with one deadline each.
 
     .DESCRIPTION
-    Every target in a block gets a connection attempt started at once (BeginConnect, which
-    returns immediately), then the block is given TimeoutMs to finish. A target that has
-    connected by then is reachable; everything else is not, whether it was refused, filtered
-    or simply slow. No thread is created for any of it.
+    Every pair of target and port in a block gets a connection attempt started at once
+    (BeginConnect, which returns immediately), then the block is given TimeoutMs to finish.
+    A pair that has connected by then is reachable; everything else is not, whether it was
+    refused, filtered or simply slow. No thread is created for any of it.
 
-    The deadline is per block, not per target: a block of 256 unreachable hosts costs one
+    The deadline is per block, not per pair: a block of 256 unreachable hosts costs one
     timeout, not 256. That is the whole point of the function.
+
+    Refused and filtered are not told apart. Windows answers a refused connection only
+    after retrying it for about a second, so within a deadline short enough to sweep with,
+    a closed port and a dropped one look the same.
 
     .PARAMETER Target
     Host names or addresses. A name is resolved by the system resolver, so the caller
     decides what to pass - an address avoids the lookup, a host name is what Kerberos needs.
 
     .PARAMETER Port
-    The port. Default 445 (SMB).
+    The ports. Default 445 (SMB). Every target is tried on every port, port by port: the
+    first port on all targets, then the next - so a block spreads over many hosts rather
+    than putting 256 connections on one.
 
     .PARAMETER TimeoutMs
     How long one block is given. Default 1000.
@@ -98,10 +105,13 @@ function Test-TcpPortReachable {
     How many connections are in flight at once. Default 256.
 
     .OUTPUTS
-    PSCustomObject per target: Target and Reachable.
+    PSCustomObject per target and port: Target, Port and Reachable.
 
     .EXAMPLE
     Test-TcpPortReachable -Target '10.1.2.21', '10.1.2.22'
+
+    .EXAMPLE
+    Test-TcpPortReachable -Target '10.1.2.21' -Port 22, 445, 3389
 
     .NOTES
     Internal helper function
@@ -121,7 +131,7 @@ function Test-TcpPortReachable {
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(1, 65535)]
-        [int]$Port = 445,
+        [int[]]$Port = 445,
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(50, 60000)]
@@ -134,20 +144,26 @@ function Test-TcpPortReachable {
 
     # No guard for an empty list: the loop below then runs zero times.
     $targets = @($Target | Where-Object { $_ })
+    $pairs = New-Object System.Collections.Generic.List[object]
+    foreach ($onePort in @($Port | Select-Object -Unique)) {
+        foreach ($one in $targets) { $pairs.Add([PSCustomObject]@{ Target = $one; Port = $onePort }) }
+    }
 
-    for ($offset = 0; $offset -lt $targets.Count; $offset += $BatchSize) {
-        $last = [Math]::Min($offset + $BatchSize, $targets.Count) - 1
+    for ($offset = 0; $offset -lt $pairs.Count; $offset += $BatchSize) {
+        $last = [Math]::Min($offset + $BatchSize, $pairs.Count) - 1
         $pending = New-Object System.Collections.Generic.List[object]
 
-        foreach ($one in $targets[$offset..$last]) {
+        foreach ($pair in $pairs.GetRange($offset, $last - $offset + 1)) {
             try {
-                $attempt = Start-TcpConnectAttempt -Target $one -Port $Port
-                $pending.Add([PSCustomObject]@{ Target = $one; Client = $attempt.Client; Handle = $attempt.Handle })
+                $attempt = Start-TcpConnectAttempt -Target $pair.Target -Port $pair.Port
+                $pending.Add([PSCustomObject]@{ Target = $pair.Target; Port = $pair.Port; Client = $attempt.Client; Handle = $attempt.Handle })
             } catch {
                 # The socket itself failed - the machine is out of them. The sweep goes on
-                # with the next target; this one is simply not known to be reachable.
-                Write-Log "[Test-TcpPortReachable] $one could not be probed: $($_.Exception.Message)"
-                [PSCustomObject]@{ Target = $one; Reachable = $false }
+                # with the next pair; this one is simply not known to be reachable. Kept in
+                # the list without a handle, so its answer comes in its place rather than
+                # ahead of the block.
+                Write-Log "[Test-TcpPortReachable] $($pair.Target):$($pair.Port) could not be probed: $($_.Exception.Message)"
+                $pending.Add([PSCustomObject]@{ Target = $pair.Target; Port = $pair.Port; Client = $null; Handle = $null })
             }
         }
 
@@ -155,21 +171,23 @@ function Test-TcpPortReachable {
         # the per-host timeout again for every host that does not answer.
         $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
         foreach ($entry in $pending) {
-            $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
-            if ($left -lt 0) { $left = 0 }
-            $done = $false
-            try { $done = $entry.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
-
             $reachable = $false
-            if ($done) {
-                # Connected rather than refused: EndConnect throws on a refusal, and
-                # BeginConnect signals the handle either way.
-                try { $entry.Client.EndConnect($entry.Handle); $reachable = $true } catch { }
-            }
-            try { $entry.Client.Close() } catch { }
-            try { $entry.Client.Dispose() } catch { }
+            if ($entry.Handle) {
+                $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+                if ($left -lt 0) { $left = 0 }
+                $done = $false
+                try { $done = $entry.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
 
-            [PSCustomObject]@{ Target = $entry.Target; Reachable = $reachable }
+                if ($done) {
+                    # Connected rather than refused: EndConnect throws on a refusal, and
+                    # BeginConnect signals the handle either way.
+                    try { $entry.Client.EndConnect($entry.Handle); $reachable = $true } catch { }
+                }
+                try { $entry.Client.Close() } catch { }
+                try { $entry.Client.Dispose() } catch { }
+            }
+
+            [PSCustomObject]@{ Target = $entry.Target; Port = $entry.Port; Reachable = $reachable }
         }
     }
 }

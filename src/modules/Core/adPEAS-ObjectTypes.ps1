@@ -225,7 +225,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "adSubnet: the most specific subnet defined in Sites and Services that contains the addresses, with its site. 'Not in Sites and Services' means no defined subnet contains them - clients there pick any domain controller"
             "The subnets Sites and Services defines that hold no active computer, in one list after the /24s: networks the domain knows of and the computers do not show, such as a VPN pool, a DMZ or a floor of appliances. A defined subnet inside one of the /24s is left out, that /24 covers it"
             "Not mapped, and counted: names outside the domain, computers without a DNS name or without a usable IPv4 address (loopback, APIPA and multicast are not), and IPv6 addresses"
-            "-ExportTargets writes the subnets to a file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner"
+            "-ExportTargets writes the subnets to a file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner, such as Get-Content <file> | Invoke-PortScan"
+        )
+    }
+
+    'OpenPorts' = @{
+        TitleFormat = "Open Ports: {Name}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "Open Ports"
+        Summary = "Lists the open TCP ports of the scanned addresses (Invoke-PortScan)."
+        WhyItMatters = "Which services a host can be reached on decides what can be done with it next: SMB for shares and relaying, RPC, RDP and WinRM for remote execution, LDAPS for certificate logons, databases and web consoles for credentials of their own. Finding out by hand with Test-NetConnection costs one timeout per closed port."
+        WhatWeCheck = @(
+            "A TCP connect scan: a port is open when a connection to it completes. Nothing is sent over it. Refused and filtered are not told apart - Windows answers a refused connection only after retrying it for about a second"
+            "Connections are started a block at a time (-BatchSize, 256) and the block gets one deadline (-TimeoutMs, 1000), so a port that does not answer costs one timeout per block, not one per probe"
+            "The targets as given or piped in: addresses, networks such as 10.1.2.0/24 (up to a /16, without the network and broadcast address), ranges such as 10.1.2.10-50, host names, and the objects of the Get-Domain* functions by dNSHostName. A name is resolved once, by this machine's resolver"
+            "With -DomainComputers, the enabled computers of the domain with a logon in the last 30 days (-ActiveDays), by DNS name below the domain's own, at the addresses the AD-integrated DNS zones hold - a name the zones do not hold is resolved at the domain controller, and at no other server. Never without it: a call with no target is refused rather than turned into a scan of the domain"
+            "Every address once, however many targets stand for it. Without -Port, 16 ports that say whether a host can be reached for what comes next: 22, 80, 88, 135, 389, 443, 445, 636, 1433, 3389, 5985, 5986, 8080, 8443, 9080, 9443"
+            "-ExportOpenPorts writes the open ports as CSV, one row per port with IPAddress, HostName, Port and Service - Import-Csv reads it back, and a row piped on binds by IPAddress. -PassThru returns one object per address, which Invoke-ShareHunt takes from the pipeline"
         )
     }
 

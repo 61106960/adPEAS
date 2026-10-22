@@ -217,6 +217,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Export-adPEASFile.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-RemoteAdminAccess.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-SMBShareAccess.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Invoke-PortScan.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-ShareFileCandidate.ps1"
     . "$Script:ScriptPath\modules\Helpers\Invoke-RBCDOperation.ps1"
     . "$Script:ScriptPath\modules\Helpers\Invoke-ShadowCredentialOperation.ps1"

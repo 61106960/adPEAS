@@ -1518,7 +1518,7 @@ A subnet with domain controllers is a hint - the Tier-0 network - and adds nothi
 
 **Parameters**:
 - `-ActiveDays <n>`: how recent the last logon must be (default 30)
-- `-ExportTargets <file>`: writes the subnets to the file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner (`nmap -iL`); an existing file is overwritten. A full scan writes no file.
+- `-ExportTargets <file>`: writes the subnets to the file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner (`nmap -iL`, or `Get-Content <file> | Invoke-PortScan`); an existing file is overwritten. A full scan writes no file.
 - `-OPSEC`: no DNS query; computers the zones do not hold are counted and not mapped
 
 **Usage**:
@@ -1700,6 +1700,7 @@ Get-DomainComputer -OperatingSystem '*Server*' | Invoke-ShareHunt
 Invoke-ShareHunt -ComputerName fs01.contoso.com -ShareName Finance
 Invoke-ShareHunt -ShareName Finance, 'Profiles$'
 Invoke-ShareHunt -ExportShares .\shares.txt -ExportFindings .\shares.json
+Invoke-PortScan -Target 10.1.2.0/24 -Port 445 -PassThru | Invoke-ShareHunt
 Invoke-ShareHunt -ComputerName fs01.contoso.com -ExcludeFolder Archive, 'Build Output'
 Invoke-adPEAS -Module Shares
 ```

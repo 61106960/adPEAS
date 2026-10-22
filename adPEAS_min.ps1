@@ -3798,6 +3798,9 @@ $Script:PrimaryAttributes = @{
         'CredentialType', 'FilePath', 'RegistryValue', 'UnattendSetting', 'VNCHost', 'VNCSetting',
         'UserName', 'accountInAD', 'Password', 'MatchedLine'
     )
+    OpenPorts = @(
+        'hostName', 'ipAddress', 'openPorts'
+    )
     NetworkSubnet = @(
         'subnet', 'adSubnet', 'computerCount', 'domainControllerCount',
         'operatingSystems', 'organizationalUnits'
@@ -21485,7 +21488,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "adSubnet: the most specific subnet defined in Sites and Services that contains the addresses, with its site. 'Not in Sites and Services' means no defined subnet contains them - clients there pick any domain controller"
             "The subnets Sites and Services defines that hold no active computer, in one list after the /24s: networks the domain knows of and the computers do not show, such as a VPN pool, a DMZ or a floor of appliances. A defined subnet inside one of the /24s is left out, that /24 covers it"
             "Not mapped, and counted: names outside the domain, computers without a DNS name or without a usable IPv4 address (loopback, APIPA and multicast are not), and IPv6 addresses"
-            "-ExportTargets writes the subnets to a file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner"
+            "-ExportTargets writes the subnets to a file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner, such as Get-Content <file> | Invoke-PortScan"
+        )
+    }
+    'OpenPorts' = @{
+        TitleFormat = "Open Ports: {Name}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "Open Ports"
+        Summary = "Lists the open TCP ports of the scanned addresses (Invoke-PortScan)."
+        WhyItMatters = "Which services a host can be reached on decides what can be done with it next: SMB for shares and relaying, RPC, RDP and WinRM for remote execution, LDAPS for certificate logons, databases and web consoles for credentials of their own. Finding out by hand with Test-NetConnection costs one timeout per closed port."
+        WhatWeCheck = @(
+            "A TCP connect scan: a port is open when a connection to it completes. Nothing is sent over it. Refused and filtered are not told apart - Windows answers a refused connection only after retrying it for about a second"
+            "Connections are started a block at a time (-BatchSize, 256) and the block gets one deadline (-TimeoutMs, 1000), so a port that does not answer costs one timeout per block, not one per probe"
+            "The targets as given or piped in: addresses, networks such as 10.1.2.0/24 (up to a /16, without the network and broadcast address), ranges such as 10.1.2.10-50, host names, and the objects of the Get-Domain* functions by dNSHostName. A name is resolved once, by this machine's resolver"
+            "With -DomainComputers, the enabled computers of the domain with a logon in the last 30 days (-ActiveDays), by DNS name below the domain's own, at the addresses the AD-integrated DNS zones hold - a name the zones do not hold is resolved at the domain controller, and at no other server. Never without it: a call with no target is refused rather than turned into a scan of the domain"
+            "Every address once, however many targets stand for it. Without -Port, 16 ports that say whether a host can be reached for what comes next: 22, 80, 88, 135, 389, 443, 445, 636, 1433, 3389, 5985, 5986, 8080, 8443, 9080, 9443"
+            "-ExportOpenPorts writes the open ports as CSV, one row per port with IPAddress, HostName, Port and Service - Import-Csv reads it back, and a row piped on binds by IPAddress. -PassThru returns one object per address, which Invoke-ShareHunt takes from the pipeline"
         )
     }
     'LDAPConfigGPO' = @{
@@ -60999,7 +61018,7 @@ function Test-TcpPortReachable {
         [string[]]$Target,
         [Parameter(Mandatory = $false)]
         [ValidateRange(1, 65535)]
-        [int]$Port = 445,
+        [int[]]$Port = 445,
         [Parameter(Mandatory = $false)]
         [ValidateRange(50, 60000)]
         [int]$TimeoutMs = 1000,
@@ -61008,31 +61027,37 @@ function Test-TcpPortReachable {
         [int]$BatchSize = 256
     )
     $targets = @($Target | Where-Object { $_ })
-    for ($offset = 0; $offset -lt $targets.Count; $offset += $BatchSize) {
-        $last = [Math]::Min($offset + $BatchSize, $targets.Count) - 1
+    $pairs = New-Object System.Collections.Generic.List[object]
+    foreach ($onePort in @($Port | Select-Object -Unique)) {
+        foreach ($one in $targets) { $pairs.Add([PSCustomObject]@{ Target = $one; Port = $onePort }) }
+    }
+    for ($offset = 0; $offset -lt $pairs.Count; $offset += $BatchSize) {
+        $last = [Math]::Min($offset + $BatchSize, $pairs.Count) - 1
         $pending = New-Object System.Collections.Generic.List[object]
-        foreach ($one in $targets[$offset..$last]) {
+        foreach ($pair in $pairs.GetRange($offset, $last - $offset + 1)) {
             try {
-                $attempt = Start-TcpConnectAttempt -Target $one -Port $Port
-                $pending.Add([PSCustomObject]@{ Target = $one; Client = $attempt.Client; Handle = $attempt.Handle })
+                $attempt = Start-TcpConnectAttempt -Target $pair.Target -Port $pair.Port
+                $pending.Add([PSCustomObject]@{ Target = $pair.Target; Port = $pair.Port; Client = $attempt.Client; Handle = $attempt.Handle })
             } catch {
-                Write-Log "[Test-TcpPortReachable] $one could not be probed: $($_.Exception.Message)"
-                [PSCustomObject]@{ Target = $one; Reachable = $false }
+                Write-Log "[Test-TcpPortReachable] $($pair.Target):$($pair.Port) could not be probed: $($_.Exception.Message)"
+                $pending.Add([PSCustomObject]@{ Target = $pair.Target; Port = $pair.Port; Client = $null; Handle = $null })
             }
         }
         $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
         foreach ($entry in $pending) {
-            $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
-            if ($left -lt 0) { $left = 0 }
-            $done = $false
-            try { $done = $entry.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
             $reachable = $false
-            if ($done) {
-                try { $entry.Client.EndConnect($entry.Handle); $reachable = $true } catch { }
+            if ($entry.Handle) {
+                $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+                if ($left -lt 0) { $left = 0 }
+                $done = $false
+                try { $done = $entry.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
+                if ($done) {
+                    try { $entry.Client.EndConnect($entry.Handle); $reachable = $true } catch { }
+                }
+                try { $entry.Client.Close() } catch { }
+                try { $entry.Client.Dispose() } catch { }
             }
-            try { $entry.Client.Close() } catch { }
-            try { $entry.Client.Dispose() } catch { }
-            [PSCustomObject]@{ Target = $entry.Target; Reachable = $reachable }
+            [PSCustomObject]@{ Target = $entry.Target; Port = $entry.Port; Reachable = $reachable }
         }
     }
 }
@@ -61262,6 +61287,500 @@ function Get-SMBShareListMany {
             try { $job.Shell.Dispose() } catch { }
         }
         if ($pool) { try { $pool.Dispose() } catch { } }
+    }
+}
+$Script:PortScanDefaultPort = @(22, 80, 88, 135, 389, 443, 445, 636, 1433, 3389, 5985, 5986, 8080, 8443, 9080, 9443)
+$Script:PortScanServiceName = @{
+    21    = 'FTP'
+    22    = 'SSH'
+    23    = 'Telnet'
+    25    = 'SMTP'
+    53    = 'DNS'
+    80    = 'HTTP'
+    88    = 'Kerberos'
+    110   = 'POP3'
+    111   = 'RPCbind'
+    135   = 'RPC'
+    139   = 'NetBIOS'
+    143   = 'IMAP'
+    389   = 'LDAP'
+    443   = 'HTTPS'
+    445   = 'SMB'
+    464   = 'Kpasswd'
+    636   = 'LDAPS'
+    1433  = 'MSSQL'
+    1521  = 'Oracle'
+    2049  = 'NFS'
+    3268  = 'GC'
+    3269  = 'GC-SSL'
+    3306  = 'MySQL'
+    3389  = 'RDP'
+    5432  = 'PostgreSQL'
+    5900  = 'VNC'
+    5985  = 'WinRM'
+    5986  = 'WinRM-HTTPS'
+    6379  = 'Redis'
+    8000  = 'HTTP-Alt'
+    8080  = 'HTTP-Alt'
+    8443  = 'HTTPS-Alt'
+    9080  = 'HTTP-Alt'
+    9389  = 'ADWS'
+    9443  = 'HTTPS-Alt'
+    27017 = 'MongoDB'
+}
+$Script:PortScanMaxAddresses = 65536
+function ConvertTo-PortScanPortList {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [AllowNull()]
+        [string[]]$Port
+    )
+    $ports = New-Object 'System.Collections.Generic.SortedSet[int]'
+    $invalid = New-Object System.Collections.Generic.List[string]
+    foreach ($spec in @($Port)) {
+        foreach ($part in ([string]$spec).Split(',')) {
+            $item = $part.Trim()
+            if (-not $item) { continue }
+            if ($item -match '^(\d{1,5})$') {
+                $from = [int]$Matches[1]
+                $to = $from
+            } elseif ($item -match '^(\d{1,5})\s*-\s*(\d{1,5})$') {
+                $from = [int]$Matches[1]
+                $to = [int]$Matches[2]
+            } else {
+                $invalid.Add($item)
+                continue
+            }
+            if ($from -lt 1 -or $to -gt 65535 -or $from -gt $to) {
+                $invalid.Add($item)
+                continue
+            }
+            for ($number = $from; $number -le $to; $number++) { [void]$ports.Add($number) }
+        }
+    }
+    return [PSCustomObject]@{
+        Ports   = @($ports)
+        Invalid = @($invalid)
+    }
+}
+function ConvertFrom-PortScanIPv4Number {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [long]$Number
+    )
+    $octets = @(
+        [Math]::Floor($Number / 16777216) % 256
+        [Math]::Floor($Number / 65536) % 256
+        [Math]::Floor($Number / 256) % 256
+        $Number % 256
+    )
+    return ($octets -join '.')
+}
+function ConvertTo-PortScanTarget {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [string]$Target
+    )
+    $spec = ([string]$Target).Trim()
+    $result = [PSCustomObject]@{ Target = $spec; Kind = 'Invalid'; Address = @(); Name = $null; Reason = $null }
+    $dotted = '\d{1,3}(?:\.\d{1,3}){3}'
+    if ($spec -match "^($dotted)/(\d{1,2})$") {
+        $base = ConvertTo-NetworkMapIPv4Number -Address $Matches[1]
+        $prefix = [int]$Matches[2]
+        if ($null -eq $base -or $prefix -gt 32) { $result.Reason = 'not an IPv4 network'; return $result }
+        if ([Math]::Pow(2, 32 - $prefix) -gt $Script:PortScanMaxAddresses) {
+            $result.Reason = 'larger than a /16'
+            return $result
+        }
+        $first = $base -band (Get-NetworkMapPrefixMask -PrefixLength $prefix)
+        $last = $first + [long][Math]::Pow(2, 32 - $prefix) - 1
+        if ($prefix -le 30) { $first++; $last-- }
+    } elseif ($spec -match "^($dotted)-($dotted|\d{1,3})$") {
+        $startText = $Matches[1]
+        $endText = $Matches[2]
+        if ($endText -notmatch '\.') { $endText = $startText.Substring(0, $startText.LastIndexOf('.') + 1) + $endText }
+        $first = ConvertTo-NetworkMapIPv4Number -Address $startText
+        $last = ConvertTo-NetworkMapIPv4Number -Address $endText
+        if ($null -eq $first -or $null -eq $last) { $result.Reason = 'not an IPv4 range'; return $result }
+        if ($last -lt $first) { $result.Reason = 'the range ends before it starts'; return $result }
+        if (($last - $first + 1) -gt $Script:PortScanMaxAddresses) {
+            $result.Reason = 'more than 65536 addresses'
+            return $result
+        }
+    } elseif ($spec -match "^$dotted$") {
+        $first = ConvertTo-NetworkMapIPv4Number -Address $spec
+        if ($null -eq $first) { $result.Reason = 'not an IPv4 address'; return $result }
+        $last = $first
+    } elseif ($spec.Contains(':')) {
+        $result.Reason = if ($spec -match '^[^:]+:\d+$') { 'a port belongs in -Port' } else { 'IPv6 is not scanned' }
+        return $result
+    } elseif ($spec -match '^[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?\.?$') {
+        $result.Kind = 'Name'
+        $result.Name = $spec.TrimEnd('.')
+        return $result
+    } else {
+        $result.Reason = 'not an address, a network or a name'
+        return $result
+    }
+    $addresses = New-Object System.Collections.Generic.List[string]
+    for ($number = $first; $number -le $last; $number++) {
+        $addresses.Add((ConvertFrom-PortScanIPv4Number -Number $number))
+    }
+    $result.Kind = 'Address'
+    $result.Address = @($addresses)
+    return $result
+}
+function Start-NameResolution {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Name
+    )
+    return [System.Net.Dns]::BeginGetHostAddresses($Name, $null, $null)
+}
+function Resolve-PortScanName {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string[]]$Name,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(50, 60000)]
+        [int]$TimeoutMs = 3000,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 1024)]
+        [int]$BatchSize = 256
+    )
+    $names = @($Name | Where-Object { $_ })
+    for ($offset = 0; $offset -lt $names.Count; $offset += $BatchSize) {
+        $last = [Math]::Min($offset + $BatchSize, $names.Count) - 1
+        $pending = New-Object System.Collections.Generic.List[object]
+        foreach ($one in $names[$offset..$last]) {
+            try {
+                $pending.Add([PSCustomObject]@{ Name = $one; Handle = (Start-NameResolution -Name $one) })
+            } catch {
+                Write-Log "[Resolve-PortScanName] $one could not be resolved: $($_.Exception.Message)"
+                $pending.Add([PSCustomObject]@{ Name = $one; Handle = $null })
+            }
+        }
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+        foreach ($entry in $pending) {
+            $addresses = @()
+            if ($entry.Handle) {
+                $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+                if ($left -lt 0) { $left = 0 }
+                $done = $false
+                try { $done = $entry.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
+                if ($done) {
+                    try {
+                        $addresses = @([System.Net.Dns]::EndGetHostAddresses($entry.Handle) |
+                            Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+                            ForEach-Object { $_.IPAddressToString })
+                    } catch {
+                        Write-Log "[Resolve-PortScanName] $($entry.Name) did not resolve: $($_.Exception.Message)"
+                    }
+                } else {
+                    Write-Log "[Resolve-PortScanName] $($entry.Name) did not resolve within $TimeoutMs ms"
+                }
+            }
+            [PSCustomObject]@{ Name = $entry.Name; Address = $addresses }
+        }
+    }
+}
+function Get-PortScanBlock {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [string[]]$Address,
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [int[]]$Port,
+        [Parameter(Mandatory=$true)]
+        [ValidateRange(1, 1024)]
+        [int]$BatchSize
+    )
+    if ($Address.Count -eq 0 -or $Port.Count -eq 0) { return }
+    if ($Address.Count -ge $BatchSize) {
+        foreach ($onePort in $Port) {
+            for ($offset = 0; $offset -lt $Address.Count; $offset += $BatchSize) {
+                $last = [Math]::Min($offset + $BatchSize, $Address.Count) - 1
+                [PSCustomObject]@{ Target = @($Address[$offset..$last]); Port = @($onePort) }
+            }
+        }
+    } else {
+        $portsPerBlock = [int][Math]::Floor($BatchSize / $Address.Count)
+        for ($offset = 0; $offset -lt $Port.Count; $offset += $portsPerBlock) {
+            $last = [Math]::Min($offset + $portsPerBlock, $Port.Count) - 1
+            [PSCustomObject]@{ Target = @($Address); Port = @($Port[$offset..$last]) }
+        }
+    }
+}
+function Invoke-PortScan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [Alias('ComputerName', 'DNSHostName', 'Name', 'CN', 'IPAddress')]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string[]]$Target,
+        [Parameter(Mandatory=$false, Position=1)]
+        [string[]]$Port,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(50, 60000)]
+        [int]$TimeoutMs = 1000,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 1024)]
+        [int]$BatchSize = 256,
+        [Parameter(Mandatory=$false)]
+        [switch]$DomainComputers,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 3650)]
+        [int]$ActiveDays = 30,
+        [Parameter(Mandatory=$false)]
+        [string]$ExportOpenPorts,
+        [Parameter(Mandatory=$false)]
+        [switch]$PassThru,
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    begin {
+        Write-Log "[Invoke-PortScan] Starting"
+        $givenTargets = New-Object System.Collections.Generic.List[string]
+        $givenNameless = 0
+        $targetsWereGiven = $false
+    }
+    process {
+        if (-not $PSBoundParameters.ContainsKey('Target')) { return }
+        $targetsWereGiven = $true
+        foreach ($one in @($Target)) {
+            $trimmed = ([string]$one).Trim()
+            if ($trimmed) { $givenTargets.Add($trimmed) } else { $givenNameless++ }
+        }
+    }
+    end {
+        try {
+            $portList = if ($PSBoundParameters.ContainsKey('Port')) {
+                ConvertTo-PortScanPortList -Port $Port
+            } else {
+                [PSCustomObject]@{ Ports = @($Script:PortScanDefaultPort); Invalid = @() }
+            }
+            if (@($portList.Invalid).Count -gt 0) {
+                Write-Error "Not a port or a port range: $(@($portList.Invalid) -join ', '). Expected numbers from 1 to 65535, such as 445, 22,80 or 1-1024."
+                return
+            }
+            $ports = @($portList.Ports)
+            if ($ports.Count -eq 0) {
+                Write-Error "No port to scan."
+                return
+            }
+            $targetsGiven = $targetsWereGiven -or $PSCmdlet.MyInvocation.ExpectingInput
+            if (-not $targetsGiven -and -not $DomainComputers) {
+                Write-Error "No target to scan. Name one with -Target or pipe targets in; -DomainComputers scans the active computers of the domain."
+                return
+            }
+            Show-SubHeader "Scanning for open ports..." -ObjectType "OpenPorts"
+            $scanTargets = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+            $invalidTargets = New-Object System.Collections.Generic.List[string]
+            $unresolved = New-Object System.Collections.Generic.List[string]
+            $withoutDnsName = 0
+            $outsideDomain = 0
+            $domainFQDN = $null
+            function Add-ScanAddress {
+                param([string]$Address, [string]$HostName)
+                if (-not $scanTargets.ContainsKey($Address)) {
+                    $scanTargets[$Address] = [PSCustomObject]@{
+                        Address = $Address
+                        Number  = ConvertTo-NetworkMapIPv4Number -Address $Address
+                        Names   = New-Object System.Collections.Generic.List[string]
+                    }
+                }
+                if ($HostName -and -not $scanTargets[$Address].Names.Contains($HostName)) {
+                    $scanTargets[$Address].Names.Add($HostName)
+                }
+            }
+            if ($targetsGiven) {
+                $names = New-Object System.Collections.Generic.List[string]
+                $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($spec in @($givenTargets | Select-Object -Unique)) {
+                    $parsed = ConvertTo-PortScanTarget -Target $spec
+                    if ($parsed.Kind -eq 'Address') {
+                        foreach ($address in $parsed.Address) { Add-ScanAddress -Address $address }
+                    } elseif ($parsed.Kind -eq 'Name') {
+                        if ($seen.Add($parsed.Name)) { $names.Add($parsed.Name) }
+                    } else {
+                        $invalidTargets.Add("$spec ($($parsed.Reason))")
+                    }
+                }
+                if ($names.Count -gt 0) {
+                    Show-Progress -Activity 'Port scan' -Current 1 -Total 1 -Status "Resolving $($names.Count) name(s)"
+                    foreach ($resolved in @(Resolve-PortScanName -Name @($names))) {
+                        if (@($resolved.Address).Count -eq 0) { $unresolved.Add($resolved.Name); continue }
+                        foreach ($address in $resolved.Address) { Add-ScanAddress -Address $address -HostName $resolved.Name }
+                    }
+                }
+            }
+            if ($DomainComputers) {
+                $connectionParams = @{}
+                if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+                if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+                if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+                if (-not (Ensure-LDAPConnection @connectionParams)) {
+                    return
+                }
+                $domainFQDN = ([string]$Script:LDAPContext.Domain).Trim().TrimEnd('.').ToLowerInvariant()
+                $since = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
+                Show-Progress -Activity 'Port scan' -Current 1 -Total 1 -Status 'Looking for the active computers of the domain'
+                $computers = @(Get-DomainComputer -Enabled -LDAPFilter "(lastLogonTimestamp>=$since)" -Properties 'dNSHostName' @connectionParams)
+                $names = New-Object System.Collections.Generic.List[string]
+                $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($computer in $computers) {
+                    $fqdn = ([string]$computer.dNSHostName).Trim().TrimEnd('.').ToLowerInvariant()
+                    if (-not $fqdn) { $withoutDnsName++; continue }
+                    if (-not $fqdn.EndsWith(".$domainFQDN")) { $outsideDomain++; continue }
+                    if ($seen.Add($fqdn)) { $names.Add($fqdn) }
+                }
+                Write-Log "[Invoke-PortScan] $($names.Count) active computer(s) of the domain"
+                if ($names.Count -gt 0) {
+                    Show-Progress -Activity 'Port scan' -Current 1 -Total 1 -Status "Resolving $($names.Count) computer name(s)"
+                    $zoneAddresses = (Get-NetworkMapAddressMap -Name @($names) @connectionParams).Addresses
+                    $dnsServer = $null
+                    if ($Script:LDAPContext['DnsServer']) { $dnsServer = [string]$Script:LDAPContext['DnsServer'] }
+                    elseif ($Script:LDAPContext['ServerIP']) { $dnsServer = [string]$Script:LDAPContext['ServerIP'] }
+                    $index = 0
+                    foreach ($name in $names) {
+                        $index++
+                        $candidates = if ($zoneAddresses.ContainsKey($name)) {
+                            @($zoneAddresses[$name].IPv4)
+                        } else {
+                            Show-Progress -Activity 'Port scan' -Current $index -Total $names.Count -Status "Resolving computer names at the domain controller" -ObjectName $name
+                            @(Resolve-NetworkMapName -Name $name -DnsServer $dnsServer)
+                        }
+                        $usable = @($candidates | Where-Object {
+                            $number = ConvertTo-NetworkMapIPv4Number -Address $_
+                            ($null -ne $number) -and (Test-NetworkMapUsableIPv4 -Number $number)
+                        })
+                        if ($usable.Count -eq 0) { $unresolved.Add($name); continue }
+                        foreach ($address in $usable) { Add-ScanAddress -Address $address -HostName $name }
+                    }
+                }
+            }
+            $addresses = @($scanTargets.Values | Sort-Object -Property Number | ForEach-Object { $_.Address })
+            $probeTotal = $addresses.Count * $ports.Count
+            $openByAddress = @{}
+            $openTotal = 0
+            $probed = 0
+            $clock = [System.Diagnostics.Stopwatch]::StartNew()
+            foreach ($block in @(Get-PortScanBlock -Address $addresses -Port $ports -BatchSize $BatchSize)) {
+                Show-Progress -Activity 'Port scan' -Current ([Math]::Max(1, $probed)) -Total $probeTotal `
+                    -Status "$probed of $probeTotal probe(s), $openTotal open port(s)"
+                foreach ($answer in @(Test-TcpPortReachable -Target $block.Target -Port $block.Port -TimeoutMs $TimeoutMs -BatchSize $BatchSize)) {
+                    $probed++
+                    if (-not $answer.Reachable) { continue }
+                    if (-not $openByAddress.ContainsKey($answer.Target)) {
+                        $openByAddress[$answer.Target] = New-Object 'System.Collections.Generic.SortedSet[int]'
+                    }
+                    [void]$openByAddress[$answer.Target].Add([int]$answer.Port)
+                    $openTotal++
+                }
+            }
+            $clock.Stop()
+            Show-Progress -Activity 'Port scan' -Completed
+            Write-Log "[Invoke-PortScan] $openTotal open port(s) on $($openByAddress.Count) of $($addresses.Count) address(es)"
+            if ($invalidTargets.Count -gt 0) {
+                Show-Line "$($invalidTargets.Count) target(s) skipped: $($invalidTargets -join ', ')" -Class Hint
+            }
+            if ($outsideDomain -gt 0) {
+                Show-Line "$outsideDomain active computer(s) with a DNS name outside $domainFQDN - not scanned" -Class Note
+            }
+            if ($withoutDnsName -gt 0) {
+                Show-Line "$withoutDnsName active computer(s) without a DNS name (dNSHostName) - not scanned" -Class Note
+            }
+            if ($givenNameless -gt 0) {
+                Show-Line "$givenNameless target(s) without a name - not scanned" -Class Note
+            }
+            if ($unresolved.Count -gt 0) {
+                $shown = @($unresolved | Select-Object -First 10)
+                $more = if ($unresolved.Count -gt $shown.Count) { " and $($unresolved.Count - $shown.Count) more" } else { '' }
+                Show-Line "$($unresolved.Count) name(s) without an address - not scanned: $($shown -join ', ')$more" -Class Note
+            }
+            if ($addresses.Count -eq 0) {
+                Show-Line "No address to scan" -Class Note
+                return
+            }
+            $seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
+            Show-Line "Scanned $($addresses.Count) address(es) on $($ports.Count) port(s) in $seconds s" -Class Note
+            if ($openTotal -eq 0) {
+                Show-Line "No open port found" -Class Note
+            } else {
+                Show-Line "Found $openTotal open port(s) on $($openByAddress.Count) address(es):" -Class Note
+            }
+            $exportRows = New-Object System.Collections.Generic.List[object]
+            foreach ($address in $addresses) {
+                if (-not $openByAddress.ContainsKey($address)) { continue }
+                $open = @($openByAddress[$address])
+                $hostNames = @($scanTargets[$address].Names)
+                $display = [PSCustomObject][ordered]@{
+                    Name      = if ($hostNames.Count -gt 0) { $hostNames[0] } else { $address }
+                    hostName  = if ($hostNames.Count -gt 0) { $hostNames -join ', ' } else { $null }
+                    ipAddress = $address
+                    openPorts = @($open | ForEach-Object {
+                        if ($Script:PortScanServiceName.ContainsKey($_)) { "$_ ($($Script:PortScanServiceName[$_]))" } else { "$_" }
+                    })
+                }
+                $display | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'OpenPorts' -Force
+                Show-Object $display -Class Note
+                foreach ($one in $open) {
+                    $exportRows.Add([PSCustomObject][ordered]@{
+                        IPAddress = $address
+                        HostName  = [string]$display.hostName
+                        Port      = $one
+                        Service   = if ($Script:PortScanServiceName.ContainsKey($one)) { $Script:PortScanServiceName[$one] } else { '' }
+                    })
+                }
+                if ($PassThru) {
+                    [PSCustomObject]@{
+                        ComputerName = $display.Name
+                        IPAddress    = $address
+                        OpenPorts    = $open
+                    }
+                }
+            }
+            if ($ExportOpenPorts) {
+                if ($exportRows.Count -eq 0) {
+                    Show-Line "No open port to write to $ExportOpenPorts" -Class Note
+                } else {
+                    $csv = @($exportRows | ConvertTo-Csv -NoTypeInformation)
+                    $export = Export-adPEASFile -Path $ExportOpenPorts -Content (($csv -join "`r`n") + "`r`n") -Type Text -Force -SanitizeFilename:$false
+                    if ($export.Success) {
+                        Show-Line "Wrote $($exportRows.Count) open port(s) to $($export.Path)" -Class Note
+                    } else {
+                        Show-Line "The open ports could not be written to ${ExportOpenPorts}: $($export.Message)" -Class Hint
+                    }
+                }
+            }
+        } catch {
+            Show-Progress -Activity 'Port scan' -Completed
+            Write-Log "[Invoke-PortScan] Error: $_" -Level Error
+            Show-Line "Error during the port scan: $_" -Class Finding
+        }
     }
 }
 $Script:ShareWalkExcludeDirectory = @(
@@ -77987,6 +78506,57 @@ function Resolve-NetworkMapName {
         return @()
     }
 }
+function Get-NetworkMapAddressMap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [AllowNull()]
+        [string[]]$Name,
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    $connectionParams = @{}
+    if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+    if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+    if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+    $addressMap = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $zonesRead = 0
+    $names = @($Name | Where-Object { $_ })
+    if ($names.Count -eq 0) { return [PSCustomObject]@{ Addresses = $addressMap; ZonesRead = $zonesRead } }
+    try {
+        $suffixes = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($one in $names) {
+            $labels = ([string]$one).Split('.')
+            for ($i = 0; $i -lt $labels.Count; $i++) {
+                [void]$suffixes.Add(($labels[$i..($labels.Count - 1)] -join '.'))
+            }
+        }
+        $zones = @(Get-DomainDNSZone @connectionParams | Where-Object { $suffixes.Contains([string]$_.Name) })
+        $zonesRead = $zones.Count
+        if ($zones.Count -gt 0) {
+            foreach ($record in @(Get-DomainDNSRecord -Zone $zones @connectionParams)) {
+                if (-not $addressMap.ContainsKey($record.Name)) {
+                    $addressMap[$record.Name] = [PSCustomObject]@{
+                        IPv4 = New-Object System.Collections.Generic.List[string]
+                        IPv6 = New-Object System.Collections.Generic.List[string]
+                    }
+                }
+                $entry = $addressMap[$record.Name]
+                foreach ($address in @($record.IPv4Address)) { $entry.IPv4.Add([string]$address) }
+                foreach ($address in @($record.IPv6Address)) { $entry.IPv6.Add([string]$address) }
+            }
+        }
+    } catch {
+        Write-Log "[Get-NetworkMapAddressMap] The AD-integrated DNS zones could not be read: $_"
+    }
+    Write-Log "[Get-NetworkMapAddressMap] $($addressMap.Count) name(s) with an address in $zonesRead zone(s)"
+    return [PSCustomObject]@{ Addresses = $addressMap; ZonesRead = $zonesRead }
+}
 function Get-NetworkMap {
     [CmdletBinding()]
     param(
@@ -78057,37 +78627,9 @@ function Get-NetworkMap {
                     OSClass  = $osClass
                 })
             }
-            $addressMap = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
-            $zonesRead = 0
-            if ($candidates.Count -gt 0) {
-                try {
-                    $suffixes = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-                    foreach ($candidate in $candidates) {
-                        $labels = $candidate.FQDN.Split('.')
-                        for ($i = 0; $i -lt $labels.Count; $i++) {
-                            [void]$suffixes.Add(($labels[$i..($labels.Count - 1)] -join '.'))
-                        }
-                    }
-                    $zones = @(Get-DomainDNSZone @connectionParams | Where-Object { $suffixes.Contains([string]$_.Name) })
-                    $zonesRead = $zones.Count
-                    if ($zones.Count -gt 0) {
-                        foreach ($record in @(Get-DomainDNSRecord -Zone $zones @connectionParams)) {
-                            if (-not $addressMap.ContainsKey($record.Name)) {
-                                $addressMap[$record.Name] = [PSCustomObject]@{
-                                    IPv4 = New-Object System.Collections.Generic.List[string]
-                                    IPv6 = New-Object System.Collections.Generic.List[string]
-                                }
-                            }
-                            $entry = $addressMap[$record.Name]
-                            foreach ($address in @($record.IPv4Address)) { $entry.IPv4.Add([string]$address) }
-                            foreach ($address in @($record.IPv6Address)) { $entry.IPv6.Add([string]$address) }
-                        }
-                    }
-                } catch {
-                    Write-Log "[Get-NetworkMap] The AD-integrated DNS zones could not be read: $_"
-                }
-                Write-Log "[Get-NetworkMap] $($addressMap.Count) name(s) with an address in $zonesRead zone(s)"
-            }
+            $zoneAddresses = Get-NetworkMapAddressMap -Name @($candidates | ForEach-Object { $_.FQDN }) @connectionParams
+            $addressMap = $zoneAddresses.Addresses
+            $zonesRead = $zoneAddresses.ZonesRead
             $adSubnets = @{}
             $adPrefixes = @()
             try {
@@ -98078,7 +98620,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261022-1555"
+$Script:adPEASVersion = "2.7.0+20261022-1809"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

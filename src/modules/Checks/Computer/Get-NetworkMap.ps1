@@ -125,6 +125,91 @@ function Resolve-NetworkMapName {
     }
 }
 
+function Get-NetworkMapAddressMap {
+    <#
+    .SYNOPSIS
+    The addresses the AD-integrated DNS zones hold for a set of names.
+
+    .DESCRIPTION
+    One LDAP pass over the zones instead of a DNS query per name, and nothing leaves the
+    domain: a tester's own machine may resolve through a server that has no business
+    learning the domain's computer names. Get-NetworkMap and Invoke-PortScan start from it
+    and ask the domain controller only for the names it did not hold.
+
+    Only the zones a name falls in are read: a zone is relevant when it is a suffix of one
+    of the names, and the suffixes of every name are collected once. The name itself is one
+    of them - a pinpoint zone is named after its only host, and the address is the record
+    of the zone itself.
+
+    The same name in two zones - a zone stored in two partitions during a migration -
+    contributes the addresses of both. Zones that cannot be read leave the map empty
+    rather than failing; the caller falls back to its DNS query per name.
+
+    .OUTPUTS
+    PSCustomObject: Addresses, a case-insensitive dictionary of name to an entry with IPv4
+    and IPv6 lists, and ZonesRead, how many zones were read - none at all is what tells a
+    domain without the zones from zones that could not be read.
+
+    .NOTES
+    Internal helper function
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [AllowNull()]
+        [string[]]$Name,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    $connectionParams = @{}
+    if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+    if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+    if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+
+    $addressMap = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $zonesRead = 0
+    $names = @($Name | Where-Object { $_ })
+    if ($names.Count -eq 0) { return [PSCustomObject]@{ Addresses = $addressMap; ZonesRead = $zonesRead } }
+
+    try {
+        $suffixes = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($one in $names) {
+            $labels = ([string]$one).Split('.')
+            for ($i = 0; $i -lt $labels.Count; $i++) {
+                [void]$suffixes.Add(($labels[$i..($labels.Count - 1)] -join '.'))
+            }
+        }
+        $zones = @(Get-DomainDNSZone @connectionParams | Where-Object { $suffixes.Contains([string]$_.Name) })
+        $zonesRead = $zones.Count
+        if ($zones.Count -gt 0) {
+            foreach ($record in @(Get-DomainDNSRecord -Zone $zones @connectionParams)) {
+                if (-not $addressMap.ContainsKey($record.Name)) {
+                    $addressMap[$record.Name] = [PSCustomObject]@{
+                        IPv4 = New-Object System.Collections.Generic.List[string]
+                        IPv6 = New-Object System.Collections.Generic.List[string]
+                    }
+                }
+                $entry = $addressMap[$record.Name]
+                foreach ($address in @($record.IPv4Address)) { $entry.IPv4.Add([string]$address) }
+                foreach ($address in @($record.IPv6Address)) { $entry.IPv6.Add([string]$address) }
+            }
+        }
+    } catch {
+        Write-Log "[Get-NetworkMapAddressMap] The AD-integrated DNS zones could not be read: $_"
+    }
+    Write-Log "[Get-NetworkMapAddressMap] $($addressMap.Count) name(s) with an address in $zonesRead zone(s)"
+    return [PSCustomObject]@{ Addresses = $addressMap; ZonesRead = $zonesRead }
+}
+
 function Get-NetworkMap {
     <#
     .SYNOPSIS
@@ -296,45 +381,11 @@ function Get-NetworkMap {
             }
 
             # ===== Addresses from the AD-integrated zones =====
-            # Only the zones a name falls in: a zone is relevant when it is a suffix of a
-            # computer name, and the suffixes of every name are collected once. The name
-            # itself is one of them - a pinpoint zone is named after its only host, and the
-            # address is the record of the zone itself.
-            $addressMap = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
-            $zonesRead = 0
-            if ($candidates.Count -gt 0) {
-                try {
-                    $suffixes = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-                    foreach ($candidate in $candidates) {
-                        $labels = $candidate.FQDN.Split('.')
-                        for ($i = 0; $i -lt $labels.Count; $i++) {
-                            [void]$suffixes.Add(($labels[$i..($labels.Count - 1)] -join '.'))
-                        }
-                    }
-                    $zones = @(Get-DomainDNSZone @connectionParams | Where-Object { $suffixes.Contains([string]$_.Name) })
-                    $zonesRead = $zones.Count
-                    if ($zones.Count -gt 0) {
-                        foreach ($record in @(Get-DomainDNSRecord -Zone $zones @connectionParams)) {
-                            # The same name in two zones - a zone stored in two partitions
-                            # during a migration - contributes the addresses of both. An
-                            # address in both does no harm: a computer counts once per
-                            # subnet, however many of its addresses fall in it.
-                            if (-not $addressMap.ContainsKey($record.Name)) {
-                                $addressMap[$record.Name] = [PSCustomObject]@{
-                                    IPv4 = New-Object System.Collections.Generic.List[string]
-                                    IPv6 = New-Object System.Collections.Generic.List[string]
-                                }
-                            }
-                            $entry = $addressMap[$record.Name]
-                            foreach ($address in @($record.IPv4Address)) { $entry.IPv4.Add([string]$address) }
-                            foreach ($address in @($record.IPv6Address)) { $entry.IPv6.Add([string]$address) }
-                        }
-                    }
-                } catch {
-                    Write-Log "[Get-NetworkMap] The AD-integrated DNS zones could not be read: $_"
-                }
-                Write-Log "[Get-NetworkMap] $($addressMap.Count) name(s) with an address in $zonesRead zone(s)"
-            }
+            # An address in two zones does no harm: a computer counts once per subnet,
+            # however many of its addresses fall in it.
+            $zoneAddresses = Get-NetworkMapAddressMap -Name @($candidates | ForEach-Object { $_.FQDN }) @connectionParams
+            $addressMap = $zoneAddresses.Addresses
+            $zonesRead = $zoneAddresses.ZonesRead
 
             # ===== Sites and Services =====
             # The defined subnets by prefix length, so that the most specific one containing

@@ -19,7 +19,7 @@ Helper functions provide supporting functionality for core operations and securi
 | [Credential Decryption](#credential-decryption) | ConvertFrom-GPPPassword, ConvertFrom-VBE |
 | [Testing Functions](#testing-functions) | Invoke-Kerberoast, Invoke-ASREPRoast |
 | [ADCS Certificate Enrollment](#adcs-certificate-enrollment) | Request-ADCSCertificate |
-| [Network Utilities](#network-utilities) | Invoke-SMBAccess, Resolve-adPEASName |
+| [Network Utilities](#network-utilities) | Invoke-PortScan, Invoke-SMBAccess, Resolve-adPEASName |
 
 ---
 
@@ -796,6 +796,105 @@ $linkage["{6AC1786C-016F-11D2-945F-00C04fB984F9}"]  # Returns array of OUs where
 ```
 
 **Returns**: Hashtable with GPO GUID (uppercase, with braces) as key and array of linked location objects as value.
+
+---
+
+## Network Utilities
+
+### Invoke-PortScan
+
+A fast TCP connect scan for the system you are working from - no installation, no driver,
+and no waiting on one timeout per port as with `Test-NetConnection`. Connections are started
+a block at a time (`-BatchSize`, 256) and each block gets one deadline (`-TimeoutMs`, 1000),
+so a port that does not answer costs one timeout per block rather than one per probe: 254
+hosts on the 16 default ports that drop every packet take about 20 seconds.
+
+A port is open when a TCP connection to it completes; nothing is sent over it. Refused and
+filtered are not told apart - Windows answers a refused connection only after retrying it
+for about a second.
+
+**Targets:**
+- **Given** with `-Target` or piped in: IPv4 addresses, networks (`10.1.2.0/24`, up to a /16,
+  without the network and broadcast address), ranges (`10.1.2.10-50`,
+  `10.1.2.10-10.1.3.20`) and host names, in any mix - also the objects of the `Get-Domain*`
+  functions, by `dNSHostName`. A name is resolved once, by this machine's resolver, before
+  the scan. An empty pipeline scans nothing.
+- **`-DomainComputers`**: the enabled computers of the domain with a logon in the last 30
+  days (`-ActiveDays`), by DNS name below the domain's own. Their addresses come from the
+  AD-integrated DNS zones over LDAP, as for `Get-NetworkMap`; a name the zones do not hold
+  is resolved at the domain controller, and at no other server. Together with targets
+  given, both are scanned.
+
+A call with neither is refused with an error rather than turned into a scan of the domain.
+`Invoke-adPEAS` does not run a port scan.
+
+Every address is scanned once, however many targets stand for it. What is not scanned is
+named: unusable targets with the reason, names without an address, computers outside the
+domain or without a DNS name.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `Target` | String[] | Addresses, networks, ranges or host names; pipeline input by value or by `dNSHostName` |
+| `Port` | String[] | Ports and ranges: `445`, `'22,80,443'`, `'1-1024'`. Default: the 16 ports below |
+| `TimeoutMs` | Int | Deadline of one block of connections. Default: 1000 |
+| `BatchSize` | Int | Connections in flight at once. Default: 256 |
+| `DomainComputers` | Switch | Also scans the active computers of the domain |
+| `ActiveDays` | Int | With `-DomainComputers`: how recent a computer's last logon must be. Default: 30 |
+| `ExportOpenPorts` | String | Writes the open ports to a CSV file, one row per port: `IPAddress`, `HostName`, `Port`, `Service` |
+| `PassThru` | Switch | Returns one object per address with an open port: `ComputerName`, `IPAddress`, `OpenPorts` |
+| `Domain` / `Server` / `Credential` | | Connection, for `-DomainComputers` |
+
+The default ports: 22, 80, 88, 135, 389, 443, 445, 636, 1433, 3389, 5985, 5986, 8080, 8443,
+9080, 9443 - not every service there is, but the ones that say whether a host can be
+reached for what comes next: a remote shell (SSH, RPC, RDP, WinRM over HTTP and HTTPS), the
+domain (Kerberos, LDAP, LDAPS - the last one is what `-PassTheCert` needs), files (SMB), a
+database (MSSQL) and the web ports consoles live on. Any other port is a `-Port` away, and
+is named in the result where adPEAS knows its service.
+
+**Usage Examples:**
+
+```powershell
+# A network on the default ports
+Invoke-PortScan -Target 10.1.2.0/24
+
+# A range on chosen ports, with a shorter deadline
+Invoke-PortScan 10.1.2.10-50 -Port 22,80,443,8000-8100 -TimeoutMs 500
+
+# The subnets Get-NetworkMap -ExportTargets wrote, for SMB, into a CSV
+Get-Content .\subnets.txt | Invoke-PortScan -Port 445 -ExportOpenPorts .\smb.csv
+
+# The hosts a first scan found with WinRM, again on more ports
+Import-Csv .\open.csv | Where-Object Port -eq 5985 | Invoke-PortScan -Port 1-1024
+
+# The CSV as an address:port list, for tools that read one
+Import-Csv .\open.csv | ForEach-Object { "$($_.IPAddress):$($_.Port)" }
+
+# Servers of the domain, for databases
+Get-DomainComputer -OperatingSystem '*Server*' | Invoke-PortScan -Port 1433,3306,5432
+
+# The hosts with SMB open, straight into the share hunt
+Invoke-PortScan -Target 10.1.2.0/24 -Port 445 -PassThru | Invoke-ShareHunt
+
+# The active computers of the domain - only when asked for
+Invoke-PortScan -DomainComputers -Domain contoso.com -Credential (Get-Credential)
+```
+
+---
+
+**The CSV** (`-ExportOpenPorts`) has one row per open port and none for a host without one:
+
+```
+"IPAddress","HostName","Port","Service"
+"10.1.2.21","fs01.contoso.com","445","SMB"
+"10.1.2.21","fs01.contoso.com","3389","RDP"
+"10.1.2.30","","22","SSH"
+```
+
+It is comma-separated whatever the locale, so `Import-Csv` reads it on any machine. Excel set
+to a locale with a semicolon as list separator opens it in one column on a double click; *Data
+> From Text/CSV* reads it correctly.
 
 ---
 

@@ -975,6 +975,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Computer module of a full scan, without the export. `Invoke-LDAPSearch` reads `dnsRecord`
   as bytes.
 
+- **New function `Invoke-PortScan`: a fast TCP connect scan from the system you are working
+  on.** `Test-NetConnection` waits a full timeout for every port that does not answer;
+  `Invoke-PortScan` starts the connections a block at a time (`-BatchSize`, 256) and gives
+  each block one deadline (`-TimeoutMs`, 1000), so 254 hosts on the 16 default ports that
+  drop every packet take about 20 seconds. Targets are addresses, networks up to a /16, ranges
+  (`10.1.2.10-50`) and host names, given or piped in - also the objects of the
+  `Get-Domain*` functions and the subnet list `Get-NetworkMap -ExportTargets` writes. A name
+  is resolved once, all names at once with one deadline, before the scan. With
+  `-DomainComputers` it scans the active computers of the domain at the addresses the
+  AD-integrated DNS zones hold, as `Get-NetworkMap` does, and asks the domain controller for
+  the rest; a call without any target is refused rather than turned into a scan of the
+  domain. Every address
+  is scanned once, however many targets stand for it; what is not scanned is named with
+  the reason. Without `-Port`, the 16 ports that say whether a host can be reached for what
+  comes next - 22, 80, 88, 135, 389, 443, 445, 636, 1433, 3389, 5985, 5986, 8080, 8443,
+  9080 and 9443; any other is a `-Port` away. One
+  object per address with open ports, `-ExportOpenPorts <file>` for a CSV with one row per
+  open port (`IPAddress`, `HostName`, `Port`, `Service`) that `Import-Csv` reads back and
+  that binds by `IPAddress` when piped on, and `-PassThru` for objects `Invoke-ShareHunt`
+  takes from the pipeline. It is a
+  function to call, not a module of the full scan. The sweep `Invoke-ShareHunt` uses,
+  `Test-TcpPortReachable`, takes several ports now and keeps the answer for a socket that
+  could not be opened in its place; the address lookup of `Get-NetworkMap` is a function
+  of its own both use.
+
 ### Changed
 
 - **A line in the HTML report reads like a note, and the lines that open a section are

@@ -386,6 +386,12 @@ $Script:PrimaryAttributes = @{
         'UserName', 'accountInAD', 'Password', 'MatchedLine'
     )
 
+    # Open ports, one object per address (Invoke-PortScan). Name carries the host name or
+    # the address for the HTML title and is not a row.
+    OpenPorts = @(
+        'hostName', 'ipAddress', 'openPorts'
+    )
+
     # Network map, one object per /24 subnet (Get-NetworkMap). Name carries the subnet
     # for the HTML title and is not a row.
     NetworkSubnet = @(
