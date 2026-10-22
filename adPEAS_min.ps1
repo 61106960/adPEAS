@@ -84644,6 +84644,53 @@ $Script:CredentialScanExtensions = @(
     '*.vnc'
 )
 $Script:CredentialScanSkippedFiles = @('GptTmpl.inf')
+$Script:CredentialTier1Patterns = @(
+    @{ Pattern = 'passw(or)?d\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password assignment (quoted)" },
+    @{ Pattern = 'passw(or)?d\s*[=:]\s*(?!["''])\S{3,}'; Description = "Password assignment (unquoted)" },
+    @{ Pattern = '[-/]passw(or)?d\s+\S{3,}'; Description = "Password parameter" },
+    @{ Pattern = 'psexec.{0,100}\s-p\s+\S+'; Description = "PSExec with password" },
+    @{ Pattern = 'schtasks.{0,300}/rp\s+\S+'; Description = "Schtasks with password" },
+    @{ Pattern = 'net\s+user\s+\S+\s+\S+\s+/add'; Description = "Net user creation" },
+    @{ Pattern = 'cmdkey\s+/add:[^\s]+.*?/pass:\S+'; Description = "Cmdkey with password" },
+    @{ Pattern = 'connectionstring.{1,200}passw'; Description = "DB connection string" },
+    @{ Pattern = 'ConvertTo-SecureString\s+["''][^"'']+["'']'; Description = "SecureString conversion" },
+    @{ Pattern = 'api[_-]?key\s*[=:]\s*["''][^"'']{10,}["'']'; Description = "API key assignment" },
+    @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" },
+    @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" },
+    @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
+    @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
+    @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
+    @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
+)
+$Script:CredentialTier2Patterns = @(
+    @{ Pattern = "<passw[^>]*>[^<]+</passw"; Description = "XML password element" },
+    @{ Pattern = "passwd"; Description = "Passwd mention" },
+    @{ Pattern = "passw(or)?d"; Description = "Password mention" },
+    @{ Pattern = "credential"; Description = "Credential mention" },
+    @{ Pattern = "(secret|token)\s*[=:]\s*\S{5,}"; Description = "Secret/token assignment" }
+)
+$Script:CredentialExclusionPatterns = @(
+    'passw(or)?d\s*(policy|policies|requirement|guideline)',
+    'passw(or)?d\s+(must|should|cannot|shall)\s+(be|contain|have|include)',
+    'passw(or)?d\s+(length|complexity|history|age|expir)',
+    'passw(or)?d\s+(reset|change|recover|forgot)',
+    '(minimum|maximum)\s+passw(or)?d',
+    '(set|change|update|reset)\s+(your|the|a)\s+passw(or)?d',
+    '^\s*(REM|::|''|#)\s+.*passw',
+    'echo\s+.*passw(or)?d.*help',
+    'usage:.*passw(or)?d',
+    'Enter\s+(your\s+)?passw(or)?d',
+    'passw(or)?d\s+prompt'
+)
+$Script:CredentialPlaceholderPatterns = @(
+    'passw(or)?d\s*[=:]\s*["'']?\*+["'']?\s*$',
+    'passw(or)?d\s*[=:]\s*["'']?<[^>]+>',
+    'pwd\s*[=:]\s*["'']?\*+["'']?\s*$',
+    'pwd\s*[=:]\s*["'']?<[^>]+>',
+    '[-/]pass(word)?[:\s]+["'']?\*+["'']?\s*$',
+    '[-/]pass(word)?[:\s]+["'']?<[^>]+>'
+)
+$Script:CredentialNetUsePattern = "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+"
 function Get-ReportedLineKey {
     [CmdletBinding()]
     [OutputType([string])]
@@ -84861,6 +84908,162 @@ function Get-UnattendCredential {
         [PSCustomObject]@{ UserName = $userName; Password = [string]$passwordNode.InnerText; Setting = 'UnattendedJoin/Identification/Credentials' }
     }
 }
+function Find-XmlFileCredential {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [xml]$XmlContent,
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $FileTime
+    )
+    if ($XmlContent.InnerXml -match 'cpassword') {
+        foreach ($properties in @($XmlContent.GetElementsByTagName('Properties'))) {
+            if (-not $properties.cpassword) { continue }
+            $decryptedPassword = ConvertFrom-GPPPassword -EncryptedPassword $properties.cpassword
+            $username = ""
+            if ($properties.userName) { $username = $properties.userName }
+            elseif ($properties.accountName) { $username = $properties.accountName }
+            elseif ($properties.newName) { $username = $properties.newName }
+            elseif ($properties.runAs) { $username = $properties.runAs }
+            $credObj = [PSCustomObject]@{
+                CredentialType = "GPP Password"
+                FilePath       = $FilePath
+                UserName       = $username
+                Password       = $decryptedPassword
+            }
+            $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $FileName -FileTime $FileTime
+            if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
+            [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found GPP credential'; Context = 'GPP Password' }
+        }
+    }
+    if ($FileName -match 'Registry\.xml') {
+        foreach ($winlogonCredential in @(Get-WinlogonCredential -XmlContent $XmlContent)) {
+            $credObj = [PSCustomObject]@{
+                CredentialType = "AutoAdminLogon"
+                FilePath       = $FilePath
+                UserName       = $winlogonCredential.UserName
+                Password       = $winlogonCredential.Password
+            }
+            $accountInAD = Resolve-CredentialAccount -UserName $winlogonCredential.UserName -FileName $FileName -FileTime $FileTime
+            if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
+            [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found AutoAdminLogon credential'; Context = 'AutoAdminLogon' }
+        }
+        foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $FilePath) -FilePath $FilePath)) {
+            $headline = if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }
+            [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = $headline; Context = [string]$credObj.CredentialType }
+        }
+    }
+    foreach ($unattendCredential in @(Get-UnattendCredential -XmlContent $XmlContent)) {
+        $credObj = [PSCustomObject]@{
+            CredentialType  = "Unattend Answer File"
+            FilePath        = $FilePath
+            UnattendSetting = $unattendCredential.Setting
+            UserName        = $unattendCredential.UserName
+            Password        = $unattendCredential.Password
+        }
+        $accountInAD = Resolve-CredentialAccount -UserName $unattendCredential.UserName -FileName $FileName -FileTime $FileTime
+        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
+        [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found a password in a Windows answer file'; Context = 'Unattend' }
+    }
+}
+function Find-ScriptFileCredential {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Content,
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $FileTime
+    )
+    $lines = $Content -split "`n"
+    $reportedLines = @{}
+    foreach ($vncCredential in @(Get-VNCFileCredential -FileName $FileName -Lines $lines)) {
+        $credObj = [PSCustomObject]@{
+            CredentialType = 'VNC Password'
+            FilePath       = $FilePath
+            VNCHost        = $vncCredential.VNCHost
+            VNCSetting     = $vncCredential.Setting
+            Password       = $vncCredential.Password
+        }
+        [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found a VNC password'; Context = 'VNC Password' }
+        $reportedLines[$vncCredential.Line] = $true
+    }
+    foreach ($match in [Regex]::Matches($Content, $Script:CredentialNetUsePattern)) {
+        $foundUsername = $match.Groups["username"].Value
+        $foundPassword = $match.Groups["password"].Value
+        $foundDomain = $match.Groups["domain"].Value
+        if (-not ($foundUsername -and $foundPassword)) { continue }
+        $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
+        $credObj = [PSCustomObject]@{
+            CredentialType = "Net Use"
+            FilePath       = $FilePath
+            UserName       = $fullUser
+            Password       = $foundPassword
+        }
+        $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $FileName -FileTime $FileTime
+        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
+        [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found net use credential'; Context = 'Net Use' }
+        $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
+    }
+    foreach ($line in $lines) {
+        $trimmedLine = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
+        if ($reportedLines.ContainsKey($trimmedLine)) { continue }
+        $isPlaceholder = $false
+        foreach ($phPattern in $Script:CredentialPlaceholderPatterns) {
+            if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
+        }
+        if ($isPlaceholder) { continue }
+        $tier1 = $null
+        foreach ($pattern in $Script:CredentialTier1Patterns) {
+            if ($trimmedLine -match $pattern.Pattern) { $tier1 = $pattern; break }
+        }
+        if ($tier1) {
+            $credObj = [PSCustomObject]@{
+                CredentialType = $tier1.Description
+                FilePath       = $FilePath
+                MatchedLine    = $trimmedLine
+            }
+            [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found credential pattern'; Context = $tier1.Description }
+            $reportedLines[$trimmedLine] = $true
+            continue
+        }
+        $isExcluded = $false
+        foreach ($exclusion in $Script:CredentialExclusionPatterns) {
+            if ($trimmedLine -match $exclusion) {
+                $isExcluded = $true
+                Write-Log "[Find-ScriptFileCredential] Excluded by pattern: $trimmedLine"
+                break
+            }
+        }
+        if ($isExcluded) { continue }
+        foreach ($pattern in $Script:CredentialTier2Patterns) {
+            if ($trimmedLine -match $pattern.Pattern) {
+                $credObj = [PSCustomObject]@{
+                    CredentialType = "$($pattern.Description) (needs review)"
+                    FilePath       = $FilePath
+                    MatchedLine    = $trimmedLine
+                }
+                [PSCustomObject]@{ Credential = $credObj; Class = 'Hint'; Headline = 'Found possible sensitive information'; Context = $pattern.Description }
+                $reportedLines[$trimmedLine] = $true
+                break
+            }
+        }
+    }
+}
 function Get-CredentialExposure {
     [CmdletBinding()]
     param(
@@ -84917,53 +85120,6 @@ function Get-CredentialExposure {
                     return
                 }
                 try {
-                $tier1Patterns = @(
-                    @{ Pattern = 'passw(or)?d\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password assignment (quoted)" },
-                    @{ Pattern = 'passw(or)?d\s*[=:]\s*(?!["''])\S{3,}'; Description = "Password assignment (unquoted)" },
-                    @{ Pattern = '[-/]passw(or)?d\s+\S{3,}'; Description = "Password parameter" },
-                    @{ Pattern = 'psexec.{0,100}\s-p\s+\S+'; Description = "PSExec with password" },
-                    @{ Pattern = 'schtasks.{0,300}/rp\s+\S+'; Description = "Schtasks with password" },
-                    @{ Pattern = 'net\s+user\s+\S+\s+\S+\s+/add'; Description = "Net user creation" },
-                    @{ Pattern = 'cmdkey\s+/add:[^\s]+.*?/pass:\S+'; Description = "Cmdkey with password" },
-                    @{ Pattern = 'connectionstring.{1,200}passw'; Description = "DB connection string" },
-                    @{ Pattern = 'ConvertTo-SecureString\s+["''][^"'']+["'']'; Description = "SecureString conversion" },
-                    @{ Pattern = 'api[_-]?key\s*[=:]\s*["''][^"'']{10,}["'']'; Description = "API key assignment" },
-                    @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" },
-                    @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" },
-                    @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
-                    @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
-                    @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
-                    @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
-                )
-                $tier2Patterns = @(
-                    @{ Pattern = "<passw[^>]*>[^<]+</passw"; Description = "XML password element" },
-                    @{ Pattern = "passwd"; Description = "Passwd mention" },
-                    @{ Pattern = "passw(or)?d"; Description = "Password mention" },
-                    @{ Pattern = "credential"; Description = "Credential mention" },
-                    @{ Pattern = "(secret|token)\s*[=:]\s*\S{5,}"; Description = "Secret/token assignment" }
-                )
-                $exclusionPatterns = @(
-                    'passw(or)?d\s*(policy|policies|requirement|guideline)',
-                    'passw(or)?d\s+(must|should|cannot|shall)\s+(be|contain|have|include)',
-                    'passw(or)?d\s+(length|complexity|history|age|expir)',
-                    'passw(or)?d\s+(reset|change|recover|forgot)',
-                    '(minimum|maximum)\s+passw(or)?d',
-                    '(set|change|update|reset)\s+(your|the|a)\s+passw(or)?d',
-                    '^\s*(REM|::|''|#)\s+.*passw',
-                    'echo\s+.*passw(or)?d.*help',
-                    'usage:.*passw(or)?d',
-                    'Enter\s+(your\s+)?passw(or)?d',
-                    'passw(or)?d\s+prompt'
-                )
-                $placeholderPatterns = @(
-                    'passw(or)?d\s*[=:]\s*["'']?\*+["'']?\s*$',
-                    'passw(or)?d\s*[=:]\s*["'']?<[^>]+>',
-                    'pwd\s*[=:]\s*["'']?\*+["'']?\s*$',
-                    'pwd\s*[=:]\s*["'']?<[^>]+>',
-                    '[-/]pass(word)?[:\s]+["'']?\*+["'']?\s*$',
-                    '[-/]pass(word)?[:\s]+["'']?<[^>]+>'
-                )
-                $netUsePattern = "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+"
                 $xmlFiles = Get-ChildItem -Force -Path $scanPath -Recurse -Include "*.xml" -ErrorAction SilentlyContinue
                 if (@($xmlFiles).Count -gt 0) {
                     Write-Log "[Get-CredentialExposure] Found $(@($xmlFiles).Count) XML file(s) in custom path"
@@ -84971,68 +85127,12 @@ function Get-CredentialExposure {
                         try {
                             [xml]$xmlContent = Get-Content -Path $xmlFile.Fullname -ErrorAction Stop
                             $fileName = Split-Path $xmlFile.FullName -Leaf
-                            if ($xmlContent.InnerXml -match 'cpassword') {
-                                $xmlContent.GetElementsByTagName('Properties') | ForEach-Object {
-                                    if ($_.cpassword -and $_.cpassword -ne '') {
-                                        $cpassword = $_.cpassword
-                                        $decryptedPassword = ConvertFrom-GPPPassword -EncryptedPassword $cpassword
-                                        $username = ""
-                                        if ($_.userName) { $username = $_.userName }
-                                        elseif ($_.accountName) { $username = $_.accountName }
-                                        elseif ($_.newName) { $username = $_.newName }
-                                        elseif ($_.runAs) { $username = $_.runAs }
-                                        $credObj = [PSCustomObject]@{
-                                            CredentialType = "GPP Password"
-                                            FilePath = $xmlFile.Fullname
-                                            UserName = $username
-                                            Password = $decryptedPassword
-                                        }
-                                        $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $fileName -FileTime $xmlFile.LastWriteTime
-                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
-                                        Show-Line "Found GPP credential" -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
-                                        Show-Object $credObj -Class Finding
-                                    }
-                                }
-                            }
-                            if ($fileName -match 'Registry\.xml') {
-                                foreach ($winlogonCredential in @(Get-WinlogonCredential -XmlContent $xmlContent)) {
-                                    $fullUsername = $winlogonCredential.UserName
-                                    $credObj = [PSCustomObject]@{
-                                        CredentialType = "AutoAdminLogon"
-                                        FilePath = $xmlFile.Fullname
-                                        UserName = $fullUsername
-                                        Password = $winlogonCredential.Password
-                                    }
-                                    $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
-                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
-                                    Show-Line "Found AutoAdminLogon credential" -Class Finding
-                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
-                                    Show-Object $credObj -Class Finding
-                                }
-                                foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $xmlFile.FullName) -FilePath $xmlFile.FullName)) {
-                                    Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
-                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
-                                    Show-Object $credObj -Class Finding
-                                }
-                            }
-                            foreach ($unattendCredential in @(Get-UnattendCredential -XmlContent $xmlContent)) {
-                                $credObj = [PSCustomObject]@{
-                                    CredentialType  = "Unattend Answer File"
-                                    FilePath        = $xmlFile.Fullname
-                                    UnattendSetting = $unattendCredential.Setting
-                                    UserName        = $unattendCredential.UserName
-                                    Password        = $unattendCredential.Password
-                                }
-                                $accountInAD = Resolve-CredentialAccount -UserName $unattendCredential.UserName -FileName $fileName -FileTime $xmlFile.LastWriteTime
-                                if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
-                                Show-Line "Found a password in a Windows answer file" -Class Finding
+                            foreach ($result in @(Find-XmlFileCredential -XmlContent $xmlContent -FilePath $xmlFile.FullName -FileName $fileName -FileTime $xmlFile.LastWriteTime)) {
+                                $credObj = $result.Credential
+                                Show-Line $result.Headline -Class $result.Class
                                 $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unattend' -Force
-                                Show-Object $credObj -Class Finding
+                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $result.Context -Force
+                                Show-Object $credObj -Class $result.Class
                             }
                         }
                         catch {
@@ -85076,92 +85176,12 @@ function Get-CredentialExposure {
                             else {
                                 $fileContent = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
                             }
-                            if (-not $fileContent) { continue }
-                            $lines = $fileContent -split "`n"
-                            $reportedLines = @{}
-                            foreach ($vncCredential in @(Get-VNCFileCredential -FileName $file.Name -Lines $lines)) {
-                                $credObj = [PSCustomObject]@{
-                                    CredentialType = 'VNC Password'
-                                    FilePath       = $file.FullName
-                                    VNCHost        = $vncCredential.VNCHost
-                                    VNCSetting     = $vncCredential.Setting
-                                    Password       = $vncCredential.Password
-                                }
-                                Show-Line "Found a VNC password" -Class Finding
+                            foreach ($result in @(Find-ScriptFileCredential -Content $fileContent -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)) {
+                                $credObj = $result.Credential
+                                Show-Line $result.Headline -Class $result.Class
                                 $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'VNC Password' -Force
-                                Show-Object $credObj -Class Finding
-                                $reportedLines[$vncCredential.Line] = $true
-                            }
-                            $netUseMatches = [Regex]::Matches($fileContent, $netUsePattern)
-                            foreach ($match in $netUseMatches) {
-                                $foundUsername = $match.Groups["username"].Value
-                                $foundPassword = $match.Groups["password"].Value
-                                $foundDomain = $match.Groups["domain"].Value
-                                if ($foundUsername -and $foundPassword) {
-                                    $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
-                                    $credObj = [PSCustomObject]@{
-                                        CredentialType = "Net Use"
-                                        FilePath = $file.FullName
-                                        UserName = $fullUser
-                                        Password = $foundPassword
-                                    }
-                                    $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
-                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
-                                    Show-Line "Found net use credential" -Class Finding
-                                    $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-                                    Show-Object $credObj -Class Finding
-                                    $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
-                                }
-                            }
-                            foreach ($line in $lines) {
-                                $trimmedLine = $line.Trim()
-                                if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
-                                if ($reportedLines.ContainsKey($trimmedLine)) { continue }
-                                $isPlaceholder = $false
-                                foreach ($phPattern in $placeholderPatterns) {
-                                    if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
-                                }
-                                if ($isPlaceholder) { continue }
-                                $tier1Match = $false
-                                foreach ($pattern in $tier1Patterns) {
-                                    if ($trimmedLine -match $pattern.Pattern) {
-                                        $credObj = [PSCustomObject]@{
-                                            CredentialType = $pattern.Description
-                                            FilePath = $file.FullName
-                                            MatchedLine = $trimmedLine
-                                        }
-                                        Show-Line "Found credential pattern" -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                        Show-Object $credObj -Class Finding
-                                        $reportedLines[$trimmedLine] = $true
-                                        $tier1Match = $true
-                                        break
-                                    }
-                                }
-                                if ($tier1Match) { continue }
-                                $isExcluded = $false
-                                foreach ($exclusion in $exclusionPatterns) {
-                                    if ($trimmedLine -match $exclusion) { $isExcluded = $true; break }
-                                }
-                                if ($isExcluded) { continue }
-                                foreach ($pattern in $tier2Patterns) {
-                                    if ($trimmedLine -match $pattern.Pattern) {
-                                        $credObj = [PSCustomObject]@{
-                                            CredentialType = "$($pattern.Description) (needs review)"
-                                            FilePath = $file.FullName
-                                            MatchedLine = $trimmedLine
-                                        }
-                                        Show-Line "Found possible sensitive information" -Class Hint
-                                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj -Class Hint
-                                        $reportedLines[$trimmedLine] = $true
-                                        break
-                                    }
-                                }
+                                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $result.Context -Force
+                                Show-Object $credObj -Class $result.Class
                             }
                         }
                         catch {
@@ -85256,79 +85276,14 @@ function Get-CredentialExposure {
                                 if ($fileGpoGUID -and $null -eq $fileLinkedOUs) {
                                     $fileLinkedOUsDisplay = 'Unknown - linkage could not be resolved'
                                 }
-                                if ($xmlContent.InnerXml -match 'cpassword') {
-                                    $xmlContent.GetElementsByTagName('Properties') | ForEach-Object {
-                                        if ($_.cpassword -and $_.cpassword -ne '') {
-                                            $cpassword = $_.cpassword
-                                            $decryptedPassword = ConvertFrom-GPPPassword -EncryptedPassword $cpassword
-                                            $username = ""
-                                            if ($_.userName) { $username = $_.userName }
-                                            elseif ($_.accountName) { $username = $_.accountName }
-                                            elseif ($_.newName) { $username = $_.newName }
-                                            elseif ($_.runAs) { $username = $_.runAs }
-                                            $credObj = [PSCustomObject]@{
-                                                CredentialType = "GPP Password"
-                                                FilePath = $xmlFile.Fullname
-                                                UserName = $username
-                                                Password = $decryptedPassword
-                                            }
-                                            $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $fileName -FileTime $xmlFile.LastWriteTime
-                                            if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                            Show-Line "Found GPP credential" -Class Finding
-                                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'GPP Password' -Force
-                                            Show-Object $credObj -Class Finding
-                                            $gppFindingsCount++
-                                        }
-                                    }
-                                }
-                                if ($fileName -match 'Registry\.xml') {
-                                    foreach ($winlogonCredential in @(Get-WinlogonCredential -XmlContent $xmlContent)) {
-                                        $fullUsername = $winlogonCredential.UserName
-                                        $credObj = [PSCustomObject]@{
-                                            CredentialType = "AutoAdminLogon"
-                                            FilePath = $xmlFile.Fullname
-                                            UserName = $fullUsername
-                                            Password = $winlogonCredential.Password
-                                        }
-                                        $accountInAD = Resolve-CredentialAccount -UserName $fullUsername -FileName $fileName -FileTime $xmlFile.LastWriteTime
-                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                        Show-Line "Found AutoAdminLogon credential" -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'AutoAdminLogon' -Force
-                                        Show-Object $credObj -Class Finding
-                                        $gppFindingsCount++
-                                    }
-                                    foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $xmlFile.FullName) -FilePath $xmlFile.FullName)) {
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                        Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
-                                        Show-Object $credObj -Class Finding
-                                        $gppFindingsCount++
-                                    }
-                                }
-                                foreach ($unattendCredential in @(Get-UnattendCredential -XmlContent $xmlContent)) {
-                                    $credObj = [PSCustomObject]@{
-                                        CredentialType  = "Unattend Answer File"
-                                        FilePath        = $xmlFile.Fullname
-                                        UnattendSetting = $unattendCredential.Setting
-                                        UserName        = $unattendCredential.UserName
-                                        Password        = $unattendCredential.Password
-                                    }
-                                    $accountInAD = Resolve-CredentialAccount -UserName $unattendCredential.UserName -FileName $fileName -FileTime $xmlFile.LastWriteTime
-                                    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
+                                foreach ($result in @(Find-XmlFileCredential -XmlContent $xmlContent -FilePath $xmlFile.FullName -FileName $fileName -FileTime $xmlFile.LastWriteTime)) {
+                                    $credObj = $result.Credential
                                     if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                     if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                    Show-Line "Found a password in a Windows answer file" -Class Finding
+                                    Show-Line $result.Headline -Class $result.Class
                                     $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
-                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unattend' -Force
-                                    Show-Object $credObj -Class Finding
+                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $result.Context -Force
+                                    Show-Object $credObj -Class $result.Class
                                     $gppFindingsCount++
                                 }
                             }
@@ -85376,53 +85331,6 @@ function Get-CredentialExposure {
                     Show-SubHeader "Searching for sensitive information in SYSVOL/NETLOGON..." -ObjectType "SYSVOLCredential"
                     if ($scriptFiles.Count -gt 0) {
                         Write-Log "[Get-CredentialExposure] Analyzing $($scriptFiles.Count) script/config file(s)..."
-                        $tier1Patterns = @(
-                            @{ Pattern = 'passw(or)?d\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password assignment (quoted)" },
-                            @{ Pattern = 'passw(or)?d\s*[=:]\s*(?!["''])\S{3,}'; Description = "Password assignment (unquoted)" },
-                            @{ Pattern = '[-/]passw(or)?d\s+\S{3,}'; Description = "Password parameter" },
-                            @{ Pattern = 'psexec.{0,100}\s-p\s+\S+'; Description = "PSExec with password" },
-                            @{ Pattern = 'schtasks.{0,300}/rp\s+\S+'; Description = "Schtasks with password" },
-                            @{ Pattern = 'net\s+user\s+\S+\s+\S+\s+/add'; Description = "Net user creation" },
-                            @{ Pattern = 'cmdkey\s+/add:[^\s]+.*?/pass:\S+'; Description = "Cmdkey with password" },
-                            @{ Pattern = 'connectionstring.{1,200}passw'; Description = "DB connection string" },
-                            @{ Pattern = 'ConvertTo-SecureString\s+["''][^"'']+["'']'; Description = "SecureString conversion" },
-                            @{ Pattern = 'api[_-]?key\s*[=:]\s*["''][^"'']{10,}["'']'; Description = "API key assignment" },
-                            @{ Pattern = '\$cred(ential)?\s*=.*password'; Description = "Credential variable" },
-                            @{ Pattern = 'pwd\s*[=:]\s*\S{3,}'; Description = "Pwd assignment" },
-                            @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
-                            @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
-                            @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
-                            @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
-                        )
-                        $tier2Patterns = @(
-                            @{ Pattern = "<passw[^>]*>[^<]+</passw"; Description = "XML password element" },
-                            @{ Pattern = "passwd"; Description = "Passwd mention" },
-                            @{ Pattern = "passw(or)?d"; Description = "Password mention" },
-                            @{ Pattern = "credential"; Description = "Credential mention" },
-                            @{ Pattern = "(secret|token)\s*[=:]\s*\S{5,}"; Description = "Secret/token assignment" }
-                        )
-                        $exclusionPatterns = @(
-                            'passw(or)?d\s*(policy|policies|requirement|guideline)',
-                            'passw(or)?d\s+(must|should|cannot|shall)\s+(be|contain|have|include)',
-                            'passw(or)?d\s+(length|complexity|history|age|expir)',
-                            'passw(or)?d\s+(reset|change|recover|forgot)',
-                            '(minimum|maximum)\s+passw(or)?d',
-                            '(set|change|update|reset)\s+(your|the|a)\s+passw(or)?d',
-                            '^\s*(REM|::|''|#)\s+.*passw',
-                            'echo\s+.*passw(or)?d.*help',
-                            'usage:.*passw(or)?d',
-                            'Enter\s+(your\s+)?passw(or)?d',
-                            'passw(or)?d\s+prompt'
-                        )
-                        $placeholderPatterns = @(
-                            'passw(or)?d\s*[=:]\s*["'']?\*+["'']?\s*$',
-                            'passw(or)?d\s*[=:]\s*["'']?<[^>]+>',
-                            'pwd\s*[=:]\s*["'']?\*+["'']?\s*$',
-                            'pwd\s*[=:]\s*["'']?<[^>]+>',
-                            '[-/]pass(word)?[:\s]+["'']?\*+["'']?\s*$',
-                            '[-/]pass(word)?[:\s]+["'']?<[^>]+>'
-                        )
-                        $netUsePattern = "net use (?<devicename>(\w|\*|LPT\d):?) (?<path>\\\\?.*?)(( (?<user>/user:((?<domain>[\w.]*)\\)?(?<username>\S*)))|( /(p(ersistent)?|P(ERSISTENT)?):(no|NO|yes|YES))|( (?<password>(?!/)\S*))|( /(delete|DELETE))|( /(savecred|SAVECRED))|( /(smartcard|SMARTCARD)))+"
                         $totalScriptFiles = @($scriptFiles).Count
                         $currentScriptIndex = 0
                         foreach ($file in $scriptFiles) {
@@ -85465,108 +85373,15 @@ function Get-CredentialExposure {
                                 else {
                                     $fileContent = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
                                 }
-                                if (-not $fileContent) { continue }
-                                $lines = $fileContent -split "`n"
-                                $reportedLines = @{}
-                                foreach ($vncCredential in @(Get-VNCFileCredential -FileName $file.Name -Lines $lines)) {
-                                    $credObj = [PSCustomObject]@{
-                                        CredentialType = 'VNC Password'
-                                        FilePath       = $file.FullName
-                                        VNCHost        = $vncCredential.VNCHost
-                                        VNCSetting     = $vncCredential.Setting
-                                        Password       = $vncCredential.Password
-                                    }
+                                foreach ($result in @(Find-ScriptFileCredential -Content $fileContent -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)) {
+                                    $credObj = $result.Credential
                                     if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
                                     if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                    Show-Line "Found a VNC password" -Class Finding
+                                    Show-Line $result.Headline -Class $result.Class
                                     $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'VNC Password' -Force
-                                    Show-Object $credObj -Class Finding
-                                    $reportedLines[$vncCredential.Line] = $true
+                                    $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $result.Context -Force
+                                    Show-Object $credObj -Class $result.Class
                                     $sysvolFindingsCount++
-                                }
-                                $netUseMatches = [Regex]::Matches($fileContent, $netUsePattern)
-                                foreach ($match in $netUseMatches) {
-                                    $foundUsername = $match.Groups["username"].Value
-                                    $foundPassword = $match.Groups["password"].Value
-                                    $foundDomain = $match.Groups["domain"].Value
-                                    if ($foundUsername -and $foundPassword) {
-                                        $fullUser = if ($foundDomain) { "$foundDomain\$foundUsername" } else { $foundUsername }
-                                        $credObj = [PSCustomObject]@{
-                                            CredentialType = "Net Use"
-                                            FilePath = $file.FullName
-                                            UserName = $fullUser
-                                            Password = $foundPassword
-                                        }
-                                        $accountInAD = Resolve-CredentialAccount -UserName $fullUser -FileName $file.Name -FileTime $file.LastWriteTime
-                                        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
-                                        if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                        if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                        Show-Line "Found net use credential" -Class Finding
-                                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Net Use' -Force
-                                        Show-Object $credObj -Class Finding
-                                        $reportedLines[(Get-ReportedLineKey -Lines $lines -Match $match.Value)] = $true
-                                        $sysvolFindingsCount++
-                                    }
-                                }
-                                foreach ($line in $lines) {
-                                    $trimmedLine = $line.Trim()
-                                    if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
-                                    if ($reportedLines.ContainsKey($trimmedLine)) { continue }
-                                    $isPlaceholder = $false
-                                    foreach ($phPattern in $placeholderPatterns) {
-                                        if ($trimmedLine -imatch $phPattern) { $isPlaceholder = $true; break }
-                                    }
-                                    if ($isPlaceholder) { continue }
-                                    $tier1Match = $false
-                                    foreach ($pattern in $tier1Patterns) {
-                                        if ($trimmedLine -match $pattern.Pattern) {
-                                            $credObj = [PSCustomObject]@{
-                                                CredentialType = $pattern.Description
-                                                FilePath = $file.FullName
-                                                MatchedLine = $trimmedLine
-                                            }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                            Show-Line "Found credential pattern" -Class Finding
-                                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj -Class Finding
-                                            $reportedLines[$trimmedLine] = $true
-                                            $tier1Match = $true
-                                            $sysvolFindingsCount++
-                                            break
-                                        }
-                                    }
-                                    if ($tier1Match) { continue }
-                                    $isExcluded = $false
-                                    foreach ($exclusion in $exclusionPatterns) {
-                                        if ($trimmedLine -match $exclusion) {
-                                            $isExcluded = $true
-                                            Write-Log "[Get-CredentialExposure] Excluded by pattern: $trimmedLine"
-                                            break
-                                        }
-                                    }
-                                    if ($isExcluded) { continue }
-                                    foreach ($pattern in $tier2Patterns) {
-                                        if ($trimmedLine -match $pattern.Pattern) {
-                                            $credObj = [PSCustomObject]@{
-                                                CredentialType = "$($pattern.Description) (needs review)"
-                                                FilePath = $file.FullName
-                                                MatchedLine = $trimmedLine
-                                            }
-                                            if ($fileGpoName) { $credObj | Add-Member -NotePropertyName 'GPOName' -NotePropertyValue $fileGpoName -Force }
-                                            if ($fileGpoGUID) { $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $fileLinkedOUsDisplay -Force }
-                                            Show-Line "Found possible sensitive information" -Class Hint
-                                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'SYSVOLCredential' -Force
-                                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $pattern.Description -Force
-                                            Show-Object $credObj -Class Hint
-                                            $reportedLines[$trimmedLine] = $true
-                                            $sysvolFindingsCount++
-                                            break
-                                        }
-                                    }
                                 }
                             }
                             catch {
@@ -97259,7 +97074,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261022-1035"
+$Script:adPEASVersion = "2.7.0+20261022-1104"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

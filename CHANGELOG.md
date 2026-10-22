@@ -1685,6 +1685,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Preferences credential and got that section's help text; the domain scan, and every other
   finding from a script in custom path mode, file it with the script findings.
 
+- **`Get-CredentialExposure` reads each file through one analysis.** The domain scan and
+  the custom path scan analysed every file inline, each with its own copy of the pattern
+  lists. Both call `Find-XmlFileCredential` and `Find-ScriptFileCredential` now, and the
+  pattern lists are defined once. The output is unchanged.
+
 ---
 
 ## [2.7.0] - 2026-10-08
