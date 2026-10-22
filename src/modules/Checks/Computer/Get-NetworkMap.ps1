@@ -194,7 +194,7 @@ function Get-NetworkMap {
     Get-NetworkMap -Domain "contoso.com" -Credential (Get-Credential) -OPSEC
 
     .NOTES
-    Category: Domain
+    Category: Computer
     Author: Alexander Sturz (@_61106960_)
     #>
 

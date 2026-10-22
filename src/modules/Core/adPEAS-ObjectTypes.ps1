@@ -173,8 +173,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 
     'NetworkSubnet' = @{
         TitleFormat = "Network Subnet: {Name}"
-        Module = "Domain"
-        Category = "Domain"
+        Module = "Computer"
+        Category = "Computers"
         SectionTitle = "Network Map"
         Summary = "Maps the /24 subnets the active computers of the domain are in, with the OUs they sit in."
         WhyItMatters = "Which networks hold which systems is the first question of an internal assessment, and scanning for the answer is slow and loud. The domain already knows it: every active computer has a DNS name and an address, and the OU it sits in usually says what it is - workstations, servers, a site. The subnet of the domain controllers is the Tier-0 network."

@@ -972,7 +972,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   computer account may write it; what could not be mapped is counted. A subnet with domain
   controllers is a hint that adds nothing to the risk score. `-ExportTargets <file>` writes
   both kinds of subnet one per line, as the target list of a scanner. The check runs in the
-  Domain module of a full scan, without the export. `Invoke-LDAPSearch` reads `dnsRecord`
+  Computer module of a full scan, without the export. `Invoke-LDAPSearch` reads `dnsRecord`
   as bytes.
 
 ### Changed

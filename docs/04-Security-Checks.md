@@ -101,14 +101,14 @@ adPEAS performs 43+ security checks organized into 9 categories:
 
 | Module        | Checks | Description                               |
 | ------------- | ------ | ----------------------------------------- |
-| Domain        | 6      | Domain configuration, trusts, policies    |
+| Domain        | 5      | Domain configuration, trusts, policies    |
 | Creds         | 7      | Credential exposure vectors               |
 | Rights        | 6      | ACL and permission analysis               |
 | Delegation    | 3      | Kerberos delegation misconfigurations     |
 | ADCS          | 2      | Certificate Services vulnerabilities      |
 | Accounts      | 9      | Privileged accounts and security settings |
 | GPO           | 4      | Group Policy security                     |
-| Computer      | 4      | Computer account security                 |
+| Computer      | 6      | Computer account security                 |
 | Application   | 3      | Enterprise application infrastructure     |
 
 ---
@@ -230,33 +230,6 @@ Get-LDAPConfiguration
 **Usage**:
 ```powershell
 Get-SMBSigningStatus
-```
-
----
-
-### Get-NetworkMap
-
-**Purpose**: Maps the IP subnets the active computers of the domain are in, and the OUs they sit in - which networks hold which systems, without a scan.
-
-**What it does**:
-- Takes the enabled computers with a logon in the last 30 days (`lastLogonTimestamp`, `-ActiveDays`). The attribute is replicated with a delay of 9 to 14 days by default, so a shorter window misses computers in use.
-- Resolves their DNS name (`dNSHostName`), only below the domain's own DNS name: the computer account may write the attribute, and a name outside the domain is counted instead of looked up.
-- Takes the addresses from the AD-integrated DNS zones the names fall in, read over LDAP from the connected domain controller (`Get-DomainDNSZone`, `Get-DomainDNSRecord`) - every address of a name, and no DNS query. A name not found there is resolved by a DNS query to the domain controller (the session's `-DnsServer`, else the domain controller's address) and to no other server.
-- Shows one object per /24 subnet: the number of computers, how many of them are domain controllers, servers and clients, the most specific subnet Sites and Services defines for the addresses with its site ("Not in Sites and Services" where none contains them), and the OU or container of each computer as a DN with the number of computers from it. The computers themselves are not listed.
-- Lists the subnets Sites and Services defines that hold no active computer, in one object after the /24s: networks the domain knows of and the computers do not show, such as a VPN pool, a DMZ or a floor of appliances. A defined subnet inside one of the /24s is left out, that /24 covers it.
-- Counts what it could not map: names outside the domain, computers without a DNS name or without a usable IPv4 address (loopback, APIPA, multicast), and IPv6-only computers. IPv6 is not mapped.
-
-A subnet with domain controllers is a hint - the Tier-0 network - and adds nothing to the risk score.
-
-**Parameters**:
-- `-ActiveDays <n>`: how recent the last logon must be (default 30)
-- `-ExportTargets <file>`: writes the subnets to the file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner (`nmap -iL`); an existing file is overwritten. A full scan writes no file.
-- `-OPSEC`: no DNS query; computers the zones do not hold are counted and not mapped
-
-**Usage**:
-```powershell
-Get-NetworkMap
-Get-NetworkMap -ActiveDays 60 -ExportTargets .\subnets.txt
 ```
 
 ---
@@ -1521,6 +1494,33 @@ Get-NonDefaultComputerOwners
 ```powershell
 Get-ComputerPasswordAge
 Get-ComputerPasswordAge -PasswordAgeDays 60 -ActiveDays 14
+```
+
+---
+
+### Get-NetworkMap
+
+**Purpose**: Maps the IP subnets the active computers of the domain are in, and the OUs they sit in - which networks hold which systems, without a scan.
+
+**What it does**:
+- Takes the enabled computers with a logon in the last 30 days (`lastLogonTimestamp`, `-ActiveDays`). The attribute is replicated with a delay of 9 to 14 days by default, so a shorter window misses computers in use.
+- Resolves their DNS name (`dNSHostName`), only below the domain's own DNS name: the computer account may write the attribute, and a name outside the domain is counted instead of looked up.
+- Takes the addresses from the AD-integrated DNS zones the names fall in, read over LDAP from the connected domain controller (`Get-DomainDNSZone`, `Get-DomainDNSRecord`) - every address of a name, and no DNS query. A name not found there is resolved by a DNS query to the domain controller (the session's `-DnsServer`, else the domain controller's address) and to no other server.
+- Shows one object per /24 subnet: the number of computers, how many of them are domain controllers, servers and clients, the most specific subnet Sites and Services defines for the addresses with its site ("Not in Sites and Services" where none contains them), and the OU or container of each computer as a DN with the number of computers from it. The computers themselves are not listed.
+- Lists the subnets Sites and Services defines that hold no active computer, in one object after the /24s: networks the domain knows of and the computers do not show, such as a VPN pool, a DMZ or a floor of appliances. A defined subnet inside one of the /24s is left out, that /24 covers it.
+- Counts what it could not map: names outside the domain, computers without a DNS name or without a usable IPv4 address (loopback, APIPA, multicast), and IPv6-only computers. IPv6 is not mapped.
+
+A subnet with domain controllers is a hint - the Tier-0 network - and adds nothing to the risk score.
+
+**Parameters**:
+- `-ActiveDays <n>`: how recent the last logon must be (default 30)
+- `-ExportTargets <file>`: writes the subnets to the file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner (`nmap -iL`); an existing file is overwritten. A full scan writes no file.
+- `-OPSEC`: no DNS query; computers the zones do not hold are counted and not mapped
+
+**Usage**:
+```powershell
+Get-NetworkMap
+Get-NetworkMap -ActiveDays 60 -ExportTargets .\subnets.txt
 ```
 
 ---

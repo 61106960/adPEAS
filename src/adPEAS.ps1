@@ -232,7 +232,6 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Domain\Get-DomainTrusts.ps1"
     . "$Script:ScriptPath\modules\Checks\Domain\Get-LDAPConfiguration.ps1"
     . "$Script:ScriptPath\modules\Checks\Domain\Get-SMBSigningStatus.ps1"
-    . "$Script:ScriptPath\modules\Checks\Domain\Get-NetworkMap.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-PrivilegedGroupMembers.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-ProtectedUsersStatus.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-RODCPasswordReplication.ps1"
@@ -259,6 +258,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Computer\Get-InfrastructureServers.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-NonDefaultComputerOwners.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-ComputerPasswordAge.ps1"
+    . "$Script:ScriptPath\modules\Checks\Computer\Get-NetworkMap.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOPermissions.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOLocalGroupMembership.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOScheduledTasks.ps1"
@@ -1077,7 +1077,6 @@ try {
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-DomainTrusts' -Title 'Domain Trusts' -Check { Get-DomainTrusts }
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-LDAPConfiguration' -Title 'LDAP Configuration' -Check { Get-LDAPConfiguration }
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-SMBSigningStatus' -Title 'SMB Signing Status' -Check { Get-SMBSigningStatus }
-            Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-NetworkMap' -Title 'Network Map' -Check { Get-NetworkMap -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Domain Module: $_"
         }
@@ -1211,6 +1210,7 @@ try {
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-OutdatedComputers' -Title 'Outdated Computers' -Check { Get-OutdatedComputers -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-ComputerPasswordAge' -Title 'Machine Account Password Age' -Check { Get-ComputerPasswordAge }
+            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-NetworkMap' -Title 'Network Map' -Check { Get-NetworkMap -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Computer Module: $_"
         }
