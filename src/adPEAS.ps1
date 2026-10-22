@@ -123,6 +123,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Core\Set-DomainObject.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainUser.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainComputer.ps1"
+    . "$Script:ScriptPath\modules\Core\Get-DomainDNSRecord.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainGroup.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainGPO.ps1"
     . "$Script:ScriptPath\modules\Core\Get-CertificateTemplate.ps1"
@@ -231,6 +232,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Domain\Get-DomainTrusts.ps1"
     . "$Script:ScriptPath\modules\Checks\Domain\Get-LDAPConfiguration.ps1"
     . "$Script:ScriptPath\modules\Checks\Domain\Get-SMBSigningStatus.ps1"
+    . "$Script:ScriptPath\modules\Checks\Domain\Get-NetworkMap.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-PrivilegedGroupMembers.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-ProtectedUsersStatus.ps1"
     . "$Script:ScriptPath\modules\Checks\Accounts\Get-RODCPasswordReplication.ps1"
@@ -1075,6 +1077,7 @@ try {
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-DomainTrusts' -Title 'Domain Trusts' -Check { Get-DomainTrusts }
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-LDAPConfiguration' -Title 'LDAP Configuration' -Check { Get-LDAPConfiguration }
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-SMBSigningStatus' -Title 'SMB Signing Status' -Check { Get-SMBSigningStatus }
+            Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-NetworkMap' -Title 'Network Map' -Check { Get-NetworkMap -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Domain Module: $_"
         }

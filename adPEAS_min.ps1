@@ -3790,6 +3790,10 @@ $Script:PrimaryAttributes = @{
         'siteSubnets'
         'siteDomainControllers'
     )
+    NetworkSubnet = @(
+        'subnet', 'adSubnet', 'computerCount', 'domainControllerCount',
+        'operatingSystems', 'organizationalUnits'
+    )
     EffectiveLDAPConfig = @(
         'LDAPSigning', 'ChannelBinding',
         'decidedBy'
@@ -11927,6 +11931,32 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Triggers = @(
             @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
             @{ Attribute = 'sidFiltering'; Pattern = '^Weakened'; Severity = 'Finding' }
+        )
+    }
+    'NETWORK_SUBNET_DOMAIN_CONTROLLERS' = @{
+        Title = "Subnet With Domain Controllers"
+        Risk = "Hint"
+        BaseScore = 0
+        Description = "Domain controllers have an address in this subnet. It is the Tier-0 network of the domain: the domain controllers hold every credential of the domain and answer Kerberos, LDAP, SMB and RPC to whoever reaches them. Every domain has such a subnet - what matters is what else is in it, which the OUs of the subnet show, and which networks may reach it."
+        Impact = @(
+            "Every other system in this subnet shares a network segment with the domain controllers"
+            "A compromised client or server here reaches the domain controllers without crossing a firewall, unless the segment is filtered inside"
+        )
+        Attack = @(
+            "Not an attack path - reported so the assessment knows where the Tier-0 systems are, and which other systems share their network"
+        )
+        Remediation = @(
+            "Keep the domain controllers in a segment of their own, with only Tier-0 systems and the administrative workstations of Tier 0 in it"
+            "Allow the client and server networks only what a domain controller has to answer - DNS, Kerberos, LDAP, SMB for SYSVOL and NETLOGON, RPC - and administration only from the Tier-0 administrative network"
+        )
+        References = @(
+            @{ Title = "Securing Domain Controllers Against Attack - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/securing-domain-controllers-against-attack" }
+            @{ Title = "Enterprise access model - Microsoft"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
+        )
+        Tools = @("-")
+        MITRE = "-"
+        Triggers = @(
+            @{ Attribute = 'domainControllerCount'; Severity = 'Hint' }
         )
     }
     'OS_EXTENDED_SECURITY_UPDATES_ONLY' = @{
@@ -21395,6 +21425,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
     }
+    'NetworkSubnet' = @{
+        TitleFormat = "Network Subnet: {Name}"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Network Map"
+        Summary = "Maps the /24 subnets the active computers of the domain are in, with the OUs they sit in."
+        WhyItMatters = "Which networks hold which systems is the first question of an internal assessment, and scanning for the answer is slow and loud. The domain already knows it: every active computer has a DNS name and an address, and the OU it sits in usually says what it is - workstations, servers, a site. The subnet of the domain controllers is the Tier-0 network."
+        WhatWeCheck = @(
+            "Enabled computers with a logon in the last 30 days, by lastLogonTimestamp (-ActiveDays). The attribute is replicated with a delay of 9 to 14 days by default, so a shorter window misses computers in use"
+            "A DNS name (dNSHostName) is resolved only below the domain's own name: the computer account may write it, and a name outside the domain is counted instead of looked up"
+            "Addresses from the AD-integrated DNS zones the names fall in, read over LDAP from the connected domain controller - every address of a name, no DNS query. A name not found there is resolved by a DNS query to the domain controller, and to no other server; under -OPSEC it is counted instead"
+            "One object per /24: how many computers, how many of them are domain controllers, servers and clients, and the OU or container of each with the number of computers from it. A computer with addresses in two subnets counts in both"
+            "adSubnet: the most specific subnet defined in Sites and Services that contains the addresses, with its site. 'Not in Sites and Services' means no defined subnet contains them - clients there pick any domain controller"
+            "The subnets Sites and Services defines that hold no active computer, in one list after the /24s: networks the domain knows of and the computers do not show, such as a VPN pool, a DMZ or a floor of appliances. A defined subnet inside one of the /24s is left out, that /24 covers it"
+            "Not mapped, and counted: names outside the domain, computers without a DNS name or without a usable IPv4 address (loopback, APIPA and multicast are not), and IPv6 addresses"
+            "-ExportTargets writes the subnets to a file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner"
+        )
+    }
     'LDAPConfigGPO' = @{
         TitleFormat = "LDAP Configuration GPO: {Name}"
         Module = "Domain"
@@ -28836,7 +28884,8 @@ function Invoke-LDAPSearch {
                 'msmqdigests', 'msmqsigncertificates',
                 'userparameters', 'terminalserver',
                 'tokengroups', 'tokengroupsglobalanduniversal', 'tokengroupsnogcacceptable',
-                'dsasignature', 'repsfrom', 'repsto', 'auditingpolicy'
+                'dsasignature', 'repsfrom', 'repsto', 'auditingpolicy',
+                'dnsrecord'
             )) { [void]$BinaryAttributeSet.Add($ba) }
             if ($CountOnly) {
                 $TotalCount = 0
@@ -30675,6 +30724,147 @@ function Get-DomainComputer {
     }
     end {
         Write-Log "[Get-DomainComputer] Computer enumeration completed"
+    }
+}
+function ConvertFrom-DNSRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes
+    )
+    if ($null -eq $Bytes -or $Bytes.Length -lt 24) { return $null }
+    if ($Bytes[4] -ne 5) { return $null }
+    $dataLength = [BitConverter]::ToUInt16($Bytes, 0)
+    $recordType = [BitConverter]::ToUInt16($Bytes, 2)
+    if ($Bytes.Length -lt (24 + $dataLength)) { return $null }
+    if ($recordType -eq 1 -and $dataLength -eq 4) {
+        return [PSCustomObject]@{
+            Type    = 'A'
+            Address = ('{0}.{1}.{2}.{3}' -f $Bytes[24], $Bytes[25], $Bytes[26], $Bytes[27])
+        }
+    }
+    if ($recordType -eq 28 -and $dataLength -eq 16) {
+        $addressBytes = New-Object byte[] 16
+        [Array]::Copy($Bytes, 24, $addressBytes, 0, 16)
+        return [PSCustomObject]@{
+            Type    = 'AAAA'
+            Address = ([System.Net.IPAddress]::new($addressBytes)).ToString()
+        }
+    }
+    return $null
+}
+function Get-DomainDNSZone {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    process {
+        $connectionParams = @{}
+        if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+        if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+        if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+        if (-not (Ensure-LDAPConnection @connectionParams)) { return }
+        $domainDN = [string]$Script:LDAPContext.DomainDN
+        $forestDN = [string]$Script:LDAPContext.RootDomainNamingContext
+        if (-not $forestDN) { $forestDN = $domainDN }
+        $locations = @(
+            [PSCustomObject]@{ Partition = 'DomainDnsZones'; Container = "CN=MicrosoftDNS,DC=DomainDnsZones,$domainDN" }
+            [PSCustomObject]@{ Partition = 'ForestDnsZones'; Container = "CN=MicrosoftDNS,DC=ForestDnsZones,$forestDN" }
+            [PSCustomObject]@{ Partition = 'System';         Container = "CN=MicrosoftDNS,CN=System,$domainDN" }
+        )
+        foreach ($location in $locations) {
+            $zones = @()
+            try {
+                $zones = @(Get-DomainObject -LDAPFilter '(objectClass=dnsZone)' -SearchBase $location.Container -Scope OneLevel `
+                    -Properties 'name' -Raw @connectionParams)
+            } catch {
+                Write-Log "[Get-DomainDNSZone] $($location.Container) could not be read: $_"
+                continue
+            }
+            Write-Log "[Get-DomainDNSZone] $($zones.Count) zone(s) in $($location.Container)"
+            foreach ($zone in $zones) {
+                $zoneName = ([string]$zone.name).Trim().TrimEnd('.').ToLowerInvariant()
+                if (-not $zoneName -or -not $zone.distinguishedName) { continue }
+                if ($zoneName.StartsWith('..') -or $zoneName -eq 'rootdnsservers') { continue }
+                if ($zoneName -match '\.(in-addr|ip6)\.arpa$') { continue }
+                [PSCustomObject]@{
+                    Name              = $zoneName
+                    DistinguishedName = [string]$zone.distinguishedName
+                    Partition         = $location.Partition
+                }
+            }
+        }
+    }
+}
+function Get-DomainDNSRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [object[]]$Zone,
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    process {
+        $connectionParams = @{}
+        if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+        if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+        if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+        if (-not (Ensure-LDAPConnection @connectionParams)) { return }
+        if (-not $PSBoundParameters.ContainsKey('Zone')) {
+            $Zone = @(Get-DomainDNSZone @connectionParams)
+        }
+        foreach ($zoneEntry in @($Zone)) {
+            if (-not $zoneEntry -or -not $zoneEntry.DistinguishedName) { continue }
+            $zoneName = ([string]$zoneEntry.Name).ToLowerInvariant()
+            $nodes = @()
+            try {
+                $nodes = @(Get-DomainObject -LDAPFilter '(objectClass=dnsNode)' -SearchBase $zoneEntry.DistinguishedName -Scope OneLevel `
+                    -Properties 'name', 'dnsRecord', 'dNSTombstoned' -Raw @connectionParams)
+            } catch {
+                Write-Log "[Get-DomainDNSRecord] Zone $zoneName could not be read: $_"
+                continue
+            }
+            Write-Log "[Get-DomainDNSRecord] $($nodes.Count) node(s) in zone $zoneName"
+            foreach ($node in $nodes) {
+                if ([string]$node.dNSTombstoned -eq 'TRUE') { continue }
+                $nodeName = ([string]$node.name).ToLowerInvariant()
+                if (-not $nodeName) { continue }
+                $fqdn = if ($nodeName -eq '@') { $zoneName } else { "$nodeName.$zoneName" }
+                $values = $node.dnsRecord
+                if ($values -is [byte[]]) { $values = @(, $values) }
+                $ipv4 = New-Object System.Collections.Generic.List[string]
+                $ipv6 = New-Object System.Collections.Generic.List[string]
+                foreach ($value in @($values)) {
+                    if ($value -isnot [byte[]]) { continue }
+                    $record = ConvertFrom-DNSRecord -Bytes $value
+                    if (-not $record) { continue }
+                    if ($record.Type -eq 'A') {
+                        if (-not $ipv4.Contains($record.Address)) { $ipv4.Add($record.Address) }
+                    } elseif (-not $ipv6.Contains($record.Address)) {
+                        $ipv6.Add($record.Address)
+                    }
+                }
+                if (($ipv4.Count + $ipv6.Count) -eq 0) { continue }
+                [PSCustomObject]@{
+                    Name        = $fqdn
+                    Zone        = $zoneName
+                    IPv4Address = $ipv4.ToArray()
+                    IPv6Address = $ipv6.ToArray()
+                }
+            }
+        }
     }
 }
 function Get-DomainGroup {
@@ -70095,6 +70285,361 @@ function Get-SMBSigningStatus {
         Write-Log "[Get-SMBSigningStatus] Check completed"
     }
 }
+function ConvertTo-NetworkMapIPv4Number {
+    [CmdletBinding()]
+    [OutputType([long])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [string]$Address
+    )
+    if ($Address -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return }
+    $parsed = $null
+    if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$parsed)) { return }
+    $b = $parsed.GetAddressBytes()
+    return ([long]$b[0] * 16777216) + ([long]$b[1] * 65536) + ([long]$b[2] * 256) + [long]$b[3]
+}
+function Get-NetworkMapPrefixMask {
+    [CmdletBinding()]
+    [OutputType([long])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateRange(0, 32)]
+        [int]$PrefixLength
+    )
+    return [long](4294967296 - [Math]::Pow(2, 32 - $PrefixLength))
+}
+function Test-NetworkMapUsableIPv4 {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [long]$Number
+    )
+    $first = [Math]::Floor($Number / 16777216)
+    if ($first -eq 0 -or $first -eq 127 -or $first -ge 224) { return $false }
+    if ([Math]::Floor($Number / 65536) -eq ((169 * 256) + 254)) { return $false }
+    return $true
+}
+function Resolve-NetworkMapName {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Name,
+        [Parameter(Mandatory=$false)]
+        [string]$DnsServer
+    )
+    if ($DnsServer) {
+        try {
+            return @(Resolve-DnsName -Name $Name -Server $DnsServer -Type A -DnsOnly -QuickTimeout -ErrorAction Stop |
+                Where-Object { $_.Type -eq 'A' } | ForEach-Object { [string]$_.IPAddress })
+        } catch [System.Management.Automation.CommandNotFoundException] {
+            $address = Invoke-RawDnsQuery -Name $Name -DnsServer $DnsServer -Type A -Timeout 2000
+            return @($address | Where-Object { $_ })
+        } catch {
+            Write-Log "[Get-NetworkMap] $Name did not resolve at ${DnsServer}: $($_.Exception.Message)"
+            return @()
+        }
+    }
+    try {
+        return @([System.Net.Dns]::GetHostAddresses($Name) |
+            Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+            ForEach-Object { $_.IPAddressToString })
+    } catch {
+        Write-Log "[Get-NetworkMap] $Name did not resolve: $($_.Exception.Message)"
+        return @()
+    }
+}
+function Get-NetworkMap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 3650)]
+        [int]$ActiveDays = 30,
+        [Parameter(Mandatory=$false)]
+        [string]$ExportTargets,
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
+    )
+    begin {
+        Write-Log "[Get-NetworkMap] Starting check"
+    }
+    process {
+        try {
+            $connectionParams = @{}
+            if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+            if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+            if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
+                return
+            }
+            Show-SubHeader "Mapping the IP subnets of the active computers..." -ObjectType "NetworkSubnet"
+            $domainFQDN = ([string]$Script:LDAPContext.Domain).Trim().TrimEnd('.').ToLowerInvariant()
+            $since = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
+            $computers = @(Get-DomainComputer -Enabled -LDAPFilter "(lastLogonTimestamp>=$since)" `
+                -Properties 'dNSHostName', 'operatingSystem' @connectionParams)
+            Write-Log "[Get-NetworkMap] $($computers.Count) enabled computer(s) with a logon in the last $ActiveDays days"
+            if ($computers.Count -eq 0) {
+                Show-Line "No enabled computer logged on within the last $ActiveDays days" -Class Note
+                return
+            }
+            $dcSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            $dcLookupFailed = $false
+            try {
+                foreach ($dc in @(Get-DomainComputer -DomainController -Properties 'distinguishedName' @connectionParams)) {
+                    if ($dc.distinguishedName) { [void]$dcSet.Add([string]$dc.distinguishedName) }
+                }
+            } catch {
+                Write-Log "[Get-NetworkMap] The domain controllers could not be read: $_"
+                $dcLookupFailed = $true
+            }
+            $withoutName = 0
+            $outsideDomain = 0
+            $candidates = New-Object System.Collections.Generic.List[object]
+            foreach ($computer in $computers) {
+                $fqdn = ([string]$computer.dNSHostName).Trim().TrimEnd('.').ToLowerInvariant()
+                if (-not $fqdn) { $withoutName++; continue }
+                if (-not $fqdn.EndsWith(".$domainFQDN")) { $outsideDomain++; continue }
+                $dn = [string]$computer.distinguishedName
+                $location = if ($dn -match '^(?:[^,\\]|\\.)+,(.+)$') { $Matches[1] } else { $dn }
+                $os = [string]$computer.operatingSystem
+                $osClass = if ($os -match 'Windows' -and $os -match 'Server') { 'Server' }
+                           elseif ($os -match 'Windows') { 'Client' }
+                           else { 'Other' }
+                $candidates.Add([PSCustomObject]@{
+                    DN       = $dn
+                    FQDN     = $fqdn
+                    Location = $location
+                    IsDC     = $dcSet.Contains($dn)
+                    OSClass  = $osClass
+                })
+            }
+            $addressMap = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
+            $zonesRead = 0
+            if ($candidates.Count -gt 0) {
+                try {
+                    $suffixes = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                    foreach ($candidate in $candidates) {
+                        $labels = $candidate.FQDN.Split('.')
+                        for ($i = 0; $i -lt $labels.Count; $i++) {
+                            [void]$suffixes.Add(($labels[$i..($labels.Count - 1)] -join '.'))
+                        }
+                    }
+                    $zones = @(Get-DomainDNSZone @connectionParams | Where-Object { $suffixes.Contains([string]$_.Name) })
+                    $zonesRead = $zones.Count
+                    if ($zones.Count -gt 0) {
+                        foreach ($record in @(Get-DomainDNSRecord -Zone $zones @connectionParams)) {
+                            if (-not $addressMap.ContainsKey($record.Name)) {
+                                $addressMap[$record.Name] = [PSCustomObject]@{
+                                    IPv4 = New-Object System.Collections.Generic.List[string]
+                                    IPv6 = New-Object System.Collections.Generic.List[string]
+                                }
+                            }
+                            $entry = $addressMap[$record.Name]
+                            foreach ($address in @($record.IPv4Address)) { $entry.IPv4.Add([string]$address) }
+                            foreach ($address in @($record.IPv6Address)) { $entry.IPv6.Add([string]$address) }
+                        }
+                    }
+                } catch {
+                    Write-Log "[Get-NetworkMap] The AD-integrated DNS zones could not be read: $_"
+                }
+                Write-Log "[Get-NetworkMap] $($addressMap.Count) name(s) with an address in $zonesRead zone(s)"
+            }
+            $adSubnets = @{}
+            $adPrefixes = @()
+            try {
+                $configNC = [string]$Script:LDAPContext.ConfigurationNamingContext
+                if (-not $configNC) { throw 'no configuration naming context' }
+                foreach ($subnetObject in @(Get-DomainObject -LDAPFilter '(objectClass=subnet)' -SearchBase "CN=Subnets,CN=Sites,$configNC" `
+                        -Properties 'name', 'siteObject' @connectionParams)) {
+                    $subnetName = [string]$subnetObject.name
+                    if ($subnetName -notmatch '^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$') { continue }
+                    $networkNumber = ConvertTo-NetworkMapIPv4Number -Address $Matches[1]
+                    $prefixLength = [int]$Matches[2]
+                    if ($null -eq $networkNumber -or $prefixLength -gt 32) { continue }
+                    $siteName = if ([string]$subnetObject.siteObject -match '^CN=((?:[^,\\]|\\.)+),CN=Sites,') { $Matches[1] -replace '\\(.)', '$1' } else { $null }
+                    $label = if ($siteName) { "$subnetName ($siteName)" } else { "$subnetName (no site)" }
+                    if (-not $adSubnets.ContainsKey($prefixLength)) { $adSubnets[$prefixLength] = @{} }
+                    $key = $networkNumber -band (Get-NetworkMapPrefixMask -PrefixLength $prefixLength)
+                    $adSubnets[$prefixLength][$key] = [PSCustomObject]@{
+                        Name          = $subnetName
+                        Network       = $key
+                        Prefix        = $prefixLength
+                        Label         = $label
+                        HoldsComputer = $false
+                    }
+                }
+                $adPrefixes = @($adSubnets.Keys | Sort-Object -Descending)
+            } catch {
+                Write-Log "[Get-NetworkMap] The subnets of Sites and Services could not be read: $_"
+                $adSubnets = $null
+            }
+            $dnsServer = $null
+            if ($Script:LDAPContext['DnsServer']) { $dnsServer = [string]$Script:LDAPContext['DnsServer'] }
+            elseif ($Script:LDAPContext['ServerIP']) { $dnsServer = [string]$Script:LDAPContext['ServerIP'] }
+            $subnets = @{}
+            $mapped = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            $notInZones = 0
+            $queried = 0
+            $withoutAddress = 0
+            $ipv6Only = 0
+            $total = $candidates.Count
+            $index = 0
+            foreach ($candidate in $candidates) {
+                $index++
+                $ipv4 = @()
+                $ipv6 = @()
+                if ($addressMap.ContainsKey($candidate.FQDN)) {
+                    $ipv4 = @($addressMap[$candidate.FQDN].IPv4)
+                    $ipv6 = @($addressMap[$candidate.FQDN].IPv6)
+                } elseif ($OPSEC) {
+                    $notInZones++
+                    continue
+                } else {
+                    $queried++
+                    if ($total -gt $Script:ProgressThreshold) { Show-Progress -Activity "Resolving computer names" -Current $index -Total $total -ObjectName $candidate.FQDN }
+                    $ipv4 = @(Resolve-NetworkMapName -Name $candidate.FQDN -DnsServer $dnsServer)
+                }
+                $numbers = @($ipv4 | ForEach-Object { ConvertTo-NetworkMapIPv4Number -Address $_ } |
+                    Where-Object { Test-NetworkMapUsableIPv4 -Number $_ })
+                if ($numbers.Count -eq 0) {
+                    if ($ipv6.Count -gt 0) { $ipv6Only++ } else { $withoutAddress++ }
+                    continue
+                }
+                [void]$mapped.Add($candidate.DN)
+                foreach ($number in $numbers) {
+                    $network = $number - ($number % 256)
+                    if (-not $subnets.ContainsKey($network)) {
+                        $subnets[$network] = [PSCustomObject]@{
+                            Network   = $network
+                            Computers = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                            DCs       = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                            OSClasses = @{ Server = 0; Client = 0; Other = 0 }
+                            Locations = @{}
+                            ADSubnets = New-Object System.Collections.Generic.List[string]
+                        }
+                    }
+                    $entry = $subnets[$network]
+                    if ($null -ne $adSubnets) {
+                        $label = $null
+                        foreach ($prefixLength in $adPrefixes) {
+                            $adEntry = $adSubnets[$prefixLength][$number -band (Get-NetworkMapPrefixMask -PrefixLength $prefixLength)]
+                            if ($null -eq $adEntry) { continue }
+                            $adEntry.HoldsComputer = $true
+                            if ($null -eq $label) { $label = $adEntry.Label }
+                        }
+                        if ($null -eq $label) { $label = 'Not in Sites and Services' }
+                        if (-not $entry.ADSubnets.Contains($label)) { $entry.ADSubnets.Add($label) }
+                    }
+                    if (-not $entry.Computers.Add($candidate.DN)) { continue }
+                    if ($candidate.IsDC) { [void]$entry.DCs.Add($candidate.DN) }
+                    $entry.OSClasses[$candidate.OSClass]++
+                    if (-not $entry.Locations.ContainsKey($candidate.Location)) { $entry.Locations[$candidate.Location] = 0 }
+                    $entry.Locations[$candidate.Location]++
+                }
+            }
+            if ($queried -gt 0 -and $total -gt $Script:ProgressThreshold) { Show-Progress -Activity "Resolving computer names" -Completed }
+            Write-Log "[Get-NetworkMap] $queried name(s) resolved by DNS query, $($mapped.Count) computer(s) in $($subnets.Count) subnet(s)"
+            if ($outsideDomain -gt 0) {
+                Show-Line "$outsideDomain active computer(s) with a DNS name outside $domainFQDN - not resolved" -Class Note
+            }
+            if ($withoutName -gt 0) {
+                Show-Line "$withoutName active computer(s) without a DNS name (dNSHostName) - not mapped" -Class Note
+            }
+            if ($notInZones -gt 0) {
+                Show-Line "OPSEC mode: $notInZones active computer(s) not found in the AD-integrated DNS zones - not resolved by DNS query" -Class Note
+            } elseif ($queried -gt 0 -and $zonesRead -eq 0) {
+                $askedServer = if ($dnsServer) { $dnsServer } else { 'the DNS resolver of this machine' }
+                Show-Line "No AD-integrated DNS zone of these names could be read - addresses by DNS query to $askedServer" -Class Note
+            }
+            if ($withoutAddress -gt 0) {
+                Show-Line "$withoutAddress active computer(s) without a usable IPv4 address in DNS - not mapped" -Class Note
+            }
+            if ($ipv6Only -gt 0) {
+                Show-Line "$ipv6Only active computer(s) with IPv6 addresses only - IPv6 is not mapped" -Class Note
+            }
+            if ($dcLookupFailed) {
+                Show-Line "The domain controllers could not be determined - no subnet counts them" -Class Note
+            }
+            $targets = New-Object System.Collections.Generic.List[string]
+            if ($subnets.Count -eq 0) {
+                Show-Line "No active computer could be mapped to an IPv4 subnet" -Class Note
+            } else {
+                Show-Line "Found $($subnets.Count) /24 subnet(s) with $($mapped.Count) computer(s) active in the last $ActiveDays days:" -Class Note
+            }
+            foreach ($entry in @($subnets.Values | Sort-Object -Property Network)) {
+                $n = [long]$entry.Network
+                $subnetName = '{0}.{1}.{2}.0/24' -f [Math]::Floor($n / 16777216), ([Math]::Floor($n / 65536) % 256), ([Math]::Floor($n / 256) % 256)
+                $targets.Add($subnetName)
+                $osParts = @()
+                if ($entry.OSClasses['Server'] -gt 0) { $osParts += "$($entry.OSClasses['Server']) server(s)" }
+                if ($entry.OSClasses['Client'] -gt 0) { $osParts += "$($entry.OSClasses['Client']) client(s)" }
+                if ($entry.OSClasses['Other'] -gt 0)  { $osParts += "$($entry.OSClasses['Other']) other" }
+                $locations = @($entry.Locations.GetEnumerator() |
+                    Sort-Object -Property @{ Expression = { $_.Value }; Descending = $true }, @{ Expression = { [string]$_.Key }; Descending = $false } |
+                    ForEach-Object { "$($_.Key) ($($_.Value))" })
+                $subnetObject = [PSCustomObject][ordered]@{
+                    Name   = $subnetName
+                    subnet = $subnetName
+                }
+                if ($null -ne $adSubnets) {
+                    $subnetObject | Add-Member -NotePropertyName 'adSubnet' -NotePropertyValue @($entry.ADSubnets) -Force
+                }
+                $subnetObject | Add-Member -NotePropertyName 'computerCount' -NotePropertyValue $entry.Computers.Count -Force
+                if ($entry.DCs.Count -gt 0) {
+                    $subnetObject | Add-Member -NotePropertyName 'domainControllerCount' -NotePropertyValue $entry.DCs.Count -Force
+                }
+                $subnetObject | Add-Member -NotePropertyName 'operatingSystems' -NotePropertyValue ($osParts -join ', ') -Force
+                $subnetObject | Add-Member -NotePropertyName 'organizationalUnits' -NotePropertyValue $locations -Force
+                $subnetObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'NetworkSubnet' -Force
+                $objectClass = if ($entry.DCs.Count -gt 0) { 'Hint' } else { 'Note' }
+                Show-Object $subnetObject -Class $objectClass
+            }
+            $emptySubnets = @(@(foreach ($table in $adSubnets.Values) {
+                foreach ($adEntry in $table.Values) {
+                    if ($adEntry.HoldsComputer) { continue }
+                    if ($subnets.ContainsKey($adEntry.Network - ($adEntry.Network % 256))) { continue }
+                    $adEntry
+                }
+            }) | Sort-Object -Property Network, Prefix)
+            if ($emptySubnets.Count -gt 0) {
+                Show-Line "$($emptySubnets.Count) subnet(s) defined in Sites and Services without an active computer:" -Class Note
+                $emptyObject = [PSCustomObject][ordered]@{
+                    Name              = 'Sites and Services, no active computer'
+                    adSubnet          = @($emptySubnets | ForEach-Object { $_.Label })
+                    _adPEASObjectType = 'NetworkSubnet'
+                }
+                Show-Object $emptyObject -Class Note
+                foreach ($adEntry in $emptySubnets) { $targets.Add($adEntry.Name) }
+            }
+            if ($ExportTargets) {
+                if ($targets.Count -eq 0) {
+                    Show-Line "No subnet to write to $ExportTargets" -Class Note
+                } else {
+                    $export = Export-adPEASFile -Path $ExportTargets -Content (($targets -join "`r`n") + "`r`n") -Type Text -Force -SanitizeFilename:$false
+                    if ($export.Success) {
+                        Show-Line "Wrote $($targets.Count) subnet(s) to $($export.Path)" -Class Note
+                    } else {
+                        Show-Line "The subnet list could not be written to ${ExportTargets}: $($export.Message)" -Class Hint
+                    }
+                }
+            }
+        } catch {
+            Write-Log "[Get-NetworkMap] Error: $_" -Level Error
+            Show-Line "Error during check - the network map could not be built: $_" -Class Finding
+        }
+    }
+    end {
+        Write-Log "[Get-NetworkMap] Check completed"
+    }
+}
 function Get-PrivilegedGroupMembers {
     [CmdletBinding()]
     param(
@@ -96714,7 +97259,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261021-1745"
+$Script:adPEASVersion = "2.7.0+20261022-0952"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -97113,6 +97658,7 @@ try {
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-DomainTrusts' -Title 'Domain Trusts' -Check { Get-DomainTrusts }
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-LDAPConfiguration' -Title 'LDAP Configuration' -Check { Get-LDAPConfiguration }
             Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-SMBSigningStatus' -Title 'SMB Signing Status' -Check { Get-SMBSigningStatus }
+            Invoke-CheckWithContext -Category 'Domain' -CheckName 'Get-NetworkMap' -Title 'Network Map' -Check { Get-NetworkMap -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Domain Module: $_"
         }

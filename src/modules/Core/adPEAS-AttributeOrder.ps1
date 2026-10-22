@@ -372,6 +372,13 @@ $Script:PrimaryAttributes = @{
         'siteDomainControllers'
     )
 
+    # Network map, one object per /24 subnet (Get-NetworkMap). Name carries the subnet
+    # for the HTML title and is not a row.
+    NetworkSubnet = @(
+        'subnet', 'adSubnet', 'computerCount', 'domainControllerCount',
+        'operatingSystems', 'organizationalUnits'
+    )
+
     # Effective LDAP Security Configuration - what is in force on the domain controllers,
     # value by value, by policy precedence (Get-LDAPConfiguration)
     EffectiveLDAPConfig = @(

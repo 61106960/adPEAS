@@ -200,6 +200,7 @@ Ensure your tunnel forwards the necessary ports:
 | 3268 | TCP | Global Catalog (LDAP) | Optional — cross-domain/forest SID resolution |
 | 3269 | TCP | Global Catalog (LDAPS) | Optional — cross-domain/forest SID resolution (SSL) |
 | 445  | TCP | SMB/CIFS | Only for SMB checks (`Get-SMBSigningStatus`) |
+| 53   | UDP | DNS | Optional — names `Get-NetworkMap` does not find in the AD-integrated zones (none under `-OPSEC`) |
 
 **Minimum for enumeration:** Port 389 (LDAP) + SimpleBind credentials.
 

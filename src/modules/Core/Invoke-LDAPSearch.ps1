@@ -239,7 +239,10 @@ function Invoke-LDAPSearch {
                 # and repsTo came back as loose bytes - see the text path below, which now
                 # catches those by itself - and auditingPolicy as two characters of text,
                 # because its bytes happen to be valid UTF-8. Only this list catches that.
-                'dsasignature', 'repsfrom', 'repsto', 'auditingpolicy'
+                'dsasignature', 'repsfrom', 'repsto', 'auditingpolicy',
+                # The resource records of an AD-integrated DNS zone (Get-DomainDNSRecord).
+                # A record whose bytes happen to be valid UTF-8 would come back as text.
+                'dnsrecord'
             )) { [void]$BinaryAttributeSet.Add($ba) }
 
             # CountOnly mode: only count matching objects without collecting or converting them

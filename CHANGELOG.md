@@ -956,6 +956,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   rights are mapped to the file rights they stand for now, and an inherited Deny no longer
   takes a right from an Allow written on the file or folder.
 
+- **New check `Get-NetworkMap`: the IP subnets of the active computers, and the OUs they
+  sit in.** Which networks hold which systems is what an internal assessment asks first.
+  The check takes the enabled computers with a logon in the last 30 days (`-ActiveDays`)
+  and shows one object per /24 subnet: how many computers, how many of them domain
+  controllers, servers and clients, the subnet Sites and Services defines for it with its
+  site, and the OU or container of each computer as a DN with the number of computers from
+  it. The computers themselves are not listed. After them, in one list, come the subnets
+  Sites and Services defines that hold no active computer - networks the domain knows of
+  and the computers do not show, such as a VPN pool or a DMZ. The addresses come from the
+  AD-integrated DNS zones, read over LDAP by the new `Get-DomainDNSZone` and
+  `Get-DomainDNSRecord` - every address of a name, no DNS query. A name not found there is
+  resolved by a DNS query to the domain controller and to no other server, and not at all
+  under `-OPSEC`. A `dNSHostName` outside the domain's own name is not resolved, since the
+  computer account may write it; what could not be mapped is counted. A subnet with domain
+  controllers is a hint that adds nothing to the risk score. `-ExportTargets <file>` writes
+  both kinds of subnet one per line, as the target list of a scanner. The check runs in the
+  Domain module of a full scan, without the export. `Invoke-LDAPSearch` reads `dnsRecord`
+  as bytes.
+
 ### Changed
 
 - **Every object a check shows carries its severity into the JSON export and the report

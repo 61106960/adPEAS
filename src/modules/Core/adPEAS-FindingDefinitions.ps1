@@ -8099,6 +8099,40 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
     }
 
     # ============================================================================
+    # NETWORK MAP (Get-NetworkMap)
+    # ============================================================================
+
+    # Information for the assessment, not a weakness: every domain has a subnet with its
+    # domain controllers. BaseScore 0, so it adds nothing to the risk score.
+    'NETWORK_SUBNET_DOMAIN_CONTROLLERS' = @{
+        Title = "Subnet With Domain Controllers"
+        Risk = "Hint"
+        BaseScore = 0
+        Description = "Domain controllers have an address in this subnet. It is the Tier-0 network of the domain: the domain controllers hold every credential of the domain and answer Kerberos, LDAP, SMB and RPC to whoever reaches them. Every domain has such a subnet - what matters is what else is in it, which the OUs of the subnet show, and which networks may reach it."
+        Impact = @(
+            "Every other system in this subnet shares a network segment with the domain controllers"
+            "A compromised client or server here reaches the domain controllers without crossing a firewall, unless the segment is filtered inside"
+        )
+        Attack = @(
+            "Not an attack path - reported so the assessment knows where the Tier-0 systems are, and which other systems share their network"
+        )
+        Remediation = @(
+            "Keep the domain controllers in a segment of their own, with only Tier-0 systems and the administrative workstations of Tier 0 in it"
+            "Allow the client and server networks only what a domain controller has to answer - DNS, Kerberos, LDAP, SMB for SYSVOL and NETLOGON, RPC - and administration only from the Tier-0 administrative network"
+        )
+        References = @(
+            @{ Title = "Securing Domain Controllers Against Attack - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/securing-domain-controllers-against-attack" }
+            @{ Title = "Enterprise access model - Microsoft"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
+        )
+        Tools = @("-")
+        MITRE = "-"
+        Triggers = @(
+            # The row exists only where domain controllers are in the subnet.
+            @{ Attribute = 'domainControllerCount'; Severity = 'Hint' }
+        )
+    }
+
+    # ============================================================================
     # OUTDATED SYSTEMS FINDINGS
     # ============================================================================
 

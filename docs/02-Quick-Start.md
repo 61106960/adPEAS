@@ -321,6 +321,7 @@ Get-ASREPRoastableAccounts     # Find AS-REP roastable accounts
 Get-UnconstrainedDelegation    # Find unconstrained delegation
 Get-ConstrainedDelegation      # Find constrained delegation
 Get-DomainTrusts               # Enumerate domain trusts
+Get-NetworkMap                 # Map the subnets of the active computers, by OU
 Get-PrivilegedGroupMembers     # List privileged group members
 Get-DangerousACLs              # Find dangerous ACLs on domain root
 Get-ADCSVulnerabilities        # Find ADCS misconfigurations

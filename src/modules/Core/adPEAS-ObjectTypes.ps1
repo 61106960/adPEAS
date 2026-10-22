@@ -171,6 +171,25 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
     }
 
+    'NetworkSubnet' = @{
+        TitleFormat = "Network Subnet: {Name}"
+        Module = "Domain"
+        Category = "Domain"
+        SectionTitle = "Network Map"
+        Summary = "Maps the /24 subnets the active computers of the domain are in, with the OUs they sit in."
+        WhyItMatters = "Which networks hold which systems is the first question of an internal assessment, and scanning for the answer is slow and loud. The domain already knows it: every active computer has a DNS name and an address, and the OU it sits in usually says what it is - workstations, servers, a site. The subnet of the domain controllers is the Tier-0 network."
+        WhatWeCheck = @(
+            "Enabled computers with a logon in the last 30 days, by lastLogonTimestamp (-ActiveDays). The attribute is replicated with a delay of 9 to 14 days by default, so a shorter window misses computers in use"
+            "A DNS name (dNSHostName) is resolved only below the domain's own name: the computer account may write it, and a name outside the domain is counted instead of looked up"
+            "Addresses from the AD-integrated DNS zones the names fall in, read over LDAP from the connected domain controller - every address of a name, no DNS query. A name not found there is resolved by a DNS query to the domain controller, and to no other server; under -OPSEC it is counted instead"
+            "One object per /24: how many computers, how many of them are domain controllers, servers and clients, and the OU or container of each with the number of computers from it. A computer with addresses in two subnets counts in both"
+            "adSubnet: the most specific subnet defined in Sites and Services that contains the addresses, with its site. 'Not in Sites and Services' means no defined subnet contains them - clients there pick any domain controller"
+            "The subnets Sites and Services defines that hold no active computer, in one list after the /24s: networks the domain knows of and the computers do not show, such as a VPN pool, a DMZ or a floor of appliances. A defined subnet inside one of the /24s is left out, that /24 covers it"
+            "Not mapped, and counted: names outside the domain, computers without a DNS name or without a usable IPv4 address (loopback, APIPA and multicast are not), and IPv6 addresses"
+            "-ExportTargets writes the subnets to a file, one per line in CIDR notation - the /24s, then the defined subnets without an active computer - as the target list of a scanner"
+        )
+    }
+
     'LDAPConfigGPO' = @{
         TitleFormat = "LDAP Configuration GPO: {Name}"
         Module = "Domain"
