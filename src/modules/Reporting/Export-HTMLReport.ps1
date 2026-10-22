@@ -1160,9 +1160,32 @@ function Build-FindingCardHtml {
     [void]$card.AppendLine("            </div>")
     [void]$card.AppendLine("            <div class=`"finding-body`">")
 
+    # The lines a card opens with, before its first object, are of two kinds. The last of
+    # them leads into the objects ("Found 3 readable share(s):") and stays where it is,
+    # directly above them. The ones before it say what the section covered and what it
+    # left out - computers not contacted, principals hidden, values not judged - and go
+    # into one block, so they read as the fine print of the section rather than as a stack
+    # of statements as loud as its result.
+    #
+    # Decided by position, not by wording. The last line before an object is not always a
+    # headline for the whole section: a check that announces each object with a line of
+    # its own puts the first object's announcement there. So that line is never moved away
+    # from what it introduces.
+    #
+    # A card of lines alone gets no block. There is no content to set them apart from, and
+    # the card is already the frame.
+    $openingLines = 0
+    while ($openingLines -lt $Findings.Count -and $Findings[$openingLines].Type -eq 'Line') { $openingLines++ }
+    $scopeLines = if ($openingLines -lt $Findings.Count) { $openingLines - 1 } else { 0 }
+
     # Output each finding
-    foreach ($finding in $Findings) {
+    for ($position = 0; $position -lt $Findings.Count; $position++) {
+        $finding = $Findings[$position]
         $severityClass = $finding.Severity.ToLower()
+
+        if ($position -eq 0 -and $scopeLines -gt 0) {
+            [void]$card.AppendLine("                <div class=`"section-scope`" role=`"note`">")
+        }
 
         if ($finding.Type -eq 'Object' -and $finding.Object) {
             # AD Object - full detail card using RenderModel
@@ -1199,6 +1222,10 @@ function Build-FindingCardHtml {
             $textHtml = ConvertTo-HtmlEncode $finding.Text
             $dataAttr = if ($finding.FindingId) { " data-finding-id=`"$($finding.FindingId)`"" } else { "" }
             [void]$card.AppendLine("                <div class=`"finding-item finding-line $severityClass`"$dataAttr>$textHtml</div>")
+        }
+
+        if ($position -eq $scopeLines - 1) {
+            [void]$card.AppendLine("                </div>")
         }
     }
 

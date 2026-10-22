@@ -295,7 +295,7 @@
                 // No search query: show card, reset all items to visible
                 if (currentSearchQuery === '') {
                     card.style.display = '';
-                    card.querySelectorAll('.object-detail, .finding-item').forEach(item => {
+                    card.querySelectorAll('.object-detail, .finding-item, .section-scope').forEach(item => {
                         item.style.display = '';
                     });
                     resetItemCount(card);
@@ -303,7 +303,9 @@
                 }
 
                 // Search active: filter individual items within card
-                const items = card.querySelectorAll(':scope > .finding-body > .object-detail, :scope > .finding-body > .finding-item');
+                // .section-scope: the lines a card opens with, in one block - searched and
+                // hidden as one item, like an object.
+                const items = card.querySelectorAll(':scope > .finding-body > .object-detail, :scope > .finding-body > .finding-item, :scope > .finding-body > .section-scope');
                 let visibleCount = 0;
                 const totalCount = items.length;
 

@@ -977,6 +977,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **A line in the HTML report reads like a note, and the lines that open a section are
+  set apart.** On the console a line carries its marker (`[!]`, `[+]`, `[*]`, `[#]`) and
+  reads as one of many; in the HTML report it was a whole sentence in severity colour,
+  with the marker gone and nothing to tell a scope note from a result. On screen a line is
+  now a strip: the console's marker in a badge, a severity bar, a muted background, the
+  text in the normal colour. The lines a card opens with before the one that leads into
+  its objects - computers not contacted, holders hidden, values not judged - go into one
+  block of fine print above it. Which line leads in is decided by position, never by
+  wording: where a check announces each object with a line of its own, the last line
+  before the first object is that object's, and it stays directly above it. A card of
+  lines alone keeps its lines as they are. Printed, a line keeps the console form, and the
+  search finds and hides the block as one item, as it does an object.
+
 - **Every object a check shows carries its severity into the JSON export and the report
   diff.** 109 places in 36 checks handed an object to the output without a class - among
   them every credential found in SYSVOL, every kerberoastable and AS-REP roastable

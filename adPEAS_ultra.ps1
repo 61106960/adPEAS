@@ -85031,8 +85031,15 @@ function Build-FindingCardHtml {
 	[void]$card.AppendLine("                </div>")
 	[void]$card.AppendLine("            </div>")
 	[void]$card.AppendLine("            <div class=`"finding-body`">")
-	foreach ($finding in $Findings) {
+	$openingLines = 0
+	while ($openingLines -lt $Findings.Count -and $Findings[$openingLines].Type -eq 'Line') { $openingLines++ }
+	$scopeLines = if ($openingLines -lt $Findings.Count) { $openingLines - 1 } else { 0 }
+	for ($position = 0; $position -lt $Findings.Count; $position++) {
+	    $finding = $Findings[$position]
 	    $severityClass = $finding.Severity.ToLower()
+	    if ($position -eq 0 -and $scopeLines -gt 0) {
+	        [void]$card.AppendLine("                <div class=`"section-scope`" role=`"note`">")
+	    }
 	    if ($finding.Type -eq 'Object' -and $finding.Object) {
 	        $renderModel = if ($finding.RenderModel) { $finding.RenderModel }
 	                       else { Get-RenderModel -Object $finding.Object }
@@ -85059,6 +85066,9 @@ function Build-FindingCardHtml {
 	        $textHtml = ConvertTo-HtmlEncode $finding.Text
 	        $dataAttr = if ($finding.FindingId) { " data-finding-id=`"$($finding.FindingId)`"" } else { "" }
 	        [void]$card.AppendLine("                <div class=`"finding-item finding-line $severityClass`"$dataAttr>$textHtml</div>")
+	    }
+	    if ($position -eq $scopeLines - 1) {
+	        [void]$card.AppendLine("                </div>")
 	    }
 	}
 	[void]$card.AppendLine("            </div>")
@@ -86364,12 +86374,84 @@ function Get-HTMLTemplate {
         .finding-item.secure .finding-value { color: var(--secure); }
         /* .finding-item.note - intentionally NOT colored (stays neutral) */
 
-        /* Severity classes for single-line findings (finding-line) - color the entire line */
-        .finding-item.finding-line.finding { color: var(--finding); font-weight: 600; }
-        .finding-item.finding-line.hint { color: var(--hint); }
-        .finding-item.finding-line.note { color: var(--note); }
-        .finding-item.finding-line.secure { color: var(--secure); }
-        .finding-item.finding-line.info { color: var(--text-muted); }
+        /* Single lines (Show-Line). On screen a line is a strip: the console's marker in a
+           badge, a severity bar and a muted background, with the text in the normal colour.
+           A whole sentence in severity colour reads as loud as a finding even where it only
+           says what was left out. The markers are the console prefixes without brackets
+           (Get-ClassPrefix); a severity without one gets no badge.
+           Screen only: print keeps the console form ("[!] text") from the print styles
+           below, which set their own colours. */
+        @media screen {
+            .finding-item.finding-line {
+                --line-color: var(--border);
+                --line-bg: var(--bg-card);
+                --line-marker: none;
+                display: flex;
+                align-items: baseline;
+                gap: 10px;
+                margin-bottom: 8px;
+                padding: 8px 12px;
+                border: none;
+                border-left: 3px solid var(--line-color);
+                border-radius: 6px;
+                background: var(--line-bg);
+                color: var(--text);
+            }
+
+            .finding-item.finding-line:last-child {
+                margin-bottom: 0;
+            }
+
+            .finding-item.finding-line::before {
+                content: var(--line-marker);
+                flex: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 18px;
+                border-radius: 50%;
+                background: var(--line-color);
+                color: #ffffff;
+                font-family: 'Cascadia Code', Consolas, monospace;
+                font-size: 11px;
+                font-weight: 700;
+                line-height: 1;
+            }
+
+            .finding-item.finding-line.finding { --line-color: var(--finding); --line-bg: var(--finding-bg); --line-marker: "!"; font-weight: 600; }
+            .finding-item.finding-line.hint    { --line-color: var(--hint);    --line-bg: var(--hint-bg);    --line-marker: "+"; }
+            .finding-item.finding-line.note    { --line-color: var(--note);    --line-bg: var(--note-bg);    --line-marker: "*"; }
+            .finding-item.finding-line.secure  { --line-color: var(--secure);  --line-bg: var(--secure-bg);  --line-marker: "#"; }
+
+            /* The lines a card opens with, up to the one that leads into its objects: what
+               the section covered and what it left out (Build-FindingCardHtml). One block of
+               fine print; only the badge keeps the severity colour. After the severity rules,
+               which it has to outweigh. */
+            .section-scope {
+                margin-bottom: 12px;
+                padding: 6px 2px;
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                background: var(--bg-card);
+            }
+
+            .section-scope > .finding-item.finding-line {
+                margin: 0;
+                padding: 3px 10px;
+                border-left: none;
+                background: none;
+                color: var(--text-muted);
+                font-size: 12px;
+                font-weight: 400;
+            }
+
+            .section-scope > .finding-item.finding-line::before {
+                width: 15px;
+                height: 15px;
+                font-size: 10px;
+            }
+        }
 
         .object-detail {
             background: var(--bg-card);
@@ -88429,7 +88511,7 @@ function Get-HTMLTemplate {
                 // No search query: show card, reset all items to visible
                 if (currentSearchQuery === '') {
                     card.style.display = '';
-                    card.querySelectorAll('.object-detail, .finding-item').forEach(item => {
+                    card.querySelectorAll('.object-detail, .finding-item, .section-scope').forEach(item => {
                         item.style.display = '';
                     });
                     resetItemCount(card);
@@ -88437,7 +88519,9 @@ function Get-HTMLTemplate {
                 }
 
                 // Search active: filter individual items within card
-                const items = card.querySelectorAll(':scope > .finding-body > .object-detail, :scope > .finding-body > .finding-item');
+                // .section-scope: the lines a card opens with, in one block - searched and
+                // hidden as one item, like an object.
+                const items = card.querySelectorAll(':scope > .finding-body > .object-detail, :scope > .finding-body > .finding-item, :scope > .finding-body > .section-scope');
                 let visibleCount = 0;
                 const totalCount = items.length;
 
@@ -94894,7 +94978,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261022-1519"
+$Script:adPEASVersion = "2.7.0+20261022-1555"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

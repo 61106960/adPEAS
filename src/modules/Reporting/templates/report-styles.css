@@ -1172,12 +1172,84 @@
         .finding-item.secure .finding-value { color: var(--secure); }
         /* .finding-item.note - intentionally NOT colored (stays neutral) */
 
-        /* Severity classes for single-line findings (finding-line) - color the entire line */
-        .finding-item.finding-line.finding { color: var(--finding); font-weight: 600; }
-        .finding-item.finding-line.hint { color: var(--hint); }
-        .finding-item.finding-line.note { color: var(--note); }
-        .finding-item.finding-line.secure { color: var(--secure); }
-        .finding-item.finding-line.info { color: var(--text-muted); }
+        /* Single lines (Show-Line). On screen a line is a strip: the console's marker in a
+           badge, a severity bar and a muted background, with the text in the normal colour.
+           A whole sentence in severity colour reads as loud as a finding even where it only
+           says what was left out. The markers are the console prefixes without brackets
+           (Get-ClassPrefix); a severity without one gets no badge.
+           Screen only: print keeps the console form ("[!] text") from the print styles
+           below, which set their own colours. */
+        @media screen {
+            .finding-item.finding-line {
+                --line-color: var(--border);
+                --line-bg: var(--bg-card);
+                --line-marker: none;
+                display: flex;
+                align-items: baseline;
+                gap: 10px;
+                margin-bottom: 8px;
+                padding: 8px 12px;
+                border: none;
+                border-left: 3px solid var(--line-color);
+                border-radius: 6px;
+                background: var(--line-bg);
+                color: var(--text);
+            }
+
+            .finding-item.finding-line:last-child {
+                margin-bottom: 0;
+            }
+
+            .finding-item.finding-line::before {
+                content: var(--line-marker);
+                flex: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 18px;
+                border-radius: 50%;
+                background: var(--line-color);
+                color: #ffffff;
+                font-family: 'Cascadia Code', Consolas, monospace;
+                font-size: 11px;
+                font-weight: 700;
+                line-height: 1;
+            }
+
+            .finding-item.finding-line.finding { --line-color: var(--finding); --line-bg: var(--finding-bg); --line-marker: "!"; font-weight: 600; }
+            .finding-item.finding-line.hint    { --line-color: var(--hint);    --line-bg: var(--hint-bg);    --line-marker: "+"; }
+            .finding-item.finding-line.note    { --line-color: var(--note);    --line-bg: var(--note-bg);    --line-marker: "*"; }
+            .finding-item.finding-line.secure  { --line-color: var(--secure);  --line-bg: var(--secure-bg);  --line-marker: "#"; }
+
+            /* The lines a card opens with, up to the one that leads into its objects: what
+               the section covered and what it left out (Build-FindingCardHtml). One block of
+               fine print; only the badge keeps the severity colour. After the severity rules,
+               which it has to outweigh. */
+            .section-scope {
+                margin-bottom: 12px;
+                padding: 6px 2px;
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                background: var(--bg-card);
+            }
+
+            .section-scope > .finding-item.finding-line {
+                margin: 0;
+                padding: 3px 10px;
+                border-left: none;
+                background: none;
+                color: var(--text-muted);
+                font-size: 12px;
+                font-weight: 400;
+            }
+
+            .section-scope > .finding-item.finding-line::before {
+                width: 15px;
+                height: 15px;
+                font-size: 10px;
+            }
+        }
 
         .object-detail {
             background: var(--bg-card);
