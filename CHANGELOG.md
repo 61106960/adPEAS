@@ -1690,6 +1690,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   lists. Both call `Find-XmlFileCredential` and `Find-ScriptFileCredential` now, and the
   pattern lists are defined once. The output is unchanged.
 
+- **A credential card says who can read the file, not who can read SYSVOL.** Five cards -
+  the Group Policy Preferences password, AutoAdminLogon, a password in a registry value a
+  policy deploys, `net use` and a password in a script - stated the reach as a fact about
+  SYSVOL: "readable by all authenticated domain users". The file is not always in SYSVOL. A
+  policy copied onto a share, which is what a GPO backup is, carries the same `cpassword`
+  and the same plaintext Winlogon values, and who may read it is then the share's
+  permissions. Each card now carries the sentence the VNC and answer-file cards already
+  used - readable by whoever can read the share the file sits on, which in SYSVOL and
+  NETLOGON is every authenticated user - and still names SYSVOL as where such a file
+  usually is.
+
 ---
 
 ## [2.7.0] - 2026-10-08

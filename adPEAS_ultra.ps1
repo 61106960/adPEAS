@@ -10963,14 +10963,14 @@ Get-ADObject -SearchBase $schema `
 	    BaseScore = 50
 	    Description = "A Group Policy Preferences (GPP) file contains an encrypted password (cpassword attribute). The encryption key was publicly disclosed by Microsoft in 2012 (MS14-025), allowing anyone to decrypt these passwords. This is a well-known vulnerability actively exploited in penetration tests and real attacks."
 	    Impact = @(
-	        "Password can be instantly decrypted by any domain user"
-	        "GPP files are readable by all authenticated users via SYSVOL"
+	        "Password can be instantly decrypted by anyone who can read the file"
+	        "Readable by whoever can read the share the file sits on - in SYSVOL or NETLOGON, every authenticated user"
 	        "Often contains local administrator or service account passwords"
 	        "Credentials may still be valid and in use"
 	        "Common finding in domain compromises"
 	    )
 	    Attack = @(
-	        "1. Attacker accesses SYSVOL share (any domain user can read)"
+	        "1. Attacker reads SYSVOL - any domain user can - or a share holding a copy of a policy, such as a GPO backup"
 	        "2. Searches for Groups.xml, ScheduledTasks.xml, Services.xml, etc."
 	        "3. Extracts cpassword attribute from XML files"
 	        "4. Decrypts password using publicly known AES key"
@@ -11028,16 +11028,16 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Title = "AutoAdminLogon Credentials in GPO"
 	    Risk = "Finding"
 	    BaseScore = 45
-	    Description = "A Group Policy deploys AutoAdminLogon registry settings with plaintext credentials. These credentials are stored unencrypted in Registry.xml files in SYSVOL, readable by any authenticated domain user. AutoAdminLogon automatically logs in a user at system startup."
+	    Description = "A Group Policy deploys AutoAdminLogon registry settings with plaintext credentials. These credentials are stored unencrypted in the policy's Registry.xml - in SYSVOL readable by any authenticated domain user, and in a copy of the policy on a share, such as a GPO backup, by whoever may read that share. AutoAdminLogon automatically logs in a user at system startup."
 	    Impact = @(
 	        "Username and password stored in PLAINTEXT (not even encrypted like GPP)"
-	        "Readable by ANY authenticated domain user via SYSVOL"
+	        "Readable by whoever can read the share the file sits on - in SYSVOL or NETLOGON, every authenticated user"
 	        "Often contains administrative credentials for unattended deployments"
 	        "Credentials apply to workstations/servers where the GPO is linked"
 	        "Enables automatic administrative access to target systems"
 	    )
 	    Attack = @(
-	        "1. Attacker accesses SYSVOL share (any domain user can read)"
+	        "1. Attacker reads SYSVOL - any domain user can - or a share holding a copy of a policy, such as a GPO backup"
 	        "2. Searches for Registry.xml files containing the Winlogon DefaultPassword value"
 	        "3. Extracts DefaultUserName, DefaultPassword, and DefaultDomainName"
 	        "4. Uses credentials directly (no decryption needed!)"
@@ -11096,14 +11096,14 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Title = "Password in a Registry Value Deployed by Group Policy"
 	    Risk = "Finding"
 	    BaseScore = 45
-	    Description = "A Group Policy Object deploys a string registry value whose name says it holds a password - Password, ProxyPassword, ServiceAccountPassword, Pwd and the like. An Administrative Template keeps it in Registry.pol, a preference item in Registry.xml, and both files sit in SYSVOL in clear text, readable by every authenticated user of the domain. The value name is what marks it; whether the password still works is not tested."
+	    Description = "A Group Policy Object deploys a string registry value whose name says it holds a password - Password, ProxyPassword, ServiceAccountPassword, Pwd and the like. An Administrative Template keeps it in Registry.pol, a preference item in Registry.xml, and both files sit in SYSVOL in clear text, readable by every authenticated user of the domain - as is a copy of them on a share, such as a GPO backup, by whoever may read that share. The value name is what marks it; whether the password still works is not tested."
 	    Impact = @(
-	        "Any domain user can read the password from SYSVOL"
+	        "Readable by whoever can read the share the file sits on - in SYSVOL or NETLOGON, every authenticated user"
 	        "The password often belongs to a service, a proxy or a management agent that runs with more rights than the user reading it"
 	        "Every computer the GPO applies to receives it in its registry as well"
 	    )
 	    Attack = @(
-	        "1. Attacker with any domain account reads Registry.pol and Registry.xml from SYSVOL"
+	        "1. Attacker reads Registry.pol and Registry.xml from SYSVOL - any domain account can - or from a copy of the policy on a share"
 	        "2. Picks the values named like a password"
 	        "3. Uses the password against the service or account it belongs to"
 	    )
@@ -11204,16 +11204,16 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Title = "Net Use Command with Embedded Password"
 	    Risk = "Finding"
 	    BaseScore = 40
-	    Description = "A login script or batch file contains a 'net use' command with an embedded password. These scripts are stored in SYSVOL and readable by all authenticated domain users, exposing the credentials to potential attackers."
+	    Description = "A login script or batch file contains a 'net use' command with an embedded password. Whoever can read the file can read the password: in SYSVOL and NETLOGON every authenticated domain user, on a file share whoever the share and folder permissions allow."
 	    Impact = @(
 	        "Password visible in plaintext in script files"
-	        "Scripts in SYSVOL/NETLOGON readable by all domain users"
+	        "Readable by whoever can read the share the file sits on - in SYSVOL or NETLOGON, every authenticated user"
 	        "Often used to map network drives at user logon"
 	        "May contain service account or shared account credentials"
 	        "Credentials may provide access to file servers or other resources"
 	    )
 	    Attack = @(
-	        "1. Attacker accesses SYSVOL/NETLOGON share"
+	        "1. Attacker reads the scripts on SYSVOL, NETLOGON or a file share"
 	        "2. Searches login scripts for 'net use' with /user: parameter"
 	        "3. Extracts username and password from the command"
 	        "4. Uses credentials to access the target resource"
@@ -11259,15 +11259,15 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Title = "Password Found in Script File"
 	    Risk = "Finding"
 	    BaseScore = 45
-	    Description = "A script file in SYSVOL contains what appears to be a hardcoded password or credential. Scripts in SYSVOL are readable by all authenticated domain users, exposing these credentials to the entire domain."
+	    Description = "A script or configuration file contains what appears to be a hardcoded password or credential. Whoever can read the file can read it: in SYSVOL and NETLOGON every authenticated domain user, on a file share whoever the share and folder permissions allow."
 	    Impact = @(
-	        "Credentials visible to any authenticated domain user"
+	        "Readable by whoever can read the share the file sits on - in SYSVOL or NETLOGON, every authenticated user"
 	        "May be used for service accounts, database connections, or administrative access"
 	        "Scripts often contain credentials for automation purposes"
 	        "Could expose access to critical systems or databases"
 	    )
 	    Attack = @(
-	        "1. Attacker searches SYSVOL for common password patterns"
+	        "1. Attacker searches SYSVOL, NETLOGON and readable file shares for common password patterns"
 	        "2. Reviews scripts for hardcoded credentials"
 	        "3. Identifies context of the credential (database, service, admin)"
 	        "4. Uses credential to access the target resource or system"
@@ -94420,7 +94420,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261022-1241"
+$Script:adPEASVersion = "2.7.0+20261022-1258"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
