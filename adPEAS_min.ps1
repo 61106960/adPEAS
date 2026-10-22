@@ -1,4 +1,5 @@
-﻿$Script:adPEASModules = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
+﻿$Script:adPEASModules = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Shares','Bloodhound')
+$Script:adPEASOptInModules = @('Shares')
 $Script:ExchangeEndpointOrder = @(
     'OWA'
     'ECP'
@@ -3789,6 +3790,13 @@ $Script:PrimaryAttributes = @{
         'siteName'
         'siteSubnets'
         'siteDomainControllers'
+    )
+    ReadableShare = @(
+        'computerName', 'readableShares', 'notFullySearched'
+    )
+    ShareCredential = @(
+        'CredentialType', 'FilePath', 'RegistryValue', 'UnattendSetting', 'VNCHost', 'VNCSetting',
+        'UserName', 'accountInAD', 'Password', 'MatchedLine'
     )
     NetworkSubnet = @(
         'subnet', 'adSubnet', 'computerCount', 'domainControllerCount',
@@ -21425,6 +21433,37 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
     }
+    'ReadableShare' = @{
+        TitleFormat = "Readable Shares: {Name}"
+        Module = "Shares"
+        Category = "Shares"
+        SectionTitle = "Readable Shares"
+        Summary = "Lists the shares of the domain's computers that this account can read."
+        WhyItMatters = "File servers, deployment shares and the shares administrators make for themselves are where scripts and configuration files with credentials end up, and unlike SYSVOL no one reviews who may read them. A share this account can read is a share every account with the same rights can read."
+        WhatWeCheck = @(
+            "Enabled Windows computers with a logon in the last 30 days (-ActiveDays), by DNS name - only a name below the domain's own, since the computer account may write dNSHostName itself; or the computers named with -ComputerName"
+            "Who answers on port 445: one sweep with a deadline per block of hosts rather than per host, so hosts that do not answer cost one timeout per block"
+            "The shares of each, enumerated through NetShareEnum at level 1 - the level an ordinary account may call - in parallel, with one deadline for the pass"
+            "Disk shares only. Left out and counted: the administrative shares (C$, ADMIN$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
+            "Readable means this account can list the root of the share. A listed share it cannot list is counted"
+            "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+        )
+    }
+    'ShareCredential' = @{
+        TitleFormat = "Credential on a Share: {Context}"
+        Module = "Shares"
+        Category = "Shares"
+        SectionTitle = "Credentials on Shares"
+        Summary = "Searches the readable shares for credentials in scripts and configuration files."
+        WhyItMatters = "A password in a script or a configuration file on a share is readable by everyone who can read the share - often far more people than the account it belongs to was meant for, and unlike a password in a vault it is never rotated by anyone who knows it is there."
+        WhatWeCheck = @(
+            "The files of every readable share, walked breadth-first under limits of depth, files, time and size - the files that carry credentials sit near the top of a share"
+            "The file types Get-CredentialExposure reads in SYSVOL - scripts, configuration and answer files - analysed by the same functions: Group Policy Preferences passwords, Winlogon values, answer files, VNC passwords, net use, and password assignments in a line"
+            "An XML file whose structure holds no credential is read as text as well: an application's settings.xml keeps its password in an element no policy parser looks at"
+            "XML is parsed with DTD processing prohibited and no resolver, since a file on a share is written by whoever may write the share"
+            "Files above 1024 KB (-MaxFileSizeKB) are counted, not read"
+        )
+    }
     'NetworkSubnet' = @{
         TitleFormat = "Network Subnet: {Name}"
         Module = "Computer"
@@ -24210,6 +24249,7 @@ function Get-adPEASHelp {
             'GPO'         = "Group Policy Objects"
             'Computer'    = "Computer Security"
             'Application' = "Application Infrastructure"
+            'Shares'      = "Shares"
             'Bloodhound'  = "BloodHound Data"
         }
         $checksByModule = @{}
@@ -39027,7 +39067,7 @@ function Resolve-adPEASModules {
     $selected = if ($Module -and @($Module).Count -gt 0) {
         @($Script:adPEASModules | Where-Object { $_ -in $Module })
     } else {
-        @($Script:adPEASModules)
+        @($Script:adPEASModules | Where-Object { $_ -notin $Script:adPEASOptInModules })
     }
     if ($ExcludeModule -and @($ExcludeModule).Count -gt 0) {
         $selected = @($selected | Where-Object { $_ -notin $ExcludeModule })
@@ -78224,6 +78264,276 @@ function Get-NetworkMap {
         Write-Log "[Get-NetworkMap] Check completed"
     }
 }
+function ConvertTo-UntrustedXml {
+    [CmdletBinding()]
+    [OutputType([xml])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Text
+    )
+    if (-not $Text) { return }
+    $settings = New-Object System.Xml.XmlReaderSettings
+    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver = $null
+    $stringReader = $null
+    $reader = $null
+    try {
+        $stringReader = New-Object System.IO.StringReader $Text
+        $reader = [System.Xml.XmlReader]::Create($stringReader, $settings)
+        $document = New-Object System.Xml.XmlDocument
+        $document.XmlResolver = $null
+        $document.Load($reader)
+        return $document
+    } catch {
+        Write-Log "[ConvertTo-UntrustedXml] Not parsed as XML: $($_.Exception.GetBaseException().Message)"
+        return
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($stringReader) { $stringReader.Dispose() }
+    }
+}
+function Invoke-ShareHunt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory=$false)]
+        [string[]]$ComputerName,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 3650)]
+        [int]$ActiveDays = 30,
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeAdmin,
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeSysvol,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(0, 64)]
+        [int]$MaxDepth = 5,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 10000000)]
+        [int]$MaxEntries = 50000,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 1048576)]
+        [int]$MaxFileSizeKB = 1024,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 86400)]
+        [int]$ShareTimeoutSeconds = 120,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 1440)]
+        [int]$MaxMinutes = 60,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(1, 256)]
+        [int]$ThrottleLimit = 32,
+        [Parameter(Mandatory=$false)]
+        [ValidateRange(50, 60000)]
+        [int]$ConnectTimeoutMs = 1000,
+        [Parameter(Mandatory=$false)]
+        [switch]$OPSEC
+    )
+    begin {
+        Write-Log "[Invoke-ShareHunt] Starting check"
+    }
+    process {
+        try {
+            $connectionParams = @{}
+            if ($PSBoundParameters.ContainsKey('Domain'))     { $connectionParams['Domain'] = $Domain }
+            if ($PSBoundParameters.ContainsKey('Server'))     { $connectionParams['Server'] = $Server }
+            if ($PSBoundParameters.ContainsKey('Credential')) { $connectionParams['Credential'] = $Credential }
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
+                return
+            }
+            Show-SubHeader "Searching for readable shares..." -ObjectType "ReadableShare"
+            if ($OPSEC) {
+                Show-Line "OPSEC mode: Skipping the share hunt (would connect to every computer over SMB)" -Class Hint
+                return
+            }
+            $standalone = ($null -eq $Script:adPEAS_CurrentCheckContext)
+            $outsideDomain = 0
+            $withoutName = 0
+            if ($PSBoundParameters.ContainsKey('ComputerName')) {
+                $targets = @($ComputerName | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ } | Sort-Object -Unique)
+            } else {
+                $domainFQDN = ([string]$Script:LDAPContext.Domain).Trim().TrimEnd('.').ToLowerInvariant()
+                $since = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
+                $computers = @(Get-DomainComputer -Enabled -LDAPFilter "(&(lastLogonTimestamp>=$since)(operatingSystem=Windows*))" `
+                    -Properties 'dNSHostName' @connectionParams)
+                $names = New-Object System.Collections.Generic.List[string]
+                foreach ($computer in $computers) {
+                    $fqdn = ([string]$computer.dNSHostName).Trim().TrimEnd('.').ToLowerInvariant()
+                    if (-not $fqdn) { $withoutName++; continue }
+                    if (-not $fqdn.EndsWith(".$domainFQDN")) { $outsideDomain++; continue }
+                    $names.Add($fqdn)
+                }
+                $targets = @($names | Sort-Object -Unique)
+            }
+            Write-Log "[Invoke-ShareHunt] $($targets.Count) computer(s) to contact"
+            $reachable = @(Test-TcpPortReachable -Target $targets -Port 445 -TimeoutMs $ConnectTimeoutMs |
+                Where-Object { $_.Reachable } | ForEach-Object { $_.Target })
+            $unreachable = $targets.Count - $reachable.Count
+            $listings = @(Get-SMBShareListMany -Target $reachable -ThrottleLimit $ThrottleLimit)
+            $listFailed = @{}
+            $leftOutAdmin = 0
+            $leftOutSysvol = 0
+            $candidates = New-Object System.Collections.Generic.List[object]
+            foreach ($listing in $listings) {
+                if ($listing.Error) {
+                    if (-not $listFailed.ContainsKey($listing.Error)) { $listFailed[$listing.Error] = 0 }
+                    $listFailed[$listing.Error]++
+                    continue
+                }
+                foreach ($share in @($listing.Shares)) {
+                    $verdict = Test-ShareWorthScanning -Name $share.Name -Type $share.Type -IncludeAdmin:$IncludeAdmin -IncludeSysvol:$IncludeSysvol
+                    if (-not $verdict.Scan) {
+                        if ($verdict.Reason -eq 'Administrative share') { $leftOutAdmin++ }
+                        elseif ($verdict.Reason -eq 'Read by Get-CredentialExposure') { $leftOutSysvol++ }
+                        continue
+                    }
+                    $candidates.Add([PSCustomObject]@{
+                        Computer = $listing.ComputerName
+                        Name     = $share.Name
+                        Remark   = $share.Remark
+                        Path     = "\\$($listing.ComputerName)\$($share.Name)"
+                        Walk     = $null
+                    })
+                }
+            }
+            $readable = New-Object System.Collections.Generic.List[object]
+            $notReadable = 0
+            $index = 0
+            foreach ($share in $candidates) {
+                $index++
+                if ($candidates.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Probing shares" -Current $index -Total $candidates.Count -ObjectName $share.Path }
+                if ((Test-SharePathReadable -Path $share.Path).Readable) { $readable.Add($share) } else { $notReadable++ }
+            }
+            if ($candidates.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Probing shares" -Completed }
+            $passDeadline = [DateTime]::UtcNow.AddMinutes($MaxMinutes)
+            $extensions = @('*.xml') + @($Script:CredentialScanExtensions)
+            $index = 0
+            foreach ($share in $readable) {
+                $index++
+                if ($readable.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Walking shares" -Current $index -Total $readable.Count -ObjectName $share.Path }
+                $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
+                if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
+                $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
+                    -MaxEntries $MaxEntries -MaxFileSizeKB $MaxFileSizeKB -Deadline $shareDeadline
+            }
+            if ($readable.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Walking shares" -Completed }
+            if ($outsideDomain -gt 0) {
+                Show-Line "$outsideDomain active computer(s) with a DNS name outside $domainFQDN - not contacted" -Class Note
+            }
+            if ($withoutName -gt 0) {
+                Show-Line "$withoutName active computer(s) without a DNS name (dNSHostName) - not contacted" -Class Note
+            }
+            if ($unreachable -gt 0) {
+                Show-Line "$unreachable of $($targets.Count) computer(s) do not answer on port 445" -Class Note
+            }
+            if ($listFailed.Count -gt 0) {
+                $failedTotal = 0
+                foreach ($value in $listFailed.Values) { $failedTotal += $value }
+                $reasons = @($listFailed.GetEnumerator() | Sort-Object -Property @{ Expression = { $_.Value }; Descending = $true }, @{ Expression = { [string]$_.Key }; Descending = $false } |
+                    ForEach-Object { "$($_.Value) $($_.Key)" })
+                Show-Line "$failedTotal computer(s) did not list their shares: $($reasons -join ', ')" -Class Note
+            }
+            if ($leftOutAdmin -gt 0) {
+                $text = "$leftOutAdmin administrative share(s) left out"
+                if ($standalone -and -not $IncludeAdmin) { $text += ' (-IncludeAdmin to search them)' }
+                Show-Line $text -Class Note
+            }
+            if ($leftOutSysvol -gt 0) {
+                $text = "$leftOutSysvol SYSVOL and NETLOGON share(s) left out - Get-CredentialExposure reads them"
+                if ($standalone -and -not $IncludeSysvol) { $text += ' (-IncludeSysvol to search them here)' }
+                Show-Line $text -Class Note
+            }
+            if ($notReadable -gt 0) {
+                Show-Line "$notReadable share(s) are listed but cannot be read by this account" -Class Note
+            }
+            if ($readable.Count -eq 0) {
+                Show-Line "No readable share found" -Class Note
+                return
+            }
+            $byComputer = @($readable | Group-Object -Property Computer | Sort-Object -Property Name)
+            Show-Line "Found $($readable.Count) readable share(s) on $($byComputer.Count) computer(s):" -Class Note
+            foreach ($group in $byComputer) {
+                $shares = @($group.Group | Sort-Object -Property Name)
+                $hostObject = [PSCustomObject][ordered]@{
+                    Name           = $group.Name
+                    computerName   = $group.Name
+                    readableShares = @($shares | ForEach-Object { if ($_.Remark) { "$($_.Path) ($($_.Remark))" } else { $_.Path } })
+                }
+                $incomplete = @(foreach ($share in $shares) {
+                    $parts = @()
+                    if ($share.Walk.Truncated) { $parts += "stopped at $($share.Walk.Truncated)" }
+                    if ($share.Walk.Denied -gt 0) { $parts += "$($share.Walk.Denied) folder(s) not readable" }
+                    if ($parts.Count -gt 0) { "$($share.Path): $($parts -join ', ')" }
+                })
+                if ($incomplete.Count -gt 0) {
+                    $hostObject | Add-Member -NotePropertyName 'notFullySearched' -NotePropertyValue $incomplete -Force
+                }
+                $hostObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ReadableShare' -Force
+                Show-Object $hostObject -Class Note
+            }
+            Show-SubHeader "Searching readable shares for credentials..." -ObjectType "ShareCredential"
+            $unreadable = 0
+            $tooLarge = 0
+            $results = New-Object System.Collections.Generic.List[object]
+            foreach ($share in $readable) {
+                $tooLarge += [int]$share.Walk.SkippedLarge
+                foreach ($file in @($share.Walk.Files)) {
+                    try {
+                        $found = @()
+                        if ($file.Extension -ieq '.xml') {
+                            $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop
+                            $document = ConvertTo-UntrustedXml -Text $text
+                            if ($document) {
+                                $found = @(Find-XmlFileCredential -XmlContent $document -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
+                            }
+                            if ($found.Count -eq 0) {
+                                $found = @(Find-ScriptFileCredential -Content $text -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
+                            }
+                        } else {
+                            $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop
+                            if ($file.Extension -ieq '.vbe') { $text = ConvertFrom-VBE -EncodedScript $text }
+                            $found = @(Find-ScriptFileCredential -Content $text -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
+                        }
+                        foreach ($one in $found) { $results.Add($one) }
+                    } catch {
+                        $unreadable++
+                        Write-Log "[Invoke-ShareHunt] $($file.FullName) could not be read: $($_.Exception.Message)"
+                    }
+                }
+            }
+            if ($unreadable -gt 0) {
+                Show-Line "$unreadable file(s) could not be read" -Class Note
+            }
+            if ($tooLarge -gt 0) {
+                Show-Line "$tooLarge file(s) over $MaxFileSizeKB KB not read" -Class Note
+            }
+            if ($results.Count -eq 0) {
+                Show-Line "No credentials found in $($readable.Count) readable share(s)" -Class Note
+                return
+            }
+            foreach ($result in $results) {
+                $credObj = $result.Credential
+                Show-Line $result.Headline -Class $result.Class
+                $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ShareCredential' -Force
+                $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $result.Context -Force
+                Show-Object $credObj -Class $result.Class
+            }
+        } catch {
+            Write-Log "[Invoke-ShareHunt] Error: $_" -Level Error
+            Show-Line "Error during check - the shares could not be searched: $_" -Class Finding
+        }
+    }
+    end {
+        Write-Log "[Invoke-ShareHunt] Check completed"
+    }
+}
 function Get-GPOPermissions {
     [CmdletBinding()]
     param(
@@ -97510,7 +97820,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261022-1258"
+$Script:adPEASVersion = "2.7.0+20261022-1328"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -97546,10 +97856,10 @@ function Invoke-adPEAS {
         [Parameter(Mandatory=$false)]
         [string]$Outputfile,
         [Parameter(Mandatory=$false)]
-        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Bloodhound")]
+        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Shares","Bloodhound")]
         [string[]]$Module,
         [Parameter(Mandatory=$false)]
-        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Bloodhound")]
+        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Shares","Bloodhound")]
         [string[]]$ExcludeModule,
         [Parameter(Mandatory=$false)]
         [switch]$OPSEC,
@@ -97801,6 +98111,7 @@ try {
         'ADCS'       = "Certificate Services"
         'Application'= "Application Infrastructure"
         'Creds'      = "Credential Exposure"
+        'Shares'     = "Shares"
         'Bloodhound' = "BloodHound Data"
     }
     $appendCachePath = if ($basePath) { "$basePath.json" } else { $null }
@@ -98049,6 +98360,18 @@ try {
         }
         Exit-StatisticsModule 'Application'
         Save-FindingsCheckpoint -ModuleName 'Application'
+    }
+    if ($Module -contains 'Shares') {
+        $moduleCounter++
+        Enter-StatisticsModule 'Shares'
+        Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Shares'])"
+        try {
+            Invoke-CheckWithContext -Category 'Shares' -CheckName 'Invoke-ShareHunt' -Title 'Readable Shares' -Check { Invoke-ShareHunt -OPSEC:$OPSEC }
+        } catch {
+            Write-Warning "[adPEAS] Error executing Shares Module: $_"
+        }
+        Exit-StatisticsModule 'Shares'
+        Save-FindingsCheckpoint -ModuleName 'Shares'
     }
     if ($Module -contains 'Bloodhound') {
         $moduleCounter++

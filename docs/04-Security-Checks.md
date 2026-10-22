@@ -97,7 +97,10 @@ A disabled account that carries an SPN, or delegation, is still worth knowing ab
 
 ## Overview
 
-adPEAS performs 43+ security checks organized into 9 categories:
+adPEAS performs 43+ security checks organized into 10 categories. Every module runs by
+default except **Shares**, which has to be asked for by name (`-Module Shares`): it opens
+an SMB connection to every Windows computer of the domain, which is a decision for whoever
+runs the scan.
 
 | Module        | Checks | Description                               |
 | ------------- | ------ | ----------------------------------------- |
@@ -110,6 +113,7 @@ adPEAS performs 43+ security checks organized into 9 categories:
 | GPO           | 4      | Group Policy security                     |
 | Computer      | 6      | Computer account security                 |
 | Application   | 3      | Enterprise application infrastructure     |
+| Shares        | 1      | Readable shares and the credentials on them (opt-in) |
 
 ---
 
@@ -1587,6 +1591,66 @@ Get-SCCMInfrastructure
 **Usage**:
 ```powershell
 Get-SCOMInfrastructure
+```
+
+---
+
+## Shares Module
+
+Searches the shares of the domain's computers. **Not part of a default scan** - run it with
+`-Module Shares`, or call `Invoke-ShareHunt` directly.
+
+### Invoke-ShareHunt
+
+**Purpose**: Finds the shares this account can read and searches them for credentials.
+
+**Why it is not in a default scan**: it opens an SMB connection to every Windows computer
+of the domain and reads files off the shares it finds. That is the loudest thing adPEAS
+does, and a monitored network will notice it, so it is a decision for whoever runs the scan
+rather than a default. `-OPSEC` skips it entirely.
+
+**What it does**, in four steps, each bounded so a large domain finishes:
+
+1. **The computers**: enabled Windows computers with a logon in the last 30 days
+   (`-ActiveDays`), by `dNSHostName` - only a name below the domain's own DNS name, since
+   the computer account may write that attribute itself. Or the computers named with
+   `-ComputerName`.
+2. **Who answers on port 445**: one sweep with a deadline per *block* of hosts rather than
+   per host, so a few hundred dead addresses cost one timeout each block instead of one
+   each.
+3. **Their shares**, enumerated through `NetShareEnum` at level 1 - the level an ordinary
+   account may call - in a runspace pool with one deadline for the whole pass, because a
+   host that completes the TCP handshake and then stalls the RPC call would otherwise block
+   for tens of seconds. Of those, the shares worth reading: disk shares only, without the
+   administrative ones (`-IncludeAdmin`) and without SYSVOL and NETLOGON, which
+   `Get-CredentialExposure` reads with the policy each file belongs to (`-IncludeSysvol`).
+   Each is probed for whether this account can list its root.
+4. **The readable shares**, walked breadth-first - the files that carry credentials sit near
+   the top of a share - under four limits: depth 5 (`-MaxDepth`), 50000 files
+   (`-MaxEntries`), 120 seconds per share (`-ShareTimeoutSeconds`) and 60 minutes for all
+   of them together (`-MaxMinutes`). Files over 1024 KB (`-MaxFileSizeKB`) are counted, not
+   read. Every candidate file is analysed by the same functions the SYSVOL scan uses, so a
+   Group Policy Preferences password, a Winlogon value, an answer file, a VNC password, a
+   `net use` line and a password assignment are found the same way here as there.
+
+**What it says about what it did not cover**: every limit reached and everything left out is
+counted - computers outside the domain's name or without one, hosts that do not answer,
+hosts that did not list their shares and why, administrative and SYSVOL shares, shares it
+may list but not read, files it could not read, and files over the size limit. A share whose
+walk was stopped carries `notFullySearched` with the reason; a share without that row was
+walked to its end. The all-clear is a note, never "secure": a share is read only as far as
+this account and the limits allowed.
+
+**Security Impact**: a password in a script or configuration file on a share is readable by
+everyone who can read the share - usually far more people than the account it belongs to was
+meant for - and unlike SYSVOL nobody reviews who that is.
+
+**Usage**:
+```powershell
+Invoke-ShareHunt
+Invoke-ShareHunt -ComputerName fs01.contoso.com, fs02.contoso.com -MaxDepth 8
+Invoke-ShareHunt -ActiveDays 14 -MaxMinutes 20
+Invoke-adPEAS -Module Shares
 ```
 
 ---

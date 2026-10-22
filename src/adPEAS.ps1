@@ -261,6 +261,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Computer\Get-NonDefaultComputerOwners.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-ComputerPasswordAge.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-NetworkMap.ps1"
+    . "$Script:ScriptPath\modules\Checks\Shares\Invoke-ShareHunt.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOPermissions.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOLocalGroupMembership.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOScheduledTasks.ps1"
@@ -493,13 +494,13 @@ function Invoke-adPEAS {
         [string]$Outputfile,
 
         [Parameter(Mandatory=$false)]
-        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Bloodhound")]
+        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Shares","Bloodhound")]
         [string[]]$Module,
 
         # The literal list is duplicated from $Script:adPEASModules because a ValidateSet
         # argument has to be a literal. ModuleParameters.Tests.ps1 asserts they agree.
         [Parameter(Mandatory=$false)]
-        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Bloodhound")]
+        [ValidateSet("Domain","Creds","Rights","Delegation","ADCS","Accounts","GPO","Computer","Application","Shares","Bloodhound")]
         [string[]]$ExcludeModule,
 
         [Parameter(Mandatory=$false)]
@@ -901,6 +902,7 @@ try {
         'ADCS'       = "Certificate Services"
         'Application'= "Application Infrastructure"
         'Creds'      = "Credential Exposure"
+        'Shares'     = "Shares"
         'Bloodhound' = "BloodHound Data"
     }
 
@@ -1235,6 +1237,20 @@ try {
         }
         Exit-StatisticsModule 'Application'
         Save-FindingsCheckpoint -ModuleName 'Application'
+    }
+
+    # Shares Module - opt-in: -Module Shares. See $Script:adPEASOptInModules.
+    if ($Module -contains 'Shares') {
+        $moduleCounter++
+        Enter-StatisticsModule 'Shares'
+        Show-Header "[$moduleCounter/$moduleTotal] Analyzing $($Script:ModuleCategoryHeaders['Shares'])"
+        try {
+            Invoke-CheckWithContext -Category 'Shares' -CheckName 'Invoke-ShareHunt' -Title 'Readable Shares' -Check { Invoke-ShareHunt -OPSEC:$OPSEC }
+        } catch {
+            Write-Warning "[adPEAS] Error executing Shares Module: $_"
+        }
+        Exit-StatisticsModule 'Shares'
+        Save-FindingsCheckpoint -ModuleName 'Shares'
     }
 
     # Bloodhound Module (excluded from $Module above when -OPSEC is set)

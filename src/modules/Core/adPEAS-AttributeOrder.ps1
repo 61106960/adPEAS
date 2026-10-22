@@ -372,6 +372,20 @@ $Script:PrimaryAttributes = @{
         'siteDomainControllers'
     )
 
+    # Readable shares, one object per computer (Invoke-ShareHunt). Name carries the
+    # computer for the HTML title and is not a row.
+    ReadableShare = @(
+        'computerName', 'readableShares', 'notFullySearched'
+    )
+
+    # A credential found on a share (Invoke-ShareHunt): the rows of GPPCredential and
+    # SYSVOLCredential together, without the policy rows - a file on a share belongs to
+    # no policy.
+    ShareCredential = @(
+        'CredentialType', 'FilePath', 'RegistryValue', 'UnattendSetting', 'VNCHost', 'VNCSetting',
+        'UserName', 'accountInAD', 'Password', 'MatchedLine'
+    )
+
     # Network map, one object per /24 subnet (Get-NetworkMap). Name carries the subnet
     # for the HTML title and is not a row.
     NetworkSubnet = @(

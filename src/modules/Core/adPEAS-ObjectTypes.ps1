@@ -171,6 +171,39 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "All domain trusts are properly secured with SID filtering enabled and appropriate authentication settings. No misconfigured or overly permissive trusts were found."
     }
 
+    'ReadableShare' = @{
+        TitleFormat = "Readable Shares: {Name}"
+        Module = "Shares"
+        Category = "Shares"
+        SectionTitle = "Readable Shares"
+        Summary = "Lists the shares of the domain's computers that this account can read."
+        WhyItMatters = "File servers, deployment shares and the shares administrators make for themselves are where scripts and configuration files with credentials end up, and unlike SYSVOL no one reviews who may read them. A share this account can read is a share every account with the same rights can read."
+        WhatWeCheck = @(
+            "Enabled Windows computers with a logon in the last 30 days (-ActiveDays), by DNS name - only a name below the domain's own, since the computer account may write dNSHostName itself; or the computers named with -ComputerName"
+            "Who answers on port 445: one sweep with a deadline per block of hosts rather than per host, so hosts that do not answer cost one timeout per block"
+            "The shares of each, enumerated through NetShareEnum at level 1 - the level an ordinary account may call - in parallel, with one deadline for the pass"
+            "Disk shares only. Left out and counted: the administrative shares (C$, ADMIN$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
+            "Readable means this account can list the root of the share. A listed share it cannot list is counted"
+            "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+        )
+    }
+
+    'ShareCredential' = @{
+        TitleFormat = "Credential on a Share: {Context}"
+        Module = "Shares"
+        Category = "Shares"
+        SectionTitle = "Credentials on Shares"
+        Summary = "Searches the readable shares for credentials in scripts and configuration files."
+        WhyItMatters = "A password in a script or a configuration file on a share is readable by everyone who can read the share - often far more people than the account it belongs to was meant for, and unlike a password in a vault it is never rotated by anyone who knows it is there."
+        WhatWeCheck = @(
+            "The files of every readable share, walked breadth-first under limits of depth, files, time and size - the files that carry credentials sit near the top of a share"
+            "The file types Get-CredentialExposure reads in SYSVOL - scripts, configuration and answer files - analysed by the same functions: Group Policy Preferences passwords, Winlogon values, answer files, VNC passwords, net use, and password assignments in a line"
+            "An XML file whose structure holds no credential is read as text as well: an application's settings.xml keeps its password in an element no policy parser looks at"
+            "XML is parsed with DTD processing prohibited and no resolver, since a file on a share is written by whoever may write the share"
+            "Files above 1024 KB (-MaxFileSizeKB) are counted, not read"
+        )
+    }
+
     'NetworkSubnet' = @{
         TitleFormat = "Network Subnet: {Name}"
         Module = "Computer"

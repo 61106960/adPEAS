@@ -24,7 +24,8 @@ function Resolve-adPEASModules {
     report, not this function's - it has no opinion on whether an empty run is a mistake.
 
     .PARAMETER Module
-    The modules to run. Empty or absent means all of them.
+    The modules to run. Empty or absent means all of them except the ones in
+    $Script:adPEASOptInModules, which have to be named to run.
 
     .PARAMETER ExcludeModule
     Modules to drop from that selection. A name that is not in the selection anyway is
@@ -33,7 +34,12 @@ function Resolve-adPEASModules {
     .EXAMPLE
     Resolve-adPEASModules -ExcludeModule 'Bloodhound'
 
-    Every module except BloodHound.
+    Every module except BloodHound and the opt-in ones.
+
+    .EXAMPLE
+    Resolve-adPEASModules -Module 'Shares'
+
+    The share hunt, which a scan runs only when it is asked for by name.
 
     .EXAMPLE
     Resolve-adPEASModules -Module 'GPO','Domain'
@@ -57,10 +63,13 @@ function Resolve-adPEASModules {
         [string[]]$ExcludeModule
     )
 
+    # Without a selection: every module except the ones that have to be asked for by name
+    # ($Script:adPEASOptInModules). With a selection, the list is honoured as given - an
+    # opt-in module named explicitly is exactly how it is meant to be selected.
     $selected = if ($Module -and @($Module).Count -gt 0) {
         @($Script:adPEASModules | Where-Object { $_ -in $Module })
     } else {
-        @($Script:adPEASModules)
+        @($Script:adPEASModules | Where-Object { $_ -notin $Script:adPEASOptInModules })
     }
 
     if ($ExcludeModule -and @($ExcludeModule).Count -gt 0) {

@@ -31,7 +31,17 @@
 # -ExcludeModule: an attribute argument has to be a literal. ModuleParameters.Tests.ps1
 # asserts the two agree, which is the drift this would otherwise invite.
 
-$Script:adPEASModules = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Bloodhound')
+$Script:adPEASModules = @('Domain','Creds','Rights','Delegation','ADCS','Accounts','GPO','Computer','Application','Shares','Bloodhound')
+
+# The modules a scan runs only when it is asked for them by name. Everything else runs by
+# default, so this list is what keeps a module out of the default pass without taking it
+# out of -Module.
+#
+# Shares is one because of what it does rather than how long it takes: it opens an SMB
+# connection to every Windows computer of the domain and reads files off the shares it
+# finds. That is a decision for whoever runs the scan, not a default - and it is the one
+# check whose traffic a monitored network will notice.
+$Script:adPEASOptInModules = @('Shares')
 
 # =============================================================================
 # EXCHANGE WEB ENDPOINTS - Central Definition

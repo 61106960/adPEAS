@@ -1701,6 +1701,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   NETLOGON is every authenticated user - and still names SYSVOL as where such a file
   usually is.
 
+- **New check `Invoke-ShareHunt`, in a new opt-in module `Shares`: the readable shares of
+  the domain's computers, and the credentials on them.** `Get-CredentialExposure` reads
+  SYSVOL and NETLOGON. The file servers, the deployment shares and the shares
+  administrators make for themselves are where scripts and configuration files with
+  credentials end up just as often, and unlike SYSVOL nobody reviews who may read them -
+  and nothing in adPEAS looked there. The check takes the enabled Windows computers with a
+  logon in the last 30 days (`-ActiveDays`), asks who answers on port 445, enumerates their
+  shares, and searches the ones this account can read. Every candidate file goes through the
+  same two functions the SYSVOL scan uses, so a Group Policy Preferences password, a
+  Winlogon value, an answer file, a VNC password, a `net use` line and a password assignment
+  are found the same way here as there; an XML file whose structure holds no credential is
+  read as text as well, because an application's `settings.xml` keeps its password in an
+  element no policy parser looks at, and XML off a share is parsed with DTD processing
+  prohibited and no resolver. Bounded throughout: the port sweep has one deadline per block
+  of hosts rather than per host, the share enumeration one deadline for the whole pass, and
+  each walk a limit on depth, files, time and file size, with 60 minutes for all walks
+  together. Everything left out is counted and said, and the all-clear is a note rather than
+  "secure" - a share is read only as far as this account and the limits allowed.
+  `-IncludeAdmin` and `-IncludeSysvol` widen it, `-ComputerName` replaces the domain query,
+  and `-OPSEC` skips the check.
+
+  The module is **not part of a default scan**: `Invoke-adPEAS -Module Shares` runs it. It
+  opens an SMB connection to every Windows computer of the domain, which is a decision for
+  whoever runs the scan rather than a default. `Resolve-adPEASModules` honours a new
+  `$Script:adPEASOptInModules` for that, so the module is out of the default pass without
+  being out of `-Module`.
+
 ---
 
 ## [2.7.0] - 2026-10-08

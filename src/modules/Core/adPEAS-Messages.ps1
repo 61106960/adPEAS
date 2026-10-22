@@ -1654,6 +1654,7 @@ function Get-adPEASHelp {
             'GPO'         = "Group Policy Objects"
             'Computer'    = "Computer Security"
             'Application' = "Application Infrastructure"
+            'Shares'      = "Shares"
             'Bloodhound'  = "BloodHound Data"
         }
 
