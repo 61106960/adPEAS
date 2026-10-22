@@ -58923,6 +58923,206 @@ function Test-RemoteAdminAccess {
 	    return ,$results
 	}
 }
+function Start-TcpConnectAttempt {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$Target,
+	    [Parameter(Mandatory = $true)]
+	    [int]$Port
+	)
+	$client = New-Object System.Net.Sockets.TcpClient
+	$handle = $null
+	try {
+	    $handle = $client.BeginConnect($Target, $Port, $null, $null)
+	} finally {
+	    if (-not $handle) { try { $client.Close() } catch { } }
+	}
+	return [PSCustomObject]@{ Client = $client; Handle = $handle }
+}
+function Test-TcpPortReachable {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyCollection()]
+	    [AllowEmptyString()]
+	    [AllowNull()]
+	    [string[]]$Target,
+	    [Parameter(Mandatory = $false)]
+	    [ValidateRange(1, 65535)]
+	    [int]$Port = 445,
+	    [Parameter(Mandatory = $false)]
+	    [ValidateRange(50, 60000)]
+	    [int]$TimeoutMs = 1000,
+	    [Parameter(Mandatory = $false)]
+	    [ValidateRange(1, 1024)]
+	    [int]$BatchSize = 256
+	)
+	$targets = @($Target | Where-Object { $_ })
+	for ($offset = 0; $offset -lt $targets.Count; $offset += $BatchSize) {
+	    $last = [Math]::Min($offset + $BatchSize, $targets.Count) - 1
+	    $pending = New-Object System.Collections.Generic.List[object]
+	    foreach ($one in $targets[$offset..$last]) {
+	        try {
+	            $attempt = Start-TcpConnectAttempt -Target $one -Port $Port
+	            $pending.Add([PSCustomObject]@{ Target = $one; Client = $attempt.Client; Handle = $attempt.Handle })
+	        } catch {
+	            [PSCustomObject]@{ Target = $one; Reachable = $false }
+	        }
+	    }
+	    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+	    foreach ($entry in $pending) {
+	        $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+	        if ($left -lt 0) { $left = 0 }
+	        $done = $false
+	        try { $done = $entry.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
+	        $reachable = $false
+	        if ($done) {
+	            try { $entry.Client.EndConnect($entry.Handle); $reachable = $true } catch { }
+	        }
+	        try { $entry.Client.Close() } catch { }
+	        try { $entry.Client.Dispose() } catch { }
+	        [PSCustomObject]@{ Target = $entry.Target; Reachable = $reachable }
+	    }
+	}
+}
+function ConvertFrom-ShareType {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [uint32]$Type
+	)
+	$kind = switch ([long]$Type -band 0x0FL) {
+	    0 { 'Disk' }
+	    1 { 'Print' }
+	    2 { 'Device' }
+	    3 { 'IPC' }
+	    default { "Unknown ($([long]$Type -band 0x0FL))" }
+	}
+	return [PSCustomObject]@{
+	    Kind        = $kind
+	    IsSpecial   = (([long]$Type -band 0x80000000L) -ne 0)
+	    IsTemporary = (([long]$Type -band 0x40000000L) -ne 0)
+	}
+}
+function Test-ShareWorthScanning {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [string]$Name,
+	    [Parameter(Mandatory = $true)]
+	    [uint32]$Type,
+	    [Parameter(Mandatory = $false)]
+	    [switch]$IncludeAdmin,
+	    [Parameter(Mandatory = $false)]
+	    [switch]$IncludeSysvol
+	)
+	$decoded = ConvertFrom-ShareType -Type $Type
+	$trimmed = ([string]$Name).Trim()
+	if (-not $trimmed) {
+	    return [PSCustomObject]@{ Scan = $false; Reason = 'No share name' }
+	}
+	if ($decoded.Kind -ne 'Disk') {
+	    return [PSCustomObject]@{ Scan = $false; Reason = "Not a file share ($($decoded.Kind))" }
+	}
+	if (-not $IncludeAdmin) {
+	    if ($decoded.IsSpecial -or $trimmed.EndsWith('$')) {
+	        return [PSCustomObject]@{ Scan = $false; Reason = 'Administrative share' }
+	    }
+	}
+	if (-not $IncludeSysvol -and ($trimmed -ieq 'SYSVOL' -or $trimmed -ieq 'NETLOGON')) {
+	    return [PSCustomObject]@{ Scan = $false; Reason = 'Read by Get-CredentialExposure' }
+	}
+	return [PSCustomObject]@{ Scan = $true; Reason = $null }
+}
+function Get-SMBShareList {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$ComputerName
+	)
+	if (-not ([System.Management.Automation.PSTypeName]'adPEAS.NativeMethods.Shares').Type) {
+	    $shareCode = @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace adPEAS.NativeMethods
+{
+    public class Shares
+    {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct SHARE_INFO_1
+        {
+            [MarshalAs(UnmanagedType.LPWStr)] public string netname;
+            public uint type;
+            [MarshalAs(UnmanagedType.LPWStr)] public string remark;
+        }
+
+        [DllImport("netapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern int NetShareEnum(
+            string servername,
+            int level,
+            out IntPtr bufptr,
+            int prefmaxlen,
+            out int entriesread,
+            out int totalentries,
+            ref int resume_handle);
+
+        [DllImport("netapi32.dll")]
+        public static extern int NetApiBufferFree(IntPtr buffer);
+    }
+}
+'@
+	    try {
+	        Add-Type -TypeDefinition $shareCode -Language CSharp -ErrorAction Stop
+	    } catch {
+	        if ($_.Exception.Message -notmatch 'already exists') {
+	            return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = @(); Error = "P/Invoke types could not be compiled: $($_.Exception.Message)" }
+	        }
+	    }
+	}
+	$buffer = [IntPtr]::Zero
+	$read = 0
+	$total = 0
+	$resume = 0
+	$shares = New-Object System.Collections.Generic.List[object]
+	try {
+	    $result = [adPEAS.NativeMethods.Shares]::NetShareEnum($ComputerName, 1, [ref]$buffer, -1, [ref]$read, [ref]$total, [ref]$resume)
+	    if ($result -ne 0) {
+	        $reason = switch ($result) {
+	            5     { 'Access denied' }
+	            53    { 'Host not reachable over SMB' }
+	            2114  { 'The Server service is not running' }
+	            1722  { 'The RPC server is unavailable' }
+	            default { "NetShareEnum failed with Win32 error $result" }
+	        }
+	        return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = @(); Error = $reason }
+	    }
+	    $entrySize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][adPEAS.NativeMethods.Shares+SHARE_INFO_1])
+	    for ($i = 0; $i -lt $read; $i++) {
+	        $entryPtr = [IntPtr]([long]$buffer + ($i * $entrySize))
+	        $entry = [System.Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [type][adPEAS.NativeMethods.Shares+SHARE_INFO_1])
+	        $shares.Add([PSCustomObject]@{
+	            Name   = [string]$entry.netname
+	            Type   = [uint32]$entry.type
+	            Remark = [string]$entry.remark
+	        })
+	    }
+	    return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = $shares.ToArray(); Error = $null }
+	} catch {
+	    return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = @(); Error = "Could not be enumerated: $($_.Exception.Message)" }
+	} finally {
+	    if ($buffer -ne [IntPtr]::Zero) {
+	        [void][adPEAS.NativeMethods.Shares]::NetApiBufferFree($buffer)
+	    }
+	}
+}
 function Invoke-RBCDOperation {
 	[CmdletBinding()]
 	param(
@@ -93997,7 +94197,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.7.0+20261022-1104"
+$Script:adPEASVersion = "2.7.0+20261022-1144"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
