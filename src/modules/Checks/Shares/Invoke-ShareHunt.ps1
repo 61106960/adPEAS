@@ -130,6 +130,12 @@ function Invoke-ShareHunt {
     .PARAMETER ConnectTimeoutMs
     The deadline of one block of the port sweep. Default: 1000.
 
+    .PARAMETER ListSharesOnly
+    Lists the shares and stops there: no file is read and no credential is searched for.
+    What it is for is the first pass over an unknown domain - the list of shares this
+    account can reach is the answer to "where would I even look", and it comes back in the
+    time the sweep and the enumeration take, without the walks.
+
     .PARAMETER OPSEC
     Skips the check.
 
@@ -141,6 +147,10 @@ function Invoke-ShareHunt {
 
     .EXAMPLE
     Invoke-ShareHunt -ActiveDays 14 -MaxMinutes 20
+
+    .EXAMPLE
+    Invoke-ShareHunt -ListSharesOnly
+    The readable shares of the domain, without reading a file in them.
 
     .NOTES
     Category: Shares
@@ -200,6 +210,9 @@ function Invoke-ShareHunt {
         [int]$ConnectTimeoutMs = 1000,
 
         [Parameter(Mandatory=$false)]
+        [switch]$ListSharesOnly,
+
+        [Parameter(Mandatory=$false)]
         [switch]$OPSEC
     )
 
@@ -243,6 +256,10 @@ function Invoke-ShareHunt {
                 $since = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
                 # Only the attribute the sweep needs: nothing of the computer objects is
                 # shown, so the -Properties rule for displayed objects does not apply.
+                # Announced before the query rather than after it: on a large domain this
+                # is the first thing that takes time, and a check that has printed nothing
+                # yet is indistinguishable from one that is stuck.
+                Show-Progress -Activity 'Share hunt' -Current 1 -Total 1 -Status 'Looking for the active computers of the domain'
                 $computers = @(Get-DomainComputer -Enabled -LDAPFilter "(&(lastLogonTimestamp>=$since)(operatingSystem=Windows*))" `
                     -Properties 'dNSHostName' @connectionParams)
                 $names = New-Object System.Collections.Generic.List[string]
@@ -259,12 +276,37 @@ function Invoke-ShareHunt {
             Write-Log "[Invoke-ShareHunt] $($targets.Count) computer(s) to contact"
 
             # ===== Who answers on 445 =====
-            $reachable = @(Test-TcpPortReachable -Target $targets -Port 445 -TimeoutMs $ConnectTimeoutMs |
-                Where-Object { $_.Reachable } | ForEach-Object { $_.Target })
+            # Swept a block at a time rather than in one call, only so that the count can
+            # be shown as it goes: the sweep works in blocks of this size either way, so
+            # the result and the cost are the same.
+            $sweepBatch = 256
+            $reachableList = New-Object System.Collections.Generic.List[string]
+            for ($offset = 0; $offset -lt $targets.Count; $offset += $sweepBatch) {
+                Show-Progress -Activity 'Share hunt' -Current $offset -Total $targets.Count `
+                    -Status "Checking port 445: $offset of $($targets.Count) computer(s), $($reachableList.Count) answering"
+                $last = [Math]::Min($offset + $sweepBatch, $targets.Count) - 1
+                foreach ($answer in @(Test-TcpPortReachable -Target $targets[$offset..$last] -Port 445 -TimeoutMs $ConnectTimeoutMs -BatchSize $sweepBatch)) {
+                    if ($answer.Reachable) { $reachableList.Add($answer.Target) }
+                }
+            }
+            $reachable = @($reachableList)
             $unreachable = $targets.Count - $reachable.Count
+            Write-Log "[Invoke-ShareHunt] $($reachable.Count) of $($targets.Count) computer(s) answer on port 445"
 
             # ===== Their shares, and the ones worth reading =====
-            $listings = @(Get-SMBShareListMany -Target $reachable -ThrottleLimit $ThrottleLimit)
+            # In chunks of a few pool loads, again so the count advances - and a stalled
+            # host then costs its chunk's deadline rather than the whole pass's. The pool
+            # is opened once per chunk, which is why the chunk is several loads and not one.
+            $listingChunk = [Math]::Max(1, $ThrottleLimit) * 4
+            $listings = New-Object System.Collections.Generic.List[object]
+            for ($offset = 0; $offset -lt $reachable.Count; $offset += $listingChunk) {
+                Show-Progress -Activity 'Share hunt' -Current $offset -Total $reachable.Count `
+                    -Status "Enumerating shares: $offset of $($reachable.Count) computer(s)"
+                $last = [Math]::Min($offset + $listingChunk, $reachable.Count) - 1
+                foreach ($listing in @(Get-SMBShareListMany -Target $reachable[$offset..$last] -ThrottleLimit $ThrottleLimit)) {
+                    $listings.Add($listing)
+                }
+            }
             $listFailed = @{}
             $leftOutAdmin = 0
             $leftOutSysvol = 0
@@ -297,12 +339,16 @@ function Invoke-ShareHunt {
             $readable = New-Object System.Collections.Generic.List[object]
             $notReadable = 0
             $index = 0
+            # No threshold on the count here: one share on an unresponsive host can take
+            # as long as thirty on a healthy one, and the point of the display is to say
+            # which host is being waited for.
             foreach ($share in $candidates) {
                 $index++
-                if ($candidates.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Probing shares" -Current $index -Total $candidates.Count -ObjectName $share.Path }
+                Show-Progress -Activity 'Share hunt' -Current $index -Total $candidates.Count `
+                    -Status "Probing share $index of $($candidates.Count)" -ObjectName $share.Path
                 if ((Test-SharePathReadable -Path $share.Path).Readable) { $readable.Add($share) } else { $notReadable++ }
             }
-            if ($candidates.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Probing shares" -Completed }
+            Write-Log "[Invoke-ShareHunt] $($readable.Count) of $($candidates.Count) share(s) can be read"
 
             # ===== The walks =====
             # One budget for every walk together, as well as one per share: the per-share
@@ -311,15 +357,20 @@ function Invoke-ShareHunt {
             $passDeadline = [DateTime]::UtcNow.AddMinutes($MaxMinutes)
             $extensions = @('*.xml') + @($Script:CredentialScanExtensions)
             $index = 0
-            foreach ($share in $readable) {
-                $index++
-                if ($readable.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Walking shares" -Current $index -Total $readable.Count -ObjectName $share.Path }
-                $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
-                if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
-                $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
-                    -MaxEntries $MaxEntries -MaxFileSizeKB $MaxFileSizeKB -Deadline $shareDeadline
+            if (-not $ListSharesOnly) {
+                foreach ($share in $readable) {
+                    $index++
+                    # Every share, whatever the count: one of them may take the full
+                    # per-share budget on its own.
+                    Show-Progress -Activity 'Share hunt' -Current $index -Total $readable.Count `
+                        -Status "Searching share $index of $($readable.Count)" -ObjectName $share.Path
+                    $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
+                    if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
+                    $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
+                        -MaxEntries $MaxEntries -MaxFileSizeKB $MaxFileSizeKB -Deadline $shareDeadline
+                }
             }
-            if ($readable.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Walking shares" -Completed }
+            Show-Progress -Activity 'Share hunt' -Completed
 
             # ===== Output: what was left out, then the readable shares =====
             if ($outsideDomain -gt 0) {
@@ -369,6 +420,9 @@ function Invoke-ShareHunt {
                 }
                 # What the walk could not cover, share by share: a limit it reached, or
                 # folders it could not open. Short; the section help says what each means.
+                # With -ListSharesOnly there is no walk to report on, and nothing here has
+                # to say so: reading a property of $null answers $null and "$null -gt 0" is
+                # false, so a share without a walk contributes no part and gets no row.
                 $incomplete = @(foreach ($share in $shares) {
                     $parts = @()
                     if ($share.Walk.Truncated) { $parts += "stopped at $($share.Walk.Truncated)" }
@@ -380,6 +434,14 @@ function Invoke-ShareHunt {
                 }
                 $hostObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ReadableShare' -Force
                 Show-Object $hostObject -Class Note
+            }
+
+            if ($ListSharesOnly) {
+                # Said as a note rather than left to be inferred from a missing section: a
+                # reader who does not know the switch was used would otherwise read the
+                # absence of credentials as a result.
+                Show-Line "No file was read - the shares were only listed (-ListSharesOnly)" -Class Note
+                return
             }
 
             # ===== The credentials in them =====

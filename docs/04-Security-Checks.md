@@ -1633,6 +1633,18 @@ rather than a default. `-OPSEC` skips it entirely.
    Group Policy Preferences password, a Winlogon value, an answer file, a VNC password, a
    `net use` line and a password assignment are found the same way here as there.
 
+**What it shows while it runs**: the console carries one progress line through all five
+phases - looking for the active computers, checking port 445 (with how many have answered so
+far), enumerating shares, probing each share, and searching each share by name. There is no
+item threshold on the last two: one share on an unresponsive host can take as long as thirty
+on a healthy one, and what the display is for is saying which host is being waited for.
+
+**`-ListSharesOnly`**: stops after the list of readable shares - no file is read and no
+credential is searched for. The first pass over an unknown domain, where the list of shares
+this account can reach is the answer to "where would I even look", and it comes back in the
+time the sweep and the enumeration take. The report says that nothing was read, so the
+absence of credentials is not mistaken for a result.
+
 **What it says about what it did not cover**: every limit reached and everything left out is
 counted - computers outside the domain's name or without one, hosts that do not answer,
 hosts that did not list their shares and why, administrative and SYSVOL shares, shares it
@@ -1650,6 +1662,7 @@ meant for - and unlike SYSVOL nobody reviews who that is.
 Invoke-ShareHunt
 Invoke-ShareHunt -ComputerName fs01.contoso.com, fs02.contoso.com -MaxDepth 8
 Invoke-ShareHunt -ActiveDays 14 -MaxMinutes 20
+Invoke-ShareHunt -ListSharesOnly
 Invoke-adPEAS -Module Shares
 ```
 

@@ -25,6 +25,11 @@
 .PARAMETER ObjectName
     Optional: Name of current object being processed
 
+.PARAMETER Status
+    Optional: replaces the "Testing <n> of <total>" line. For a phase whose unit is not an
+    object being tested - a block of hosts being swept, a directory being walked - that
+    wording says the wrong thing, and the activity name alone cannot carry the count.
+
 .PARAMETER MinInterval
     Minimum milliseconds between updates (default: 250ms = 4 updates/sec)
 
@@ -38,6 +43,10 @@
 .EXAMPLE
     Show-Progress -Activity "Testing accounts" -Current 100 -Total 5000 -ObjectName "john.doe"
     Displays: "Testing 100 of 5000 - john.doe (2%)"
+
+.EXAMPLE
+    Show-Progress -Activity "Checking port 445" -Current 512 -Total 4800 -Status "512 of 4800 computer(s)"
+    Displays the count in the words of the phase rather than as "Testing 512 of 4800"
 
 .EXAMPLE
     Show-Progress -Activity "Processing users" -Completed
@@ -74,6 +83,9 @@ function Show-Progress {
 
         [Parameter(Mandatory=$false)]
         [string]$ObjectName,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Status,
 
         [Parameter(Mandatory=$false)]
         [int]$MinInterval = 250,
@@ -120,7 +132,7 @@ function Show-Progress {
     $percentComplete = [math]::Min(100, [int](($Current / $Total) * 100))
 
     # Build status message
-    $status = "Testing $Current of $Total"
+    $status = if ($Status) { $Status } else { "Testing $Current of $Total" }
     if ($ObjectName) {
         $status += " - $ObjectName"
     }

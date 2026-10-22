@@ -21447,6 +21447,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Disk shares only. Left out and counted: the administrative shares (C$, ADMIN$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
             "Readable means this account can list the root of the share. A listed share it cannot list is counted"
             "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+            "-ListSharesOnly stops after this list: no file is read and no credential is searched for. The row is then absent from every share, because no walk ran"
         )
     }
     'ShareCredential' = @{
@@ -44934,6 +44935,8 @@ function Show-Progress {
         [Parameter(Mandatory=$false)]
         [string]$ObjectName,
         [Parameter(Mandatory=$false)]
+        [string]$Status,
+        [Parameter(Mandatory=$false)]
         [int]$MinInterval = 250,
         [Parameter(Mandatory=$false)]
         [switch]$Completed
@@ -44961,7 +44964,7 @@ function Show-Progress {
     }
     $Script:LastProgressUpdate[$activityKey] = $now
     $percentComplete = [math]::Min(100, [int](($Current / $Total) * 100))
-    $status = "Testing $Current of $Total"
+    $status = if ($Status) { $Status } else { "Testing $Current of $Total" }
     if ($ObjectName) {
         $status += " - $ObjectName"
     }
@@ -78334,6 +78337,8 @@ function Invoke-ShareHunt {
         [ValidateRange(50, 60000)]
         [int]$ConnectTimeoutMs = 1000,
         [Parameter(Mandatory=$false)]
+        [switch]$ListSharesOnly,
+        [Parameter(Mandatory=$false)]
         [switch]$OPSEC
     )
     begin {
@@ -78361,6 +78366,7 @@ function Invoke-ShareHunt {
             } else {
                 $domainFQDN = ([string]$Script:LDAPContext.Domain).Trim().TrimEnd('.').ToLowerInvariant()
                 $since = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
+                Show-Progress -Activity 'Share hunt' -Current 1 -Total 1 -Status 'Looking for the active computers of the domain'
                 $computers = @(Get-DomainComputer -Enabled -LDAPFilter "(&(lastLogonTimestamp>=$since)(operatingSystem=Windows*))" `
                     -Properties 'dNSHostName' @connectionParams)
                 $names = New-Object System.Collections.Generic.List[string]
@@ -78373,10 +78379,29 @@ function Invoke-ShareHunt {
                 $targets = @($names | Sort-Object -Unique)
             }
             Write-Log "[Invoke-ShareHunt] $($targets.Count) computer(s) to contact"
-            $reachable = @(Test-TcpPortReachable -Target $targets -Port 445 -TimeoutMs $ConnectTimeoutMs |
-                Where-Object { $_.Reachable } | ForEach-Object { $_.Target })
+            $sweepBatch = 256
+            $reachableList = New-Object System.Collections.Generic.List[string]
+            for ($offset = 0; $offset -lt $targets.Count; $offset += $sweepBatch) {
+                Show-Progress -Activity 'Share hunt' -Current $offset -Total $targets.Count `
+                    -Status "Checking port 445: $offset of $($targets.Count) computer(s), $($reachableList.Count) answering"
+                $last = [Math]::Min($offset + $sweepBatch, $targets.Count) - 1
+                foreach ($answer in @(Test-TcpPortReachable -Target $targets[$offset..$last] -Port 445 -TimeoutMs $ConnectTimeoutMs -BatchSize $sweepBatch)) {
+                    if ($answer.Reachable) { $reachableList.Add($answer.Target) }
+                }
+            }
+            $reachable = @($reachableList)
             $unreachable = $targets.Count - $reachable.Count
-            $listings = @(Get-SMBShareListMany -Target $reachable -ThrottleLimit $ThrottleLimit)
+            Write-Log "[Invoke-ShareHunt] $($reachable.Count) of $($targets.Count) computer(s) answer on port 445"
+            $listingChunk = [Math]::Max(1, $ThrottleLimit) * 4
+            $listings = New-Object System.Collections.Generic.List[object]
+            for ($offset = 0; $offset -lt $reachable.Count; $offset += $listingChunk) {
+                Show-Progress -Activity 'Share hunt' -Current $offset -Total $reachable.Count `
+                    -Status "Enumerating shares: $offset of $($reachable.Count) computer(s)"
+                $last = [Math]::Min($offset + $listingChunk, $reachable.Count) - 1
+                foreach ($listing in @(Get-SMBShareListMany -Target $reachable[$offset..$last] -ThrottleLimit $ThrottleLimit)) {
+                    $listings.Add($listing)
+                }
+            }
             $listFailed = @{}
             $leftOutAdmin = 0
             $leftOutSysvol = 0
@@ -78408,22 +78433,26 @@ function Invoke-ShareHunt {
             $index = 0
             foreach ($share in $candidates) {
                 $index++
-                if ($candidates.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Probing shares" -Current $index -Total $candidates.Count -ObjectName $share.Path }
+                Show-Progress -Activity 'Share hunt' -Current $index -Total $candidates.Count `
+                    -Status "Probing share $index of $($candidates.Count)" -ObjectName $share.Path
                 if ((Test-SharePathReadable -Path $share.Path).Readable) { $readable.Add($share) } else { $notReadable++ }
             }
-            if ($candidates.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Probing shares" -Completed }
+            Write-Log "[Invoke-ShareHunt] $($readable.Count) of $($candidates.Count) share(s) can be read"
             $passDeadline = [DateTime]::UtcNow.AddMinutes($MaxMinutes)
             $extensions = @('*.xml') + @($Script:CredentialScanExtensions)
             $index = 0
-            foreach ($share in $readable) {
-                $index++
-                if ($readable.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Walking shares" -Current $index -Total $readable.Count -ObjectName $share.Path }
-                $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
-                if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
-                $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
-                    -MaxEntries $MaxEntries -MaxFileSizeKB $MaxFileSizeKB -Deadline $shareDeadline
+            if (-not $ListSharesOnly) {
+                foreach ($share in $readable) {
+                    $index++
+                    Show-Progress -Activity 'Share hunt' -Current $index -Total $readable.Count `
+                        -Status "Searching share $index of $($readable.Count)" -ObjectName $share.Path
+                    $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
+                    if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
+                    $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
+                        -MaxEntries $MaxEntries -MaxFileSizeKB $MaxFileSizeKB -Deadline $shareDeadline
+                }
             }
-            if ($readable.Count -gt $Script:ProgressThreshold) { Show-Progress -Activity "Walking shares" -Completed }
+            Show-Progress -Activity 'Share hunt' -Completed
             if ($outsideDomain -gt 0) {
                 Show-Line "$outsideDomain active computer(s) with a DNS name outside $domainFQDN - not contacted" -Class Note
             }
@@ -78477,6 +78506,10 @@ function Invoke-ShareHunt {
                 }
                 $hostObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ReadableShare' -Force
                 Show-Object $hostObject -Class Note
+            }
+            if ($ListSharesOnly) {
+                Show-Line "No file was read - the shares were only listed (-ListSharesOnly)" -Class Note
+                return
             }
             Show-SubHeader "Searching readable shares for credentials..." -ObjectType "ShareCredential"
             $unreadable = 0
@@ -97820,7 +97853,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261022-1328"
+$Script:adPEASVersion = "2.7.0+20261022-1349"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

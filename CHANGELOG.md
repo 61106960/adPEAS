@@ -1728,6 +1728,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `$Script:adPEASOptInModules` for that, so the module is out of the default pass without
   being out of `-Module`.
 
+  While it runs, one progress line carries through all five phases - looking for the active
+  computers, checking port 445 with how many have answered so far, enumerating shares,
+  probing each share, and searching each one by name. The two per-share phases have no item
+  threshold: a single share on an unresponsive host can take as long as thirty on a healthy
+  one, and the display exists to say which host is being waited for. `Show-Progress` takes
+  an optional `-Status` for that, because "Testing 3 of 12" says the wrong thing about a
+  block of hosts being swept.
+
+  `-ListSharesOnly` stops after the list of readable shares: no file is read and no
+  credential is searched for. That is the first pass over an unknown domain - the list of
+  shares this account can reach is the answer to "where would I even look", and it comes
+  back in the time the sweep and the enumeration take. The report says that nothing was
+  read, so the absence of credentials is not mistaken for a result.
+
 ---
 
 ## [2.7.0] - 2026-10-08

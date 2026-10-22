@@ -185,6 +185,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Disk shares only. Left out and counted: the administrative shares (C$, ADMIN$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
             "Readable means this account can list the root of the share. A listed share it cannot list is counted"
             "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+            "-ListSharesOnly stops after this list: no file is read and no credential is searched for. The row is then absent from every share, because no walk ran"
         )
     }
 
