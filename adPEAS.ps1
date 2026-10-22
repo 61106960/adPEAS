@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-22 14:03:42
-    Version: 2.7.0+20261022-1403
+    Build: 2026-10-22 14:20:28
+    Version: 2.7.0+20261022-1420
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -28692,7 +28692,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Or the computers given instead: -ComputerName, or anything piped in - a name, or an object with a dNSHostName, as every Get-Domain* function returns. A name given that way is not checked against the domain's DNS name; the caller named it on purpose. An empty pipeline searches nothing rather than falling back to the domain"
             "Who answers on port 445: one sweep with a deadline per block of hosts rather than per host, so hosts that do not answer cost one timeout per block"
             "The shares of each, enumerated through NetShareEnum at level 1 - the level an ordinary account may call - in parallel, with one deadline for the pass"
-            "Disk shares only. Left out and counted: the administrative shares (C$, ADMIN$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
+            "Disk shares only. Left out and counted: the shares Windows creates for itself (C$, ADMIN$, print$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
+            "A hidden share is searched. A dollar at the end of the name means not browsable, not administrative - Software$ or Profiles$ is an ordinary share somebody kept out of the browse list, and often where the interesting files are"
             "Readable means this account can list the root of the share. A listed share it cannot list is counted"
             "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
             "-ListSharesOnly stops after this list: no file is read and no credential is searched for. The row is then absent from every share, because no walk ran"
@@ -95742,6 +95743,17 @@ function ConvertFrom-ShareType {
     }
 }
 
+# The shares Windows creates for itself, by name. The special flag below is what marks
+# them - measured on a domain member: ADMIN$, C$ and IPC$ all carry 0x80000000 - and this
+# list is the second half of the test, for a server that presents such a name without the
+# flag. A drive share is matched by its shape instead, since the letter varies.
+#
+# A share whose name merely ends in a dollar is NOT in here. That makes it hidden, not
+# administrative: Software$, Daten$ and Profiles$ are ordinary file shares an
+# administrator made, and on an assessment they are the more interesting ones, because
+# whoever made them often took "not browsable" for "not reachable".
+$Script:WindowsOwnShareName = @('ADMIN$', 'IPC$', 'print$', 'FAX$')
+
 function Test-ShareWorthScanning {
     <#
     .SYNOPSIS
@@ -95751,10 +95763,17 @@ function Test-ShareWorthScanning {
     Left out, and why:
 
     - Anything that is not a disk share. A printer queue and an IPC pipe hold no files.
-    - The administrative shares. C$ and ADMIN$ are the whole volume and the Windows
-      directory, reachable only as an administrator, and walking them means walking every
-      file of the machine. They are told by the special flag and by their name, because a
-      share named C$ that does not carry the flag is still the volume.
+    - The shares Windows creates for itself. C$ and ADMIN$ are the whole volume and the
+      Windows directory, reachable only as an administrator, and walking one means walking
+      every file of the machine. They are told by the special flag - measured, Windows sets
+      it on all of them - and additionally by name and by the shape of a drive share, for a
+      server that presents such a name without the flag.
+
+      A name that merely ends in a dollar is not one of them. The dollar makes a share
+      hidden, not administrative, and a hidden share is an ordinary one that somebody did
+      not want in the browse list: Software$, Daten$, Profiles$. Those are searched, and
+      they are often where the interesting files are, because "not browsable" gets taken
+      for "not reachable".
     - SYSVOL and NETLOGON. Get-CredentialExposure reads them in full, with the policy each
       file belongs to; finding the same credential again here, without that context, is
       noise. -IncludeSysvol asks for them anyway.
@@ -95769,7 +95788,9 @@ function Test-ShareWorthScanning {
     Its type field, as NetShareEnum returns it.
 
     .PARAMETER IncludeAdmin
-    Takes the administrative shares as well.
+    Takes the shares Windows creates for itself as well (C$, ADMIN$, print$ and the like).
+    It does not govern hidden shares: a share whose name ends in a dollar but is not one of
+    Windows' own is searched either way.
 
     .PARAMETER IncludeSysvol
     Takes SYSVOL and NETLOGON as well.
@@ -95807,10 +95828,15 @@ function Test-ShareWorthScanning {
         return [PSCustomObject]@{ Scan = $false; Reason = "Not a file share ($($decoded.Kind))" }
     }
     if (-not $IncludeAdmin) {
-        # Two tests, because either can be true without the other: a share named C$ that
-        # does not carry the special flag is still the volume, and a special share need not
-        # be named with a dollar. print$, the driver store, is covered by its name.
-        if ($decoded.IsSpecial -or $trimmed.EndsWith('$')) {
+        # Three tests, because each can be true without the others: a special share need
+        # not be named with a dollar, a server may present C$ or ADMIN$ without the flag,
+        # and the letter of a drive share varies so it is matched by shape.
+        #
+        # What is deliberately NOT a test here: a name ending in a dollar. That made every
+        # hidden share an administrative one and hid Software$ and its kind from the scan.
+        if ($decoded.IsSpecial -or
+            ($Script:WindowsOwnShareName -contains $trimmed) -or
+            ($trimmed -match '^[A-Za-z]\$$')) {
             return [PSCustomObject]@{ Scan = $false; Reason = 'Administrative share' }
         }
     }
@@ -153263,7 +153289,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261022-1403"
+$Script:adPEASVersion = "2.7.0+20261022-1420"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

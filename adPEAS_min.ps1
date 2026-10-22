@@ -21445,7 +21445,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Or the computers given instead: -ComputerName, or anything piped in - a name, or an object with a dNSHostName, as every Get-Domain* function returns. A name given that way is not checked against the domain's DNS name; the caller named it on purpose. An empty pipeline searches nothing rather than falling back to the domain"
             "Who answers on port 445: one sweep with a deadline per block of hosts rather than per host, so hosts that do not answer cost one timeout per block"
             "The shares of each, enumerated through NetShareEnum at level 1 - the level an ordinary account may call - in parallel, with one deadline for the pass"
-            "Disk shares only. Left out and counted: the administrative shares (C$, ADMIN$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
+            "Disk shares only. Left out and counted: the shares Windows creates for itself (C$, ADMIN$, print$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
+            "A hidden share is searched. A dollar at the end of the name means not browsable, not administrative - Software$ or Profiles$ is an ordinary share somebody kept out of the browse list, and often where the interesting files are"
             "Readable means this account can list the root of the share. A listed share it cannot list is counted"
             "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
             "-ListSharesOnly stops after this list: no file is read and no credential is searched for. The row is then absent from every share, because no walk ran"
@@ -61052,6 +61053,7 @@ function ConvertFrom-ShareType {
         IsTemporary = (([long]$Type -band 0x40000000L) -ne 0)
     }
 }
+$Script:WindowsOwnShareName = @('ADMIN$', 'IPC$', 'print$', 'FAX$')
 function Test-ShareWorthScanning {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
@@ -61075,7 +61077,9 @@ function Test-ShareWorthScanning {
         return [PSCustomObject]@{ Scan = $false; Reason = "Not a file share ($($decoded.Kind))" }
     }
     if (-not $IncludeAdmin) {
-        if ($decoded.IsSpecial -or $trimmed.EndsWith('$')) {
+        if ($decoded.IsSpecial -or
+            ($Script:WindowsOwnShareName -contains $trimmed) -or
+            ($trimmed -match '^[A-Za-z]\$$')) {
             return [PSCustomObject]@{ Scan = $false; Reason = 'Administrative share' }
         }
     }
@@ -97868,7 +97872,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261022-1403"
+$Script:adPEASVersion = "2.7.0+20261022-1420"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

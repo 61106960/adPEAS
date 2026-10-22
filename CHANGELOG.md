@@ -1752,6 +1752,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Invoke-ShareHunt` in a domain with no such computer would otherwise sweep every computer
   there is.
 
+  **Fixed, in the same check:** every share whose name ended in a dollar was treated as an
+  administrative one and kept out of the scan. A dollar makes a share hidden, not
+  administrative - `Software$`, `Daten$` and `Profiles$` are ordinary file shares an
+  administrator made, and on an assessment the more interesting ones, because whoever made
+  them often took "not browsable" for "not reachable". The only way to reach them was
+  `-IncludeAdmin`, which brings every `C$` in the domain with it. What counts as one of
+  Windows' own shares is now the flag Windows sets on them (measured: `ADMIN$`, `C$` and
+  `IPC$` all carry it), the names `ADMIN$`, `IPC$`, `print$` and `FAX$`, and the shape of a
+  drive share such as `D$` - the latter two for a server that presents such a name without
+  the flag.
+
 ---
 
 ## [2.7.0] - 2026-10-08

@@ -1627,9 +1627,12 @@ rather than a default. `-OPSEC` skips it entirely.
    account may call - in a runspace pool with one deadline for the whole pass, because a
    host that completes the TCP handshake and then stalls the RPC call would otherwise block
    for tens of seconds. Of those, the shares worth reading: disk shares only, without the
-   administrative ones (`-IncludeAdmin`) and without SYSVOL and NETLOGON, which
+   shares Windows creates for itself (`-IncludeAdmin`) - told by the flag Windows sets on
+   them, by name, and by the shape of a drive share - and without SYSVOL and NETLOGON, which
    `Get-CredentialExposure` reads with the policy each file belongs to (`-IncludeSysvol`).
-   Each is probed for whether this account can list its root.
+   Each is probed for whether this account can list its root. A **hidden** share is
+   searched: a dollar at the end of the name means not browsable, not administrative, and
+   `Software$` or `Profiles$` is an ordinary share somebody kept out of the browse list.
 4. **The readable shares**, walked breadth-first - the files that carry credentials sit near
    the top of a share - under four limits: depth 5 (`-MaxDepth`), 50000 files
    (`-MaxEntries`), 120 seconds per share (`-ShareTimeoutSeconds`) and 60 minutes for all
