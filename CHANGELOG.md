@@ -1775,6 +1775,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   share that cannot be read is reported as "not there or cannot be read", because unlike a
   listed one it may simply not exist on that computer.
 
+  **Two exports, and a way to skip a folder.** `-ExportShares <file>` writes the readable
+  shares, one UNC path per line. `-ExportFindings <file>` writes the whole result as JSON:
+  the limits the run used, what it could not reach, every readable share with how far its
+  walk got, and every finding with its file and its decrypted value - written even when
+  nothing was found, because an empty result is a result and the limits beside it are what
+  makes two runs comparable. Inside `Invoke-adPEAS -Outputfile` the rows always reached the
+  ordinary report; these two are what a standalone call needed and did not have.
+  `-ExcludeFolder` skips a directory by name on every share, on top of the Windows
+  directories that are always skipped - for the directory that turns out to be worth
+  nothing and takes the budget anyway, which previously left only the time limit, and that
+  cuts the walk off wherever it happens to be rather than where it is pointless.
+
+  **The walk goes deeper by default:** `-MaxDepth` 5 to 10 and `-ShareTimeoutSeconds` 120 to
+  600. A small share is far below either, and a file server is the interesting case.
+
 ---
 
 ## [2.7.0] - 2026-10-08

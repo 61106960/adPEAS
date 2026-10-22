@@ -187,7 +187,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Disk shares only. Left out and counted: the shares Windows creates for itself (C$, ADMIN$, print$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
             "A hidden share is searched. A dollar at the end of the name means not browsable, not administrative - Software$ or Profiles$ is an ordinary share somebody kept out of the browse list, and often where the interesting files are"
             "Readable means this account can list the root of the share. A listed share it cannot list is counted"
-            "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+            "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 10, 50000 files or 600 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+            "-ExcludeFolder skips a directory by name on every share, on top of the Windows directories always skipped - for a directory that turns out to be worth nothing and takes the budget anyway"
+            "-ExportShares writes the readable shares one UNC path per line; -ExportFindings writes the whole result as JSON, with the limits used, what could not be reached, each share with how far its walk got, and each finding with its file and its value. The JSON carries the credentials in clear text"
             "-ListSharesOnly stops after this list: no file is read and no credential is searched for. The row is then absent from every share, because no walk ran"
         )
     }

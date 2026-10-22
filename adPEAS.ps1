@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-22 14:38:48
-    Version: 2.7.0+20261022-1438
+    Build: 2026-10-22 15:19:34
+    Version: 2.7.0+20261022-1519
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -28696,7 +28696,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Disk shares only. Left out and counted: the shares Windows creates for itself (C$, ADMIN$, print$ and the like; -IncludeAdmin) and SYSVOL and NETLOGON, which Get-CredentialExposure reads (-IncludeSysvol)"
             "A hidden share is searched. A dollar at the end of the name means not browsable, not administrative - Software$ or Profiles$ is an ordinary share somebody kept out of the browse list, and often where the interesting files are"
             "Readable means this account can list the root of the share. A listed share it cannot list is counted"
-            "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 5, 50000 files or 120 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+            "notFullySearched: a share whose walk did not cover it all - stopped at a limit (depth 10, 50000 files or 600 seconds per share, 60 minutes for all of them), or with folders this account could not open. A share without the row was walked to its end"
+            "-ExcludeFolder skips a directory by name on every share, on top of the Windows directories always skipped - for a directory that turns out to be worth nothing and takes the budget anyway"
+            "-ExportShares writes the readable shares one UNC path per line; -ExportFindings writes the whole result as JSON, with the limits used, what could not be reached, each share with how far its walk got, and each finding with its file and its value. The JSON carries the credentials in clear text"
             "-ListSharesOnly stops after this list: no file is read and no credential is searched for. The row is then absent from every share, because no walk ran"
         )
     }
@@ -96187,6 +96189,17 @@ function Get-SMBShareListMany {
     Author: Alexander Sturz (@_61106960_)
 #>
 
+# The directories a walk skips by default, wherever they occur. They hold no secret of
+# their own and would take the whole budget on a share that is a system drive.
+#
+# A script variable rather than a literal in the parameter below, because a caller that
+# wants to skip one more directory has to be able to add to this list instead of replacing
+# it - Invoke-ShareHunt -ExcludeFolder does exactly that.
+$Script:ShareWalkExcludeDirectory = @(
+    'Windows', 'WinSxS', 'Program Files', 'Program Files (x86)', 'ProgramData',
+    '$Recycle.Bin', 'System Volume Information', 'Recovery', 'PerfLogs'
+)
+
 function Test-SharePathReadable {
     <#
     .SYNOPSIS
@@ -96352,10 +96365,7 @@ function Get-ShareFileCandidate {
 
         [Parameter(Mandatory = $false)]
         [AllowEmptyCollection()]
-        [string[]]$ExcludeDirectory = @(
-            'Windows', 'WinSxS', 'Program Files', 'Program Files (x86)', 'ProgramData',
-            '$Recycle.Bin', 'System Volume Information', 'Recovery', 'PerfLogs'
-        ),
+        [string[]]$ExcludeDirectory = $Script:ShareWalkExcludeDirectory,
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(0, 64)]
@@ -124772,8 +124782,23 @@ function Invoke-ShareHunt {
     .PARAMETER IncludeSysvol
     Searches SYSVOL and NETLOGON as well.
 
+    .PARAMETER ExcludeFolder
+    Directory names to skip, wherever they occur, on top of the ones the walk always skips
+    (Windows, WinSxS, Program Files, Program Files (x86), ProgramData, $Recycle.Bin, System
+    Volume Information, Recovery, PerfLogs).
+
+    What it is for: a directory that turns out to be worth nothing and takes the budget
+    anyway - an archive of years of scans, a build output, a media library. Noticing that
+    in a first run and excluding it in the second is the normal way to work, and without
+    this the only lever was the time limit, which cuts the walk off wherever it happens to
+    be rather than where it is pointless.
+
+    Matched by name and without regard to case, not by path: a folder of that name is
+    skipped on every share. There is no listing to match a wildcard against, so give names.
+
     .PARAMETER MaxDepth
-    How far below the root of a share the walk goes. Default: 5.
+    How far below the root of a share the walk goes. Default: 10 - a small share is far
+    below it anyway, and a file server is the interesting case.
 
     .PARAMETER MaxEntries
     How many files of one share the walk looks at. Default: 50000.
@@ -124782,7 +124807,22 @@ function Invoke-ShareHunt {
     Files above this size are counted, not read. Default: 1024.
 
     .PARAMETER ShareTimeoutSeconds
-    How long the walk of one share may take. Default: 120.
+    How long the walk of one share may take. Default: 600, for the same reason as the depth:
+    a small share finishes in seconds, and the shares worth the wait are the large ones.
+
+    .PARAMETER ExportShares
+    Writes the readable shares to this file, one UNC path per line - a list to work from, or
+    to feed another tool. Nothing is written when no share could be read. An existing file
+    is overwritten.
+
+    .PARAMETER ExportFindings
+    Writes the whole result to this file as JSON: the limits the run used, what it could
+    not reach, every readable share with how far its walk got, and every finding with its
+    file and its decrypted value. Written even when nothing was found - an empty result is
+    a result, and the limits beside it are what makes it comparable with the next run.
+
+    The file carries the credentials in clear text, because that is what was found. Treat it
+    as the finding it is.
 
     .PARAMETER MaxMinutes
     How long the walks of all shares together may take. Default: 60.
@@ -124827,6 +124867,13 @@ function Invoke-ShareHunt {
     Invoke-ShareHunt -ActiveDays 14 -MaxMinutes 20
 
     .EXAMPLE
+    Invoke-ShareHunt -ExportShares .\shares.txt -ExportFindings .\shares.json
+
+    .EXAMPLE
+    Invoke-ShareHunt -ComputerName fs01.contoso.com -ExcludeFolder Archive, 'Build Output'
+    The same share again, without the two directories the first run spent its budget in.
+
+    .EXAMPLE
     Invoke-ShareHunt -ListSharesOnly
     The readable shares of the domain, without reading a file in them.
 
@@ -124867,8 +124914,17 @@ function Invoke-ShareHunt {
         [switch]$IncludeSysvol,
 
         [Parameter(Mandatory=$false)]
+        [string[]]$ExcludeFolder,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExportShares,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExportFindings,
+
+        [Parameter(Mandatory=$false)]
         [ValidateRange(0, 64)]
-        [int]$MaxDepth = 5,
+        [int]$MaxDepth = 10,
 
         [Parameter(Mandatory=$false)]
         [ValidateRange(1, 10000000)]
@@ -124880,7 +124936,7 @@ function Invoke-ShareHunt {
 
         [Parameter(Mandatory=$false)]
         [ValidateRange(1, 86400)]
-        [int]$ShareTimeoutSeconds = 120,
+        [int]$ShareTimeoutSeconds = 600,
 
         [Parameter(Mandatory=$false)]
         [ValidateRange(1, 1440)]
@@ -124942,6 +124998,98 @@ function Invoke-ShareHunt {
 
             Show-SubHeader "Searching for readable shares..." -ObjectType "ReadableShare"
 
+            # Added to the defaults, not in place of them: a caller naming one more
+            # worthless directory still wants Windows and WinSxS skipped.
+            $walkExclude = @($Script:ShareWalkExcludeDirectory) +
+                @($ExcludeFolder | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+
+            # Declared here because the writer below reads them, and it is called from
+            # every way out of this check - including the ones that happen before the
+            # search has run.
+            $readable = New-Object System.Collections.Generic.List[object]
+            $results = New-Object System.Collections.Generic.List[object]
+            $fileTotal = 0
+            $searched = $false
+
+            <#
+            .SYNOPSIS
+                Writes the two export files, if they were asked for.
+            .DESCRIPTION
+                Called from each way out of the check, so a run that finds no readable share
+                still writes what it did find out - the limits it used and what it could not
+                reach are the part that makes two runs comparable.
+            #>
+            function Write-ShareHuntExport {
+                if ($ExportShares) {
+                    $paths = @($readable | ForEach-Object { $_.Path } | Sort-Object)
+                    if ($paths.Count -eq 0) {
+                        Show-Line "No readable share to write to $ExportShares" -Class Note
+                    } else {
+                        $export = Export-adPEASFile -Path $ExportShares -Content (($paths -join "`r`n") + "`r`n") -Type Text -Force -SanitizeFilename:$false
+                        if ($export.Success) {
+                            Show-Line "Wrote $($paths.Count) share(s) to $($export.Path)" -Class Note
+                        } else {
+                            Show-Line "The share list could not be written to ${ExportShares}: $($export.Message)" -Class Hint
+                        }
+                    }
+                }
+
+                if ($ExportFindings) {
+                    $document = [PSCustomObject][ordered]@{
+                        Generated = (Format-adPEASDate (Get-Date) 'o')
+                        Domain    = [string]$Script:LDAPContext.Domain
+                        Searched  = $searched
+                        Limits    = [PSCustomObject][ordered]@{
+                            ActiveDays          = $ActiveDays
+                            MaxDepth            = $MaxDepth
+                            MaxEntries          = $MaxEntries
+                            MaxFileSizeKB       = $MaxFileSizeKB
+                            ShareTimeoutSeconds = $ShareTimeoutSeconds
+                            MaxMinutes          = $MaxMinutes
+                            ExcludeFolder       = @($walkExclude)
+                            IncludeAdmin        = [bool]$IncludeAdmin
+                            IncludeSysvol       = [bool]$IncludeSysvol
+                            ListSharesOnly      = [bool]$ListSharesOnly
+                        }
+                        NotReached = [PSCustomObject][ordered]@{
+                            ComputersOutsideDomain = $outsideDomain
+                            ComputersWithoutName   = $withoutName
+                            ComputersNoAnswer      = $unreachable
+                            SharesNotReadable      = $notReadable
+                            FilesUnreadable        = $unreadable
+                            FilesTooLarge          = $tooLarge
+                        }
+                        Shares = @($readable | Sort-Object -Property Path | ForEach-Object {
+                            [PSCustomObject][ordered]@{
+                                Computer      = $_.Computer
+                                Path          = $_.Path
+                                Remark        = $_.Remark
+                                Truncated     = $_.Walk.Truncated
+                                FoldersDenied = $_.Walk.Denied
+                                FilesExamined = $_.Walk.Examined
+                                FilesRead     = @($_.Walk.Files).Count
+                                FilesTooLarge = $_.Walk.SkippedLarge
+                            }
+                        })
+                        Findings = @($results | ForEach-Object {
+                            $row = [ordered]@{ Share = $_._Share; Class = $_.Class; Context = $_.Context }
+                            # The row as it was reported, minus what only the renderer uses.
+                            foreach ($property in $_.Credential.PSObject.Properties) {
+                                if ($property.Name -like '_adPEAS*') { continue }
+                                $row[$property.Name] = $property.Value
+                            }
+                            [PSCustomObject]$row
+                        })
+                    }
+                    $export = Export-adPEASFile -Path $ExportFindings -Content $document -Type Json -JsonDepth 6 -Force -SanitizeFilename:$false
+                    if ($export.Success) {
+                        Show-Line "Wrote $($results.Count) finding(s) and $($readable.Count) share(s) to $($export.Path)" -Class Note
+                    } else {
+                        Show-Line "The findings could not be written to ${ExportFindings}: $($export.Message)" -Class Hint
+                    }
+                }
+            }
+
             if ($OPSEC) {
                 Show-Line "OPSEC mode: Skipping the share hunt (would connect to every computer over SMB)" -Class Hint
                 return
@@ -124954,6 +125102,10 @@ function Invoke-ShareHunt {
             # ===== The computers =====
             $outsideDomain = 0
             $withoutName = 0
+            $unreachable = 0
+            $notReadable = 0
+            $unreadable = 0
+            $tooLarge = 0
             # ExpectingInput as well as the flag: an empty pipeline binds nothing, so the
             # flag alone cannot tell "@() | Invoke-ShareHunt" from a call with no targets at
             # all - and the difference is between searching nothing and searching a whole
@@ -125069,8 +125221,6 @@ function Invoke-ShareHunt {
             }
 
             # ===== Readable by this account =====
-            $readable = New-Object System.Collections.Generic.List[object]
-            $notReadable = 0
             $index = 0
             # No threshold on the count here: one share on an unresponsive host can take
             # as long as thirty on a healthy one, and the point of the display is to say
@@ -125100,7 +125250,8 @@ function Invoke-ShareHunt {
                     $shareDeadline = [DateTime]::UtcNow.AddSeconds($ShareTimeoutSeconds)
                     if ($shareDeadline -gt $passDeadline) { $shareDeadline = $passDeadline }
                     $share.Walk = Get-ShareFileCandidate -Path $share.Path -Extension $extensions -MaxDepth $MaxDepth `
-                        -MaxEntries $MaxEntries -MaxFileSizeKB $MaxFileSizeKB -Deadline $shareDeadline
+                        -MaxEntries $MaxEntries -MaxFileSizeKB $MaxFileSizeKB -Deadline $shareDeadline `
+                        -ExcludeDirectory $walkExclude
                 }
             }
             Show-Progress -Activity 'Share hunt' -Completed
@@ -125145,6 +125296,7 @@ function Invoke-ShareHunt {
 
             if ($readable.Count -eq 0) {
                 Show-Line "No readable share found" -Class Note
+                Write-ShareHuntExport
                 return
             }
 
@@ -125181,21 +125333,19 @@ function Invoke-ShareHunt {
                 # reader who does not know the switch was used would otherwise read the
                 # absence of credentials as a result.
                 Show-Line "No file was read - the shares were only listed (-ListSharesOnly)" -Class Note
+                Write-ShareHuntExport
                 return
             }
 
             # ===== The credentials in them =====
             Show-SubHeader "Searching readable shares for credentials..." -ObjectType "ShareCredential"
 
-            $unreadable = 0
-            $tooLarge = 0
-            $results = New-Object System.Collections.Generic.List[object]
+            $searched = $true
 
             # Counted over all the shares first, so the display says how much of the search
             # is done rather than which share it is in. This is the phase that reads every
             # file, and it had no display at all: on a share with a few thousand candidates
             # the second section sat silent for as long as the walk had taken.
-            $fileTotal = 0
             foreach ($share in $readable) { $fileTotal += @($share.Walk.Files).Count }
             $fileIndex = 0
 
@@ -125225,7 +125375,12 @@ function Invoke-ShareHunt {
                             if ($file.Extension -ieq '.vbe') { $text = ConvertFrom-VBE -EncodedScript $text }
                             $found = @(Find-ScriptFileCredential -Content $text -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
                         }
-                        foreach ($one in $found) { $results.Add($one) }
+                        # The share each finding came from, for the export. The display
+                        # does not read it, and it is not part of the reported row.
+                        foreach ($one in $found) {
+                            $one | Add-Member -NotePropertyName '_Share' -NotePropertyValue $share.Path -Force
+                            $results.Add($one)
+                        }
                     } catch {
                         $unreadable++
                         Write-Log "[Invoke-ShareHunt] $($file.FullName) could not be read: $($_.Exception.Message)"
@@ -125247,6 +125402,7 @@ function Invoke-ShareHunt {
                 # Not "Secure": a share is read only as far as this account and the limits
                 # allowed, which is never the guarantee that word would make.
                 Show-Line "No credentials found in $($readable.Count) readable share(s)" -Class Note
+                Write-ShareHuntExport
                 return
             }
 
@@ -125257,6 +125413,8 @@ function Invoke-ShareHunt {
                 $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $result.Context -Force
                 Show-Object $credObj -Class $result.Class
             }
+
+            Write-ShareHuntExport
 
         } catch {
             Write-Log "[Invoke-ShareHunt] Error: $_" -Level Error
@@ -153359,7 +153517,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261022-1438"
+$Script:adPEASVersion = "2.7.0+20261022-1519"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

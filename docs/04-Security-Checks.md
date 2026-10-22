@@ -1634,10 +1634,15 @@ rather than a default. `-OPSEC` skips it entirely.
    searched: a dollar at the end of the name means not browsable, not administrative, and
    `Software$` or `Profiles$` is an ordinary share somebody kept out of the browse list.
 4. **The readable shares**, walked breadth-first - the files that carry credentials sit near
-   the top of a share - under four limits: depth 5 (`-MaxDepth`), 50000 files
-   (`-MaxEntries`), 120 seconds per share (`-ShareTimeoutSeconds`) and 60 minutes for all
-   of them together (`-MaxMinutes`). Files over 1024 KB (`-MaxFileSizeKB`) are counted, not
-   read. Every candidate file is analysed by the same functions the SYSVOL scan uses, so a
+   the top of a share - under four limits: depth 10 (`-MaxDepth`), 50000 files
+   (`-MaxEntries`), 600 seconds per share (`-ShareTimeoutSeconds`) and 60 minutes for all
+   of them together (`-MaxMinutes`). The first two defaults are generous on purpose: a small
+   share is far below either, and a file server is the interesting case. Files over 1024 KB
+   (`-MaxFileSizeKB`) are counted, not read. Directories named with `-ExcludeFolder` are
+   skipped on every share, on top of the Windows directories that are always skipped
+   (`Windows`, `WinSxS`, `Program Files`, `Program Files (x86)`, `ProgramData`,
+   `$Recycle.Bin`, `System Volume Information`, `Recovery`, `PerfLogs`) - for the directory
+   that turns out to be worth nothing and takes the budget anyway. Every candidate file is analysed by the same functions the SYSVOL scan uses, so a
    Group Policy Preferences password, a Winlogon value, an answer file, a VNC password, a
    `net use` line and a password assignment are found the same way here as there.
 
@@ -1648,6 +1653,16 @@ searching each file by name. There is no item threshold on the per-share phases:
 an unresponsive host can take as long as thirty on a healthy one, and what the display is for
 is saying which host is being waited for. The search is counted over all the shares together,
 because what a reader wants there is how much of it is done.
+
+**Exports**: `-ExportShares <file>` writes the readable shares, one UNC path per line, to
+work from or to feed another tool. `-ExportFindings <file>` writes the whole result as JSON:
+the limits the run used, what it could not reach, every readable share with how far its walk
+got, and every finding with its file and its decrypted value. The findings file is written
+even when nothing was found - an empty result is a result, and the limits beside it are what
+makes it comparable with the next run. **It carries the credentials in clear text**, because
+that is what was found; treat it as the finding it is. Inside `Invoke-adPEAS -Outputfile` the
+rows reach the ordinary Text, HTML and JSON report as well; the two parameters are what a
+standalone call needs.
 
 **`-ShareName`**: searches the shares of that name instead of whatever the computers offer,
 and enumerates nothing - it goes straight to `\\<computer>\<name>`. That is shorter, and it
@@ -1684,6 +1699,8 @@ Invoke-ShareHunt -ListSharesOnly
 Get-DomainComputer -OperatingSystem '*Server*' | Invoke-ShareHunt
 Invoke-ShareHunt -ComputerName fs01.contoso.com -ShareName Finance
 Invoke-ShareHunt -ShareName Finance, 'Profiles$'
+Invoke-ShareHunt -ExportShares .\shares.txt -ExportFindings .\shares.json
+Invoke-ShareHunt -ComputerName fs01.contoso.com -ExcludeFolder Archive, 'Build Output'
 Invoke-adPEAS -Module Shares
 ```
 

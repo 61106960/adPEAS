@@ -18,6 +18,17 @@
     Author: Alexander Sturz (@_61106960_)
 #>
 
+# The directories a walk skips by default, wherever they occur. They hold no secret of
+# their own and would take the whole budget on a share that is a system drive.
+#
+# A script variable rather than a literal in the parameter below, because a caller that
+# wants to skip one more directory has to be able to add to this list instead of replacing
+# it - Invoke-ShareHunt -ExcludeFolder does exactly that.
+$Script:ShareWalkExcludeDirectory = @(
+    'Windows', 'WinSxS', 'Program Files', 'Program Files (x86)', 'ProgramData',
+    '$Recycle.Bin', 'System Volume Information', 'Recovery', 'PerfLogs'
+)
+
 function Test-SharePathReadable {
     <#
     .SYNOPSIS
@@ -183,10 +194,7 @@ function Get-ShareFileCandidate {
 
         [Parameter(Mandatory = $false)]
         [AllowEmptyCollection()]
-        [string[]]$ExcludeDirectory = @(
-            'Windows', 'WinSxS', 'Program Files', 'Program Files (x86)', 'ProgramData',
-            '$Recycle.Bin', 'System Volume Information', 'Recovery', 'PerfLogs'
-        ),
+        [string[]]$ExcludeDirectory = $Script:ShareWalkExcludeDirectory,
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(0, 64)]
