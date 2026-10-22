@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-22 12:13:51
-    Version: 2.7.0+20261022-1213
+    Build: 2026-10-22 12:41:48
+    Version: 2.7.0+20261022-1241
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -95740,6 +95740,74 @@ function Test-ShareWorthScanning {
     return [PSCustomObject]@{ Scan = $true; Reason = $null }
 }
 
+function Initialize-ShareNativeMethod {
+    <#
+    .SYNOPSIS
+    Compiles the netapi32 signatures the share enumeration needs, once per process.
+
+    .DESCRIPTION
+    Its own function for two reasons. A type added with Add-Type lands in the AppDomain and
+    is therefore shared by every runspace of the process, so the parallel enumeration
+    compiles it once in the caller rather than once in each of thirty-two runspaces -
+    compiling C# takes longer than the enumeration it is for. And the failure to compile is
+    then one answer in one place instead of a branch in every caller.
+
+    .OUTPUTS
+    [bool] whether the types are available.
+
+    .NOTES
+    Internal helper function
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    if (([System.Management.Automation.PSTypeName]'adPEAS.NativeMethods.Shares').Type) { return $true }
+
+    $shareCode = @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace adPEAS.NativeMethods
+{
+    public class Shares
+    {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct SHARE_INFO_1
+        {
+            [MarshalAs(UnmanagedType.LPWStr)] public string netname;
+            public uint type;
+            [MarshalAs(UnmanagedType.LPWStr)] public string remark;
+        }
+
+        [DllImport("netapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern int NetShareEnum(
+            string servername,
+            int level,
+            out IntPtr bufptr,
+            int prefmaxlen,
+            out int entriesread,
+            out int totalentries,
+            ref int resume_handle);
+
+        [DllImport("netapi32.dll")]
+        public static extern int NetApiBufferFree(IntPtr buffer);
+    }
+}
+'@
+
+    try {
+        Add-Type -TypeDefinition $shareCode -Language CSharp -ErrorAction Stop
+        Write-Log "[Initialize-ShareNativeMethod] P/Invoke types compiled successfully"
+        return $true
+    } catch {
+        # A second caller that got here at the same time has already added the type.
+        if (([System.Management.Automation.PSTypeName]'adPEAS.NativeMethods.Shares').Type) { return $true }
+        Write-Log "[Initialize-ShareNativeMethod] The P/Invoke types could not be compiled: $($_.Exception.Message)" -Level Warning
+        return $false
+    }
+}
+
 function Get-SMBShareList {
     <#
     .SYNOPSIS
@@ -95775,46 +95843,8 @@ function Get-SMBShareList {
         [string]$ComputerName
     )
 
-    if (-not ([System.Management.Automation.PSTypeName]'adPEAS.NativeMethods.Shares').Type) {
-        $shareCode = @'
-using System;
-using System.Runtime.InteropServices;
-
-namespace adPEAS.NativeMethods
-{
-    public class Shares
-    {
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        public struct SHARE_INFO_1
-        {
-            [MarshalAs(UnmanagedType.LPWStr)] public string netname;
-            public uint type;
-            [MarshalAs(UnmanagedType.LPWStr)] public string remark;
-        }
-
-        [DllImport("netapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-        public static extern int NetShareEnum(
-            string servername,
-            int level,
-            out IntPtr bufptr,
-            int prefmaxlen,
-            out int entriesread,
-            out int totalentries,
-            ref int resume_handle);
-
-        [DllImport("netapi32.dll")]
-        public static extern int NetApiBufferFree(IntPtr buffer);
-    }
-}
-'@
-        try {
-            Add-Type -TypeDefinition $shareCode -Language CSharp -ErrorAction Stop
-            Write-Log "[Get-SMBShareList] P/Invoke types compiled successfully"
-        } catch {
-            if ($_.Exception.Message -notmatch 'already exists') {
-                return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = @(); Error = "P/Invoke types could not be compiled: $($_.Exception.Message)" }
-            }
-        }
+    if (-not (Initialize-ShareNativeMethod)) {
+        return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = @(); Error = 'The P/Invoke types could not be compiled' }
     }
 
     $buffer = [IntPtr]::Zero
@@ -95861,6 +95891,167 @@ namespace adPEAS.NativeMethods
         if ($buffer -ne [IntPtr]::Zero) {
             [void][adPEAS.NativeMethods.Shares]::NetApiBufferFree($buffer)
         }
+    }
+}
+
+function Get-SMBShareListMany {
+    <#
+    .SYNOPSIS
+    Lists the shares of many hosts at once, with a bound on how long the whole pass takes.
+
+    .DESCRIPTION
+    NetShareEnum has no timeout of its own. A host that completes the TCP handshake on 445
+    and then does not answer the RPC call blocks for the RPC timeout, which is tens of
+    seconds, and a domain with a handful of such hosts would add hours to a sequential
+    pass. So the calls run in a runspace pool and the collection has ONE deadline for the
+    whole pass rather than one per host: with a pool of 32, a hundred hosts that all stall
+    cost four stalls, not a hundred.
+
+    The deadline is derived from the number of hosts and the pool size - the number of
+    batches a stall can cost, plus one - so that it scales with the work and does not
+    depend on the caller doing that arithmetic.
+
+    Each runspace is given Get-SMBShareList itself, read from the session, so there is one
+    implementation of the enumeration and not a copy of it inside a scriptblock. Write-Log
+    is replaced with a stub in the runspaces: thirty-two threads writing the same log file
+    is a conflict, and what the enumeration has to say is in the Error of its result, which
+    this function logs in order when it collects.
+
+    A host whose call has not returned by the deadline is reported as timed out. Its thread
+    is abandoned rather than waited for, which is the point.
+
+    .PARAMETER Target
+    The hosts, as names or addresses.
+
+    .PARAMETER ThrottleLimit
+    How many calls run at once. Default 32.
+
+    .PARAMETER TimeoutSeconds
+    How long one batch of calls may take. Default 20, which is longer than a reachable host
+    needs and shorter than the RPC timeout of one that stalls.
+
+    .OUTPUTS
+    One PSCustomObject per target, in the order given, shaped as Get-SMBShareList returns
+    them: ComputerName, Shares and Error.
+
+    .EXAMPLE
+    Get-SMBShareListMany -Target 'fs01.contoso.com', 'fs02.contoso.com'
+
+    .NOTES
+    Internal helper function
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string[]]$Target,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 256)]
+        [int]$ThrottleLimit = 32,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 600)]
+        [int]$TimeoutSeconds = 20
+    )
+
+    # No shortcut for an empty list: measured, opening a pool for nothing costs less than
+    # a test can tell from not opening one, and the loops below then run zero times.
+    $targets = @($Target | Where-Object { $_ })
+
+    # Compiled here, in the caller, so the runspaces do not each compile the same C#.
+    if (-not (Initialize-ShareNativeMethod)) {
+        foreach ($one in $targets) {
+            [PSCustomObject]@{ ComputerName = $one; Shares = @(); Error = 'The P/Invoke types could not be compiled' }
+        }
+        return
+    }
+
+    $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    # The enumeration itself and every adPEAS function it calls, taken from this session
+    # rather than written out again.
+    #
+    # Initialize-ShareNativeMethod was missing from this list, and the enumeration worked
+    # anyway - by accident. A command that is not found ends only the statement that calls
+    # it, so the guard around it was skipped, and NetShareEnum succeeded because this
+    # session had compiled the type already. The error went to the runspace's error stream,
+    # which nothing read. The test that now guards this list reads the commands the
+    # enumeration calls out of its own syntax tree, so a call added later is caught there.
+    foreach ($name in 'Get-SMBShareList', 'Initialize-ShareNativeMethod') {
+        [void]$sessionState.Commands.Add(
+            (New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry $name, (Get-Command $name).Definition))
+    }
+    [void]$sessionState.Commands.Add(
+        (New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Write-Log', 'param([string]$Message, [string]$Level)'))
+
+    $pool = $null
+    $jobs = New-Object System.Collections.Generic.List[object]
+    try {
+        $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, $ThrottleLimit, $sessionState, $Host)
+        $pool.ApartmentState = [System.Threading.ApartmentState]::MTA
+        $pool.Open()
+
+        foreach ($one in $targets) {
+            $shell = [PowerShell]::Create()
+            $shell.RunspacePool = $pool
+            [void]$shell.AddScript('param($ComputerName) Get-SMBShareList -ComputerName $ComputerName')
+            [void]$shell.AddParameter('ComputerName', $one)
+            $jobs.Add([PSCustomObject]@{ Target = $one; Shell = $shell; Handle = $shell.BeginInvoke() })
+        }
+
+        # One deadline for the pass: the number of batches a stall can cost, plus one.
+        $batches = [Math]::Ceiling($targets.Count / [double]$ThrottleLimit) + 1
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds * $batches)
+
+        foreach ($job in $jobs) {
+            $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if ($left -lt 0) { $left = 0 }
+
+            $done = $false
+            try { $done = $job.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
+
+            if (-not $done) {
+                Write-Log "[Get-SMBShareListMany] $($job.Target) did not answer within the pass deadline"
+                [PSCustomObject]@{ ComputerName = $job.Target; Shares = @(); Error = 'Timed out' }
+                continue
+            }
+
+            try {
+                $output = @($job.Shell.EndInvoke($job.Handle))
+                # What the runspace wrote to its error stream is read rather than dropped: it
+                # is where the missing command above went unnoticed, because a statement that
+                # fails there does not stop the script around it.
+                if ($job.Shell.Streams.Error.Count -gt 0) {
+                    Write-Log "[Get-SMBShareListMany] $($job.Target) : the enumeration reported $($job.Shell.Streams.Error.Count) error(s), the first: $($job.Shell.Streams.Error[0])" -Level Warning
+                }
+                if ($output.Count -gt 0 -and $null -ne $output[0]) {
+                    if ($output[0].Error) { Write-Log "[Get-SMBShareListMany] $($job.Target) : $($output[0].Error)" }
+                    $output[0]
+                } else {
+                    # The runspace returned nothing at all, which is not a shape any caller
+                    # should have to handle.
+                    [PSCustomObject]@{ ComputerName = $job.Target; Shares = @(); Error = 'The enumeration returned no result' }
+                }
+            } catch {
+                Write-Log "[Get-SMBShareListMany] $($job.Target) failed: $($_.Exception.Message)"
+                [PSCustomObject]@{ ComputerName = $job.Target; Shares = @(); Error = "Failed: $($_.Exception.Message)" }
+            }
+        }
+    } finally {
+        # Stop is deliberately not called on a job that is still running: a thread stuck in
+        # the RPC call does not come back, and waiting for it here is what the deadline
+        # above exists to avoid. The process releases them when it exits.
+        #
+        # Dispose is called on every job, running or not: measured with eight threads
+        # asleep for thirty seconds and a two second deadline, it returns at once rather
+        # than waiting for them, so there is nothing to be gained by asking first.
+        foreach ($job in $jobs) {
+            try { $job.Shell.Dispose() } catch { }
+        }
+        if ($pool) { try { $pool.Dispose() } catch { } }
     }
 }
 
@@ -152426,7 +152617,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.7.0+20261022-1213"
+$Script:adPEASVersion = "2.7.0+20261022-1241"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

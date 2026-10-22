@@ -61040,15 +61040,12 @@ function Test-ShareWorthScanning {
     }
     return [PSCustomObject]@{ Scan = $true; Reason = $null }
 }
-function Get-SMBShareList {
+function Initialize-ShareNativeMethod {
     [CmdletBinding()]
-    [OutputType([PSCustomObject])]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ComputerName
-    )
-    if (-not ([System.Management.Automation.PSTypeName]'adPEAS.NativeMethods.Shares').Type) {
-        $shareCode = @'
+    [OutputType([bool])]
+    param()
+    if (([System.Management.Automation.PSTypeName]'adPEAS.NativeMethods.Shares').Type) { return $true }
+    $shareCode = @'
 using System;
 using System.Runtime.InteropServices;
 
@@ -61079,14 +61076,25 @@ namespace adPEAS.NativeMethods
     }
 }
 '@
-        try {
-            Add-Type -TypeDefinition $shareCode -Language CSharp -ErrorAction Stop
-            Write-Log "[Get-SMBShareList] P/Invoke types compiled successfully"
-        } catch {
-            if ($_.Exception.Message -notmatch 'already exists') {
-                return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = @(); Error = "P/Invoke types could not be compiled: $($_.Exception.Message)" }
-            }
-        }
+    try {
+        Add-Type -TypeDefinition $shareCode -Language CSharp -ErrorAction Stop
+        Write-Log "[Initialize-ShareNativeMethod] P/Invoke types compiled successfully"
+        return $true
+    } catch {
+        if (([System.Management.Automation.PSTypeName]'adPEAS.NativeMethods.Shares').Type) { return $true }
+        Write-Log "[Initialize-ShareNativeMethod] The P/Invoke types could not be compiled: $($_.Exception.Message)" -Level Warning
+        return $false
+    }
+}
+function Get-SMBShareList {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ComputerName
+    )
+    if (-not (Initialize-ShareNativeMethod)) {
+        return [PSCustomObject]@{ ComputerName = $ComputerName; Shares = @(); Error = 'The P/Invoke types could not be compiled' }
     }
     $buffer = [IntPtr]::Zero
     $read = 0
@@ -61125,6 +61133,84 @@ namespace adPEAS.NativeMethods
         if ($buffer -ne [IntPtr]::Zero) {
             [void][adPEAS.NativeMethods.Shares]::NetApiBufferFree($buffer)
         }
+    }
+}
+function Get-SMBShareListMany {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string[]]$Target,
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 256)]
+        [int]$ThrottleLimit = 32,
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 600)]
+        [int]$TimeoutSeconds = 20
+    )
+    $targets = @($Target | Where-Object { $_ })
+    if (-not (Initialize-ShareNativeMethod)) {
+        foreach ($one in $targets) {
+            [PSCustomObject]@{ ComputerName = $one; Shares = @(); Error = 'The P/Invoke types could not be compiled' }
+        }
+        return
+    }
+    $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    foreach ($name in 'Get-SMBShareList', 'Initialize-ShareNativeMethod') {
+        [void]$sessionState.Commands.Add(
+            (New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry $name, (Get-Command $name).Definition))
+    }
+    [void]$sessionState.Commands.Add(
+        (New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Write-Log', 'param([string]$Message, [string]$Level)'))
+    $pool = $null
+    $jobs = New-Object System.Collections.Generic.List[object]
+    try {
+        $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, $ThrottleLimit, $sessionState, $Host)
+        $pool.ApartmentState = [System.Threading.ApartmentState]::MTA
+        $pool.Open()
+        foreach ($one in $targets) {
+            $shell = [PowerShell]::Create()
+            $shell.RunspacePool = $pool
+            [void]$shell.AddScript('param($ComputerName) Get-SMBShareList -ComputerName $ComputerName')
+            [void]$shell.AddParameter('ComputerName', $one)
+            $jobs.Add([PSCustomObject]@{ Target = $one; Shell = $shell; Handle = $shell.BeginInvoke() })
+        }
+        $batches = [Math]::Ceiling($targets.Count / [double]$ThrottleLimit) + 1
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds * $batches)
+        foreach ($job in $jobs) {
+            $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if ($left -lt 0) { $left = 0 }
+            $done = $false
+            try { $done = $job.Handle.AsyncWaitHandle.WaitOne($left, $false) } catch { }
+            if (-not $done) {
+                Write-Log "[Get-SMBShareListMany] $($job.Target) did not answer within the pass deadline"
+                [PSCustomObject]@{ ComputerName = $job.Target; Shares = @(); Error = 'Timed out' }
+                continue
+            }
+            try {
+                $output = @($job.Shell.EndInvoke($job.Handle))
+                if ($job.Shell.Streams.Error.Count -gt 0) {
+                    Write-Log "[Get-SMBShareListMany] $($job.Target) : the enumeration reported $($job.Shell.Streams.Error.Count) error(s), the first: $($job.Shell.Streams.Error[0])" -Level Warning
+                }
+                if ($output.Count -gt 0 -and $null -ne $output[0]) {
+                    if ($output[0].Error) { Write-Log "[Get-SMBShareListMany] $($job.Target) : $($output[0].Error)" }
+                    $output[0]
+                } else {
+                    [PSCustomObject]@{ ComputerName = $job.Target; Shares = @(); Error = 'The enumeration returned no result' }
+                }
+            } catch {
+                Write-Log "[Get-SMBShareListMany] $($job.Target) failed: $($_.Exception.Message)"
+                [PSCustomObject]@{ ComputerName = $job.Target; Shares = @(); Error = "Failed: $($_.Exception.Message)" }
+            }
+        }
+    } finally {
+        foreach ($job in $jobs) {
+            try { $job.Shell.Dispose() } catch { }
+        }
+        if ($pool) { try { $pool.Dispose() } catch { } }
     }
 }
 function Test-SharePathReadable {
@@ -97424,7 +97510,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.7.0+20261022-1213"
+$Script:adPEASVersion = "2.7.0+20261022-1241"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
