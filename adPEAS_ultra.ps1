@@ -19208,6 +19208,7 @@ function Get-TriggerMatch {
 	)
 	$noMatch = [PSCustomObject]@{ Severity = 'Standard'; FindingId = $null }
 	if ([string]::IsNullOrEmpty($Name)) { return $noMatch }
+	if ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'NotAssessed') { return $noMatch }
 	if (-not $IsComputer -and $SourceObject) {
 	    $IsComputer = Test-IsComputerObject -Object $SourceObject
 	}
@@ -68141,6 +68142,9 @@ function Get-DomainPasswordPolicy {
 	                            if ($psoState -eq 'Weak') { $privilegedTargets = 'PRIVILEGED - ' + $privilegedTargets }
 	                            $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue $privilegedTargets -Force
 	                        }
+	                        if ($psoState -eq 'Unassigned') {
+	                            $psoObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NotAssessed' -Force
+	                        }
 	                        $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
 	                        Show-Object $psoObj -Class Hint
 	                    }
@@ -95749,7 +95753,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261025-1743"
+$Script:adPEASVersion = "2.8.0+20261025-1745"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

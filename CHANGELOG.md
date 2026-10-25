@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A Fine-Grained Password Policy assigned to nobody no longer shows red rows.** The
+  check names such a policy "assigned to no user and no group, and therefore not
+  assessed", and its rows still hit the triggers of the domain policy: a weak, unassigned
+  PSO printed its length, complexity, reversible encryption and lockout in red, and the
+  HTML card read its severity and score from those rows. Its settings are now shown
+  without a verdict.
 - **`Set-DomainUser -PasswordExpired` and `-ClearPasswordExpired` change the password
   expiry.** Both wrote the `PASSWORD_EXPIRED` bit into `userAccountControl`, where the DC
   does not store it: it is computed into `msDS-User-Account-Control-Computed` from

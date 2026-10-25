@@ -649,6 +649,12 @@ function Get-DomainPasswordPolicy {
                                 $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue $privilegedTargets -Force
                             }
 
+                            # Named and not assessed, so its rows carry no verdict either:
+                            # Get-TriggerMatch leaves an object with this context uncoloured.
+                            if ($psoState -eq 'Unassigned') {
+                                $psoObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NotAssessed' -Force
+                            }
+
                             $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
                             Show-Object $psoObj -Class Hint
                         }

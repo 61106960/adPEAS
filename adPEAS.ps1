@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-25 17:43:56
-    Version: 2.8.0+20261025-1743
+    Build: 2026-10-25 17:45:08
+    Version: 2.8.0+20261025-1745
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -25078,6 +25078,12 @@ function Get-TriggerMatch {
     $noMatch = [PSCustomObject]@{ Severity = 'Standard'; FindingId = $null }
 
     if ([string]::IsNullOrEmpty($Name)) { return $noMatch }
+
+    # An object its check names and deliberately does not assess - a Fine-Grained Password
+    # Policy assigned to nobody - shows its values without a verdict. Its rows matched the
+    # same triggers as an assessed policy's, so the policy the summary line called "not
+    # assessed" printed red rows, and the HTML card took its severity and score from them.
+    if ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'NotAssessed') { return $noMatch }
 
     # Auto-detect IsComputer from SourceObject via central helper
     if (-not $IsComputer -and $SourceObject) {
@@ -110669,6 +110675,12 @@ function Get-DomainPasswordPolicy {
                                 $psoObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue $privilegedTargets -Force
                             }
 
+                            # Named and not assessed, so its rows carry no verdict either:
+                            # Get-TriggerMatch leaves an object with this context uncoloured.
+                            if ($psoState -eq 'Unassigned') {
+                                $psoObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'NotAssessed' -Force
+                            }
+
                             $psoObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'FineGrainedPasswordPolicy' -Force
                             Show-Object $psoObj -Class Hint
                         }
@@ -155070,7 +155082,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261025-1743"
+$Script:adPEASVersion = "2.8.0+20261025-1745"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

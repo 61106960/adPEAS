@@ -16242,6 +16242,12 @@ function Get-TriggerMatch {
 
     if ([string]::IsNullOrEmpty($Name)) { return $noMatch }
 
+    # An object its check names and deliberately does not assess - a Fine-Grained Password
+    # Policy assigned to nobody - shows its values without a verdict. Its rows matched the
+    # same triggers as an assessed policy's, so the policy the summary line called "not
+    # assessed" printed red rows, and the HTML card took its severity and score from them.
+    if ($SourceObject -and [string]$SourceObject._adPEASContext -eq 'NotAssessed') { return $noMatch }
+
     # Auto-detect IsComputer from SourceObject via central helper
     if (-not $IsComputer -and $SourceObject) {
         $IsComputer = Test-IsComputerObject -Object $SourceObject
