@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-25 13:11:42
-    Version: 2.8.0+20261025-1311
+    Build: 2026-10-25 13:51:34
+    Version: 2.8.0+20261025-1351
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -57676,16 +57676,16 @@ function ConvertTo-FormattedACE {
 
     | Bit     | Name             | Basis |
     |---------|------------------|-------|
-    | 0x1     | FullAccess       | Exchange documents SELF's default as FullAccess and ReadPermission; SELF's mask on a user mailbox is 0x20001 (measured) |
-    | 0x20000 | ReadPermission   | same |
+    | 0x1     | FullAccess       | measured: 0x1 on a mailbox, Get-MailboxPermission "FullAccess" |
+    | 0x20000 | ReadPermission   | measured: SELF 0x20001, Get-MailboxPermission "FullAccess, ReadPermission" |
+    | 0x4     | ExternalAccount  | measured: SELF 0x20005 on arbitration mailboxes, "FullAccess, ExternalAccount, ReadPermission" |
     | 0x10000 | DeleteItem       | the standard right DELETE |
     | 0x40000 | ChangePermission | the standard right WRITE_DAC |
     | 0x80000 | ChangeOwner      | the standard right WRITE_OWNER |
-    | 0x2     | SendAs           | declaration order of the enumeration; seen on SYSTEM (0x20003) |
-    | 0x4     | ExternalAccount  | declaration order of the enumeration; seen on SELF of system mailboxes (0x20005) |
+    | 0x2     | SendAs           | declaration order of the enumeration; seen only on SYSTEM (0x20003) of an object Get-MailboxPermission does not accept |
 
-    The last two could not be checked against Exchange itself. A bit outside the table is
-    shown as hex rather than given a guessed name.
+    Measured against Exchange Server 2019. A bit outside the table is shown as hex rather
+    than given a guessed name.
 
 .PARAMETER Mask
     The access mask of the ACE.
@@ -154926,7 +154926,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261025-1311"
+$Script:adPEASVersion = "2.8.0+20261025-1351"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
