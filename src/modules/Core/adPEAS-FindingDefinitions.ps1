@@ -3463,7 +3463,6 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Can enable TRUSTED_FOR_DELEGATION for unconstrained delegation attacks"
             "Can set DONT_REQUIRE_PREAUTH for AS-REP Roasting"
             "Can set TRUSTED_TO_AUTH_FOR_DELEGATION for constrained delegation"
-            "Can clear PASSWORD_EXPIRED flag"
         )
         Attack = @(
             "1. Attacker modifies userAccountControl on target account"

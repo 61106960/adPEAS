@@ -99,8 +99,8 @@ Modifies user objects in Active Directory for privilege escalation and persisten
 | **Clear Smartcard Required** | `-ClearSmartcardRequired` | Remove SMARTCARD_REQUIRED flag | Cleanup |
 | **Not Delegated** | `-NotDelegated` | Set NOT_DELEGATED flag (UAC 0x100000) | Defensive / Cleanup |
 | **Clear Not Delegated** | `-ClearNotDelegated` | Remove NOT_DELEGATED flag | Cleanup |
-| **Password Expired** | `-PasswordExpired` | Force password change at next logon (UAC 0x800000) | Account disruption |
-| **Clear Password Expired** | `-ClearPasswordExpired` | Remove PASSWORD_EXPIRED flag | Cleanup |
+| **Password Expired** | `-PasswordExpired` | Force password change at next logon (pwdLastSet = 0) | Account disruption |
+| **Clear Password Expired** | `-ClearPasswordExpired` | End the password expiry (pwdLastSet = 0, then -1 - the DC writes the current time) | Cleanup |
 
 ### Syntax
 

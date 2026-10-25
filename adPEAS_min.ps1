@@ -7703,7 +7703,6 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             "Can enable TRUSTED_FOR_DELEGATION for unconstrained delegation attacks"
             "Can set DONT_REQUIRE_PREAUTH for AS-REP Roasting"
             "Can set TRUSTED_TO_AUTH_FOR_DELEGATION for constrained delegation"
-            "Can clear PASSWORD_EXPIRED flag"
         )
         Attack = @(
             "1. Attacker modifies userAccountControl on target account"
@@ -32922,6 +32921,7 @@ function Set-DomainUser {
             }
             return
         }
+        $PwdLastSetZeroed = $false
         try {
             Write-Log "[Set-DomainUser] Searching for user: $Identity"
             $TargetUser = @(Get-DomainUser -Identity $Identity @ConnectionParams)[0]
@@ -34160,103 +34160,113 @@ function Set-DomainUser {
                     }
                 }
                 'SetPasswordExpired' {
-                    Write-Log "[Set-DomainUser] Setting PASSWORD_EXPIRED flag: $($TargetUser.sAMAccountName)"
+                    Write-Log "[Set-DomainUser] Setting pwdLastSet to 0: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
-                        Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
-                        $PASSWORD_EXPIRED = 0x800000
-                        if (($CurrentUAC -band $PASSWORD_EXPIRED) -ne 0) {
+                        $PreviousPwdLastSet = $TargetUser.pwdLastSet
+                        if ("$PreviousPwdLastSet" -eq '0') {
                             if ($PassThru) {
                                 return [PSCustomObject]@{
                                     Operation = "SetPasswordExpired"
                                     User = $TargetUser.sAMAccountName
                                     DistinguishedName = $UserDN
                                     Success = $true
-                                    Message = "PASSWORD_EXPIRED already set (no change)"
+                                    Message = "pwdLastSet already 0 (no change)"
                                 }
                             } else {
-                                Show-Line "PASSWORD_EXPIRED already set on: $($TargetUser.sAMAccountName)" -Class Note
+                                Show-Line "Password already expired (pwdLastSet 0) on: $($TargetUser.sAMAccountName)" -Class Note
                             }
                         } else {
-                            $NewUAC = $CurrentUAC -bor $PASSWORD_EXPIRED
-                            Write-Log "[Set-DomainUser] New userAccountControl: $NewUAC (0x$($NewUAC.ToString('X')))"
                             $ModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
                             $ModifyRequest.DistinguishedName = $UserDN
                             $Modification = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
-                            $Modification.Name = "userAccountControl"
+                            $Modification.Name = "pwdLastSet"
                             $Modification.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
-                            $Modification.Add([string]$NewUAC) | Out-Null
+                            $Modification.Add("0") | Out-Null
                             $ModifyRequest.Modifications.Add($Modification) | Out-Null
                             $Response = $Script:LdapConnection.SendRequest($ModifyRequest)
                             if ($Response.ResultCode -ne [System.DirectoryServices.Protocols.ResultCode]::Success) {
                                 throw "LDAP ModifyRequest failed: $($Response.ResultCode) - $($Response.ErrorMessage)"
                             }
+                            $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
+                            $Message = "pwdLastSet set to 0 - the password must be changed at the next logon"
+                            if (($CurrentUAC -band (0x10000 -bor 0x40000)) -ne 0) {
+                                $Message = "pwdLastSet set to 0 - no effect while DONT_EXPIRE_PASSWORD or SMARTCARD_REQUIRED is set"
+                            }
                             if ($PassThru) {
                                 return [PSCustomObject]@{
                                     Operation = "SetPasswordExpired"
                                     User = $TargetUser.sAMAccountName
                                     DistinguishedName = $UserDN
-                                    OldUAC = $CurrentUAC
-                                    NewUAC = $NewUAC
+                                    PreviousPwdLastSet = $PreviousPwdLastSet
                                     Success = $true
-                                    Message = "PASSWORD_EXPIRED flag set"
+                                    Message = $Message
                                 }
                             } else {
-                                Show-Line "Successfully set PASSWORD_EXPIRED on: $($TargetUser.sAMAccountName)" -Class Hint
+                                Show-Line "$($Message): $($TargetUser.sAMAccountName)" -Class Hint
                             }
                         }
                     } catch {
-                        throw "Failed to set PASSWORD_EXPIRED: $_"
+                        throw "Failed to expire the password: $_"
                     }
                 }
                 'ClearPasswordExpired' {
-                    Write-Log "[Set-DomainUser] Clearing PASSWORD_EXPIRED flag: $($TargetUser.sAMAccountName)"
+                    Write-Log "[Set-DomainUser] Setting pwdLastSet to -1: $($TargetUser.sAMAccountName)"
                     try {
-                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
-                        Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
+                        $PreviousPwdLastSet = $TargetUser.pwdLastSet
+                        $ComputedEntry = @(Get-DomainUser -Identity $UserDN -Properties 'distinguishedName', 'msDS-User-Account-Control-Computed' @ConnectionParams)[0]
+                        $ComputedUAC = $null
+                        if ($ComputedEntry -and $null -ne $ComputedEntry.'msDS-User-Account-Control-Computed') {
+                            $ComputedUAC = ConvertTo-UACValue -Value $ComputedEntry.'msDS-User-Account-Control-Computed' -Default 0
+                        }
                         $PASSWORD_EXPIRED = 0x800000
-                        if (($CurrentUAC -band $PASSWORD_EXPIRED) -eq 0) {
+                        $IsExpired = ("$PreviousPwdLastSet" -eq '0') -or
+                                     ($null -eq $ComputedUAC) -or
+                                     (($ComputedUAC -band $PASSWORD_EXPIRED) -ne 0)
+                        if (-not $IsExpired) {
                             if ($PassThru) {
                                 return [PSCustomObject]@{
                                     Operation = "ClearPasswordExpired"
                                     User = $TargetUser.sAMAccountName
                                     DistinguishedName = $UserDN
                                     Success = $true
-                                    Message = "PASSWORD_EXPIRED already cleared (no change)"
+                                    Message = "Password not expired (no change)"
                                 }
                             } else {
-                                Show-Line "PASSWORD_EXPIRED already cleared on: $($TargetUser.sAMAccountName)" -Class Note
+                                Show-Line "Password not expired on: $($TargetUser.sAMAccountName)" -Class Note
                             }
                         } else {
-                            $NewUAC = $CurrentUAC -band (-bnot $PASSWORD_EXPIRED)
-                            Write-Log "[Set-DomainUser] New userAccountControl: $NewUAC (0x$($NewUAC.ToString('X')))"
-                            $ModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
-                            $ModifyRequest.DistinguishedName = $UserDN
-                            $Modification = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
-                            $Modification.Name = "userAccountControl"
-                            $Modification.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
-                            $Modification.Add([string]$NewUAC) | Out-Null
-                            $ModifyRequest.Modifications.Add($Modification) | Out-Null
-                            $Response = $Script:LdapConnection.SendRequest($ModifyRequest)
-                            if ($Response.ResultCode -ne [System.DirectoryServices.Protocols.ResultCode]::Success) {
-                                throw "LDAP ModifyRequest failed: $($Response.ResultCode) - $($Response.ErrorMessage)"
+                            $Values = @('-1')
+                            if ("$PreviousPwdLastSet" -ne '0') { $Values = @('0', '-1') }
+                            foreach ($Value in $Values) {
+                                if ($Value -eq '-1' -and $Values.Count -gt 1) { $PwdLastSetZeroed = $true }
+                                $ModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
+                                $ModifyRequest.DistinguishedName = $UserDN
+                                $Modification = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
+                                $Modification.Name = "pwdLastSet"
+                                $Modification.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
+                                $Modification.Add($Value) | Out-Null
+                                $ModifyRequest.Modifications.Add($Modification) | Out-Null
+                                $Response = $Script:LdapConnection.SendRequest($ModifyRequest)
+                                if ($Response.ResultCode -ne [System.DirectoryServices.Protocols.ResultCode]::Success) {
+                                    throw "LDAP ModifyRequest failed: $($Response.ResultCode) - $($Response.ErrorMessage)"
+                                }
                             }
+                            $PwdLastSetZeroed = $false
                             if ($PassThru) {
                                 return [PSCustomObject]@{
                                     Operation = "ClearPasswordExpired"
                                     User = $TargetUser.sAMAccountName
                                     DistinguishedName = $UserDN
-                                    OldUAC = $CurrentUAC
-                                    NewUAC = $NewUAC
+                                    PreviousPwdLastSet = $PreviousPwdLastSet
                                     Success = $true
-                                    Message = "PASSWORD_EXPIRED flag cleared"
+                                    Message = "pwdLastSet set to the current time - the password age starts anew"
                                 }
                             } else {
-                                Show-Line "Successfully cleared PASSWORD_EXPIRED on: $($TargetUser.sAMAccountName)" -Class Hint
+                                Show-Line "Password no longer expired (pwdLastSet set to the current time): $($TargetUser.sAMAccountName)" -Class Hint
                             }
                         }
                     } catch {
-                        throw "Failed to clear PASSWORD_EXPIRED: $_"
+                        throw "Failed to clear the password expiry: $_"
                     }
                 }
             }
@@ -34264,6 +34274,9 @@ function Set-DomainUser {
             $UserIdentifier = $Identity
             $writeError = Resolve-LDAPWriteError -Exception $_.Exception -Operation "modify user '$UserIdentifier'"
             $ErrorMsg = $writeError.Formatted
+            if ($PwdLastSetZeroed) {
+                $ErrorMsg += " - pwdLastSet is 0 now: the password must be changed at the next logon"
+            }
             Write-Log ("[Set-DomainUser] Error: " + $ErrorMsg)
             $authErrorPattern = "user name or password is incorrect|password is incorrect"
             if (($PSCmdlet.ParameterSetName -in @('SetPassword', 'ChangePassword')) -and (($writeError.ServerMessage -match $authErrorPattern) -or ($_.Exception.Message -match $authErrorPattern))) {
@@ -98841,7 +98854,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1545"
+$Script:adPEASVersion = "2.8.0+20261025-1743"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

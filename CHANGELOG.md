@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`Set-DomainUser -PasswordExpired` and `-ClearPasswordExpired` change the password
+  expiry.** Both wrote the `PASSWORD_EXPIRED` bit into `userAccountControl`, where the DC
+  does not store it: it is computed into `msDS-User-Account-Control-Computed` from
+  `pwdLastSet` and the maximum password age. `-PasswordExpired` changed nothing, and
+  `-ClearPasswordExpired` read the stored value, so on an expired account it answered
+  "already cleared". `-PasswordExpired` now sets `pwdLastSet` to 0. `-ClearPasswordExpired`
+  reads the computed attribute and sets `pwdLastSet` to 0 and then to -1: the DC turns -1
+  into the current time only over a 0, and answers -1 over an old timestamp with success
+  while keeping the timestamp.
 - **A gMSA password the scanning account can read is reported.** `Get-ManagedServiceAccountSecurity`
   asked for `msDS-ManagedPassword` with `Get-DomainUser -Identity <gMSA>` alone, whose
   base filter is persons that are not computers. A gMSA is a computer object, so the
