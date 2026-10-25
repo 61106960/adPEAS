@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A gMSA password the scanning account can read is reported.** `Get-ManagedServiceAccountSecurity`
+  asked for `msDS-ManagedPassword` with `Get-DomainUser -Identity <gMSA>` alone, whose
+  base filter is persons that are not computers. A gMSA is a computer object, so the
+  lookup matched nothing for every gMSA in every domain, and the check reported "Current
+  user cannot retrieve any gMSA passwords" - as a secure configuration - to an account
+  listed among the readers. It now searches the managed service accounts and shows the
+  NT hash it reads.
 - **Under PowerShell 7 every HTTPS endpoint read as not reachable.** Each HTTPS request -
   AD CS web enrollment, NDES, CEP/CES, the EPA probe, certificate submission over certsrv
   - accepted the server certificate through the script block `{ $true }`. PowerShell 7

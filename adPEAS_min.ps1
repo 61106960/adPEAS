@@ -73987,7 +73987,7 @@ function Get-ManagedServiceAccountSecurity {
                     $gmsaDN = $gmsa.distinguishedName
                     Write-Log "[Get-ManagedServiceAccountSecurity] Attempting to read password for $gmsaName"
                     try {
-                        $gmsaWithPassword = @(Get-DomainUser -Identity $gmsaName -Properties 'msDS-ManagedPassword' @PSBoundParameters)[0]
+                        $gmsaWithPassword = @(Get-DomainUser -Identity $gmsaName -GMSA -Properties 'msDS-ManagedPassword' @PSBoundParameters)[0]
                         $managedPasswordBlob = $gmsaWithPassword.'msDS-ManagedPassword'
                         if ($managedPasswordBlob) {
                             $passwordBytes = $null
@@ -98799,7 +98799,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1351"
+$Script:adPEASVersion = "2.8.0+20261025-1439"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

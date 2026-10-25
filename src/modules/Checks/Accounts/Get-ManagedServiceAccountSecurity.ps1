@@ -504,8 +504,15 @@ function Get-ManagedServiceAccountSecurity {
 
                     try {
                         # Query msDS-ManagedPassword - this is a constructed attribute
-                        # Only returned if the caller has permission to read it
-                        $gmsaWithPassword = @(Get-DomainUser -Identity $gmsaName -Properties 'msDS-ManagedPassword' @PSBoundParameters)[0]
+                        # Only returned if the caller has permission to read it.
+                        #
+                        # -GMSA is what makes the lookup find the account at all. Without it
+                        # Get-DomainUser searches persons that are not computers, and a gMSA is
+                        # a computer object: the query matched nothing, for every gMSA, and
+                        # the check reported "Current user cannot retrieve any gMSA passwords"
+                        # to an account that could read them (measured with a reader listed
+                        # in msDS-GroupMSAMembership).
+                        $gmsaWithPassword = @(Get-DomainUser -Identity $gmsaName -GMSA -Properties 'msDS-ManagedPassword' @PSBoundParameters)[0]
 
                         $managedPasswordBlob = $gmsaWithPassword.'msDS-ManagedPassword'
 
@@ -570,12 +577,13 @@ function Get-ManagedServiceAccountSecurity {
                 if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
 
                 # msDS-ManagedPassword is a confidential attribute: a DC releases it only
-                # over an encrypted connection. adPEAS sets neither signing nor sealing on
-                # a plain LDAP bind - SecureSocketLayer is set under -UseLDAPS and for
-                # Schannel - so over port 389 the attribute does not arrive for an entitled
-                # caller either, and without an error. An empty result is then no evidence
-                # about anyone's permissions, which is what the secure line below used to
-                # claim it was.
+                # over an encrypted connection - LDAPS, or a SASL bind with sealing. A
+                # Negotiate or Kerberos bind on port 389 is sealed by Windows on its own,
+                # and the connection then reports SecureSocketLayer = $true as well
+                # (measured), so the test below holds for those. A simple bind on 389 is not
+                # encrypted: there the attribute does not arrive for an entitled caller
+                # either, and without an error. An empty result is then no evidence about
+                # anyone's permissions, which is what the secure line below used to claim.
                 $encryptedSession = $false
                 try {
                     if ($Script:LdapConnection -and $Script:LdapConnection.SessionOptions -and $Script:LdapConnection.SessionOptions.SecureSocketLayer) {
