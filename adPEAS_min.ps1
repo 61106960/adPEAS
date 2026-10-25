@@ -4060,6 +4060,7 @@ $Script:ExcludeAttributes = @(
     'RiskyMembers',
     '_memberVerdicts', '_groupBaseSeverity',
     'MemberCount', 'ProtectedCount',
+    'ActivityDetails',
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
     '_gmsaReaderVerdicts',
     '_IsEffective', '_HasAnyLink',
@@ -4309,6 +4310,37 @@ function Convert-DefaultToRenderValues {
             Values          = @(
                 New-RenderValue -Display $Value.DisplayText -Severity 'Standard' -RawValue $Value
             )
+        }
+    }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $displayItems = @()
+        if ($Value.PSObject.Properties['DisplayText']) {
+            $displayItems = @($Value)
+        } else {
+            foreach ($property in $Value.PSObject.Properties) {
+                foreach ($part in @($property.Value)) {
+                    if ($part -is [System.Management.Automation.PSCustomObject] -and $part.PSObject.Properties['DisplayText']) {
+                        $displayItems += $part
+                    }
+                }
+            }
+        }
+        if ($displayItems.Count -gt 0) {
+            $renderValues = @()
+            foreach ($item in $displayItems) {
+                $itemDisplay = [string]$item.DisplayText
+                if ([string]::IsNullOrEmpty($itemDisplay)) { continue }
+                $itemMatch = Get-TriggerMatch -Name $Name -Value $item -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+                $renderValues += New-RenderValue -Display $itemDisplay -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
+            }
+            if ($renderValues.Count -eq 0) { return $null }
+            $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+            return @{
+                RowType         = 'MultiValue'
+                OverallSeverity = $maxSev
+                ForceAttributeClass = ($maxSev -ne 'Standard')
+                Values          = $renderValues
+            }
         }
     }
     if ($Value -is [string] -and $Value -match "`n") {
@@ -23794,7 +23826,11 @@ function Export-FindingsCache {
         if ($f.Object) {
             $objectProps = @{}
             foreach ($p in $f.Object.PSObject.Properties) {
-                if ($p.Value -is [System.Collections.IDictionary] -or
+                $keepObject = $p.Value -is [System.Management.Automation.PSCustomObject] -and
+                    -not ($Script:ExcludeAttributes -contains $p.Name) -and
+                    -not ($p.Value.PSObject.TypeNames -contains 'adPEAS.ImageData')
+                if ($keepObject -or
+                    $p.Value -is [System.Collections.IDictionary] -or
                     $p.Value -is [array] -or
                     $p.Value -is [string] -or
                     $p.Value -is [int] -or $p.Value -is [long] -or
@@ -27692,6 +27728,7 @@ function Convert-CertificateToInfo {
             CRLDistributionPoints   = $CRLDistributionPoints
             OCSPURLs                = $OCSPURLs
             AIAURLs                 = $AIAURLs
+            DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASDate $Cert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $Cert.NotAfter 'yyyy-MM-dd') ($Status)"
         }
         $Cert.Dispose()
         return $CertInfo
@@ -27716,6 +27753,7 @@ function Convert-CertificateToInfo {
             OCSPURLs                = @()
             AIAURLs                 = @()
             ErrorInfo    = if ($CertBytes.Length -gt 0) { "$($CertBytes.Length) bytes" } else { "Empty" }
+            DisplayText  = if ($CertBytes.Length -gt 0) { "[Invalid Certificate] ($($CertBytes.Length) bytes)" } else { "[Invalid Certificate] (empty)" }
         }
     }
 }
@@ -28204,7 +28242,7 @@ function ConvertFrom-LDAPAttribute {
                     }
                 } elseif ($PropName -ieq "msExchMailboxSecurityDescriptor") {
                     try {
-                        $SDResult = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $PropValue[0]
+                        $SDResult = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $PropValue[0] -MailboxRights
                         $ConvertedProperties[$PropName] = $SDResult
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]
@@ -39343,11 +39381,43 @@ function ConvertTo-FormattedACE {
         }
     }
 }
+function ConvertTo-MailboxRightsName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [long]$Mask
+    )
+    $rights = [ordered]@{
+        0x1L     = 'FullAccess'
+        0x2L     = 'SendAs'
+        0x4L     = 'ExternalAccount'
+        0x10000L = 'DeleteItem'
+        0x20000L = 'ReadPermission'
+        0x40000L = 'ChangePermission'
+        0x80000L = 'ChangeOwner'
+    }
+    $remaining = $Mask -band 0xFFFFFFFFL
+    if ($remaining -eq 0) { return 'None' }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($bit in $rights.Keys) {
+        if (($remaining -band $bit) -eq $bit) {
+            $names.Add($rights[$bit])
+            $remaining = $remaining -band (-bnot $bit)
+        }
+    }
+    if ($remaining -ne 0) {
+        $names.Add(('0x{0:X}' -f $remaining))
+    }
+    return ($names -join ', ')
+}
 function ConvertFrom-SecurityDescriptor {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [byte[]]$SecurityDescriptorBytes
+        [byte[]]$SecurityDescriptorBytes,
+        [Parameter(Mandatory=$false)]
+        [switch]$MailboxRights
     )
     try {
         $SD = New-Object System.DirectoryServices.ActiveDirectorySecurity
@@ -39380,6 +39450,9 @@ function ConvertFrom-SecurityDescriptor {
                 else {
                     $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight (All-Extended-Rights)"
                 }
+            }
+            if ($MailboxRights) {
+                $RightsDisplay = ConvertTo-MailboxRightsName -Mask ([long][int]$ACE.ActiveDirectoryRights)
             }
             $DisplayText = "$ACEType - $PrincipalName - $RightsDisplay"
             $ACEList += [PSCustomObject]@{
@@ -98726,7 +98799,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1239"
+$Script:adPEASVersion = "2.8.0+20261025-1311"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

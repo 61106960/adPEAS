@@ -147,6 +147,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Write-Log.ps1"
     . "$Script:ScriptPath\modules\Helpers\New-SafePassword.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-FormattedACE.ps1"
+    . "$Script:ScriptPath\modules\Helpers\ConvertTo-MailboxRightsName.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-SecurityDescriptor.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-AccessRules.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-ACEAppliesToSelf.ps1"

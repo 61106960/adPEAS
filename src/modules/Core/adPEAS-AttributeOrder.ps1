@@ -884,6 +884,11 @@ $Script:ExcludeAttributes = @(
     '_memberVerdicts', '_groupBaseSeverity',
     # Operator Group internal counts - kept in object but not displayed
     'MemberCount', 'ProtectedCount',
+    # Test-AccountActivity's working object (IsActive, DaysSinceActivity,
+    # DaysSincePasswordChange, ...), which seven checks read. What it says is on the card
+    # already, as activityStatus, pwdLastSet and lastLogonTimestamp; as a row of its own it
+    # was the object printed raw - "@{IsEnabled=True; IsActive=False; ...}".
+    'ActivityDetails',
     # Internal adPEAS type markers and transport properties - not for display.
     # _isExchangeGroup tells the member renderer to judge members against what belongs in
     # an Exchange service group rather than against privilege; it is read from the source

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-25 12:39:02
-    Version: 2.8.0+20261025-1239
+    Build: 2026-10-25 13:11:42
+    Version: 2.8.0+20261025-1311
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7818,6 +7818,11 @@ $Script:ExcludeAttributes = @(
     '_memberVerdicts', '_groupBaseSeverity',
     # Operator Group internal counts - kept in object but not displayed
     'MemberCount', 'ProtectedCount',
+    # Test-AccountActivity's working object (IsActive, DaysSinceActivity,
+    # DaysSincePasswordChange, ...), which seven checks read. What it says is on the card
+    # already, as activityStatus, pwdLastSet and lastLogonTimestamp; as a row of its own it
+    # was the object printed raw - "@{IsEnabled=True; IsActive=False; ...}".
+    'ActivityDetails',
     # Internal adPEAS type markers and transport properties - not for display.
     # _isExchangeGroup tells the member renderer to judge members against what belongs in
     # an Exchange service group rather than against privilege; it is read from the source
@@ -8321,6 +8326,44 @@ function Convert-DefaultToRenderValues {
             Values          = @(
                 New-RenderValue -Display $Value.DisplayText -Severity 'Standard' -RawValue $Value
             )
+        }
+    }
+
+    # A structured value that brings its own display line - a certificate from
+    # Convert-CertificateToInfo - or whose parts do - a security descriptor from
+    # ConvertFrom-SecurityDescriptor, shown as its owner and then one line per ACE. Such a
+    # value used to fall through to the scalar path below, and the card showed what
+    # [string] makes of an object: "@{Owner=; ACEs=System.Object[]}".
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $displayItems = @()
+        if ($Value.PSObject.Properties['DisplayText']) {
+            $displayItems = @($Value)
+        } else {
+            foreach ($property in $Value.PSObject.Properties) {
+                foreach ($part in @($property.Value)) {
+                    if ($part -is [System.Management.Automation.PSCustomObject] -and $part.PSObject.Properties['DisplayText']) {
+                        $displayItems += $part
+                    }
+                }
+            }
+        }
+
+        if ($displayItems.Count -gt 0) {
+            $renderValues = @()
+            foreach ($item in $displayItems) {
+                $itemDisplay = [string]$item.DisplayText
+                if ([string]::IsNullOrEmpty($itemDisplay)) { continue }
+                $itemMatch = Get-TriggerMatch -Name $Name -Value $item -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+                $renderValues += New-RenderValue -Display $itemDisplay -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
+            }
+            if ($renderValues.Count -eq 0) { return $null }
+            $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+            return @{
+                RowType         = 'MultiValue'
+                OverallSeverity = $maxSev
+                ForceAttributeClass = ($maxSev -ne 'Standard')
+                Values          = $renderValues
+            }
         }
     }
 
@@ -32103,7 +32146,18 @@ function Export-FindingsCache {
                 # Serialize primitive types directly, convert complex types to string.
                 # Dates, and whatever an array or dictionary holds, go through
                 # ConvertTo-FindingsCacheValue, so the file is the same on 5.1 and pwsh 7.
-                if ($p.Value -is [System.Collections.IDictionary] -or
+                #
+                # A PSCustomObject is kept as one too - a single certificate, the mailbox
+                # security descriptor. Its string is empty, so it used to reach the file as ""
+                # and a report rebuilt from it showed nothing where the live one showed the
+                # value. Two kinds stay strings: an attribute the report never shows
+                # ($Script:ExcludeAttributes - nTSecurityDescriptor would put every ACL of
+                # every listed object into the file) and a picture, whose bytes would.
+                $keepObject = $p.Value -is [System.Management.Automation.PSCustomObject] -and
+                    -not ($Script:ExcludeAttributes -contains $p.Name) -and
+                    -not ($p.Value.PSObject.TypeNames -contains 'adPEAS.ImageData')
+                if ($keepObject -or
+                    $p.Value -is [System.Collections.IDictionary] -or
                     $p.Value -is [array] -or
                     $p.Value -is [string] -or
                     $p.Value -is [int] -or $p.Value -is [long] -or
@@ -38775,6 +38829,10 @@ function Convert-CertificateToInfo {
             CRLDistributionPoints   = $CRLDistributionPoints
             OCSPURLs                = $OCSPURLs
             AIAURLs                 = $AIAURLs
+            # The line a report shows for this certificate. Without it the HTML card printed
+            # the whole object - "@{Subject=...; CRLDistributionPoints=System.Object[]; ...}"
+            # - under userCertificate; the fields above stay for whoever needs them.
+            DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASDate $Cert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $Cert.NotAfter 'yyyy-MM-dd') ($Status)"
         }
 
         $Cert.Dispose()
@@ -38801,6 +38859,7 @@ function Convert-CertificateToInfo {
             OCSPURLs                = @()
             AIAURLs                 = @()
             ErrorInfo    = if ($CertBytes.Length -gt 0) { "$($CertBytes.Length) bytes" } else { "Empty" }
+            DisplayText  = if ($CertBytes.Length -gt 0) { "[Invalid Certificate] ($($CertBytes.Length) bytes)" } else { "[Invalid Certificate] (empty)" }
         }
     }
 }
@@ -39487,7 +39546,7 @@ function ConvertFrom-LDAPAttribute {
                     }
                 } elseif ($PropName -ieq "msExchMailboxSecurityDescriptor") {
                     try {
-                        $SDResult = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $PropValue[0]
+                        $SDResult = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $PropValue[0] -MailboxRights
                         $ConvertedProperties[$PropName] = $SDResult
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]
@@ -57600,6 +57659,85 @@ function ConvertTo-FormattedACE {
 }
 
 
+# ----- ConvertTo-MailboxRightsName.ps1 -----
+
+<#
+.SYNOPSIS
+    Names the access mask of an ACE in msExchMailboxSecurityDescriptor the way Exchange
+    names mailbox permissions.
+
+.DESCRIPTION
+    A mailbox security descriptor reuses the bits of an Active Directory access mask with
+    Exchange's own meaning. Read as directory rights, the default entry for the mailbox
+    owner - NT AUTHORITY\SELF, mask 0x20001 - says "CreateChild,ReadControl", which nobody
+    recognises; Get-MailboxPermission shows the same entry as "FullAccess, ReadPermission".
+
+    The names are the members of Exchange's MailboxRights enumeration. Their values:
+
+    | Bit     | Name             | Basis |
+    |---------|------------------|-------|
+    | 0x1     | FullAccess       | Exchange documents SELF's default as FullAccess and ReadPermission; SELF's mask on a user mailbox is 0x20001 (measured) |
+    | 0x20000 | ReadPermission   | same |
+    | 0x10000 | DeleteItem       | the standard right DELETE |
+    | 0x40000 | ChangePermission | the standard right WRITE_DAC |
+    | 0x80000 | ChangeOwner      | the standard right WRITE_OWNER |
+    | 0x2     | SendAs           | declaration order of the enumeration; seen on SYSTEM (0x20003) |
+    | 0x4     | ExternalAccount  | declaration order of the enumeration; seen on SELF of system mailboxes (0x20005) |
+
+    The last two could not be checked against Exchange itself. A bit outside the table is
+    shown as hex rather than given a guessed name.
+
+.PARAMETER Mask
+    The access mask of the ACE.
+
+.OUTPUTS
+    [string] - the names joined with ", ", or "None" for an empty mask.
+
+.EXAMPLE
+    ConvertTo-MailboxRightsName -Mask 0x20001
+
+    FullAccess, ReadPermission
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function ConvertTo-MailboxRightsName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [long]$Mask
+    )
+
+    # The L suffix keeps every literal an Int64 on Windows PowerShell 5.1 as well
+    $rights = [ordered]@{
+        0x1L     = 'FullAccess'
+        0x2L     = 'SendAs'
+        0x4L     = 'ExternalAccount'
+        0x10000L = 'DeleteItem'
+        0x20000L = 'ReadPermission'
+        0x40000L = 'ChangePermission'
+        0x80000L = 'ChangeOwner'
+    }
+
+    $remaining = $Mask -band 0xFFFFFFFFL
+    if ($remaining -eq 0) { return 'None' }
+
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($bit in $rights.Keys) {
+        if (($remaining -band $bit) -eq $bit) {
+            $names.Add($rights[$bit])
+            $remaining = $remaining -band (-bnot $bit)
+        }
+    }
+    if ($remaining -ne 0) {
+        $names.Add(('0x{0:X}' -f $remaining))
+    }
+    return ($names -join ', ')
+}
+
+
+
 # ----- ConvertFrom-SecurityDescriptor.ps1 -----
 
 <#
@@ -57613,6 +57751,12 @@ function ConvertTo-FormattedACE {
 
 .PARAMETER SecurityDescriptorBytes
     Byte array of the Security Descriptor (nTSecurityDescriptor attribute).
+
+.PARAMETER MailboxRights
+    The descriptor is msExchMailboxSecurityDescriptor: RightsDisplay and DisplayText name
+    the mask as Exchange mailbox permissions (FullAccess, ReadPermission, ...) through
+    ConvertTo-MailboxRightsName, not as directory rights (CreateChild, ReadControl, ...).
+    Rights keeps the directory names, as for every other descriptor.
 
 .EXAMPLE
     $sd = Get-DomainUser -Identity "admin" -Properties nTSecurityDescriptor
@@ -57638,7 +57782,10 @@ function ConvertFrom-SecurityDescriptor {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [byte[]]$SecurityDescriptorBytes
+        [byte[]]$SecurityDescriptorBytes,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$MailboxRights
     )
 
     try {
@@ -57709,6 +57856,13 @@ function ConvertFrom-SecurityDescriptor {
                     # so anything matching on that keeps working.
                     $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight (All-Extended-Rights)"
                 }
+            }
+
+            # A mailbox descriptor reuses the mask bits with Exchange's meaning, so it is
+            # shown in Exchange's names. Rights stays as above: it is the field a consumer
+            # matches on, and it means the same thing for every descriptor.
+            if ($MailboxRights) {
+                $RightsDisplay = ConvertTo-MailboxRightsName -Mask ([long][int]$ACE.ActiveDirectoryRights)
             }
 
             # Build display text for this ACE (for backward-compatible string output)
@@ -154772,7 +154926,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261025-1239"
+$Script:adPEASVersion = "2.8.0+20261025-1311"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

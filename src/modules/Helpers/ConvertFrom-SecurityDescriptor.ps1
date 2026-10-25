@@ -10,6 +10,12 @@
 .PARAMETER SecurityDescriptorBytes
     Byte array of the Security Descriptor (nTSecurityDescriptor attribute).
 
+.PARAMETER MailboxRights
+    The descriptor is msExchMailboxSecurityDescriptor: RightsDisplay and DisplayText name
+    the mask as Exchange mailbox permissions (FullAccess, ReadPermission, ...) through
+    ConvertTo-MailboxRightsName, not as directory rights (CreateChild, ReadControl, ...).
+    Rights keeps the directory names, as for every other descriptor.
+
 .EXAMPLE
     $sd = Get-DomainUser -Identity "admin" -Properties nTSecurityDescriptor
     ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $sd.nTSecurityDescriptor
@@ -34,7 +40,10 @@ function ConvertFrom-SecurityDescriptor {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [byte[]]$SecurityDescriptorBytes
+        [byte[]]$SecurityDescriptorBytes,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$MailboxRights
     )
 
     try {
@@ -105,6 +114,13 @@ function ConvertFrom-SecurityDescriptor {
                     # so anything matching on that keeps working.
                     $RightsDisplay = $Rights -replace 'ExtendedRight', "ExtendedRight (All-Extended-Rights)"
                 }
+            }
+
+            # A mailbox descriptor reuses the mask bits with Exchange's meaning, so it is
+            # shown in Exchange's names. Rights stays as above: it is the field a consumer
+            # matches on, and it means the same thing for every descriptor.
+            if ($MailboxRights) {
+                $RightsDisplay = ConvertTo-MailboxRightsName -Mask ([long][int]$ACE.ActiveDirectoryRights)
             }
 
             # Build display text for this ACE (for backward-compatible string output)

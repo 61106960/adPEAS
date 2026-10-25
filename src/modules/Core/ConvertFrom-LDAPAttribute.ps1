@@ -208,6 +208,10 @@ function Convert-CertificateToInfo {
             CRLDistributionPoints   = $CRLDistributionPoints
             OCSPURLs                = $OCSPURLs
             AIAURLs                 = $AIAURLs
+            # The line a report shows for this certificate. Without it the HTML card printed
+            # the whole object - "@{Subject=...; CRLDistributionPoints=System.Object[]; ...}"
+            # - under userCertificate; the fields above stay for whoever needs them.
+            DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASDate $Cert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $Cert.NotAfter 'yyyy-MM-dd') ($Status)"
         }
 
         $Cert.Dispose()
@@ -234,6 +238,7 @@ function Convert-CertificateToInfo {
             OCSPURLs                = @()
             AIAURLs                 = @()
             ErrorInfo    = if ($CertBytes.Length -gt 0) { "$($CertBytes.Length) bytes" } else { "Empty" }
+            DisplayText  = if ($CertBytes.Length -gt 0) { "[Invalid Certificate] ($($CertBytes.Length) bytes)" } else { "[Invalid Certificate] (empty)" }
         }
     }
 }
@@ -920,7 +925,7 @@ function ConvertFrom-LDAPAttribute {
                     }
                 } elseif ($PropName -ieq "msExchMailboxSecurityDescriptor") {
                     try {
-                        $SDResult = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $PropValue[0]
+                        $SDResult = ConvertFrom-SecurityDescriptor -SecurityDescriptorBytes $PropValue[0] -MailboxRights
                         $ConvertedProperties[$PropName] = $SDResult
                     } catch {
                         $ConvertedProperties[$PropName] = $PropValue[0]

@@ -169,6 +169,44 @@ function Convert-DefaultToRenderValues {
         }
     }
 
+    # A structured value that brings its own display line - a certificate from
+    # Convert-CertificateToInfo - or whose parts do - a security descriptor from
+    # ConvertFrom-SecurityDescriptor, shown as its owner and then one line per ACE. Such a
+    # value used to fall through to the scalar path below, and the card showed what
+    # [string] makes of an object: "@{Owner=; ACEs=System.Object[]}".
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $displayItems = @()
+        if ($Value.PSObject.Properties['DisplayText']) {
+            $displayItems = @($Value)
+        } else {
+            foreach ($property in $Value.PSObject.Properties) {
+                foreach ($part in @($property.Value)) {
+                    if ($part -is [System.Management.Automation.PSCustomObject] -and $part.PSObject.Properties['DisplayText']) {
+                        $displayItems += $part
+                    }
+                }
+            }
+        }
+
+        if ($displayItems.Count -gt 0) {
+            $renderValues = @()
+            foreach ($item in $displayItems) {
+                $itemDisplay = [string]$item.DisplayText
+                if ([string]::IsNullOrEmpty($itemDisplay)) { continue }
+                $itemMatch = Get-TriggerMatch -Name $Name -Value $item -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+                $renderValues += New-RenderValue -Display $itemDisplay -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
+            }
+            if ($renderValues.Count -eq 0) { return $null }
+            $maxSev = Get-MaxSeverityFromValues -Values $renderValues
+            return @{
+                RowType         = 'MultiValue'
+                OverallSeverity = $maxSev
+                ForceAttributeClass = ($maxSev -ne 'Standard')
+                Values          = $renderValues
+            }
+        }
+    }
+
     # Handle multi-line strings (e.g., siteIPSubnets, domainControllers)
     if ($Value -is [string] -and $Value -match "`n") {
         $lines = $Value -split "`n"

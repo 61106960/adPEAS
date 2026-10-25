@@ -51,6 +51,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   LAPS password was reported with "1 computer(s) have a LAPS password stored that this
   account may not read". The target is now read from the descriptor; the key encryption
   algorithm, a field that was never filled, is named as well.
+- **The HTML card no longer prints raw objects among all attributes.** Three rows of the
+  expandable attribute list showed what PowerShell makes of an object as a string:
+  - `userCertificate` - `@{Subject=...; CRLDistributionPoints=System.Object[]; ...}`. Each
+    certificate is now one line: `srv-dc.contoso.com - issued by Contoso-CA, valid
+    2026-09-29 to 2027-09-29 (Valid)`.
+  - `msExchMailboxSecurityDescriptor` - `@{Owner=; ACEs=System.Object[]}`. It now shows
+    the owner and one line per ACE, the rights named as Exchange names them:
+    `Allow - NT AUTHORITY\SELF - FullAccess, ReadPermission` rather than
+    `CreateChild,ReadControl`, which is what those bits mean in a mailbox descriptor.
+  - `ActivityDetails` - `@{IsEnabled=True; IsActive=False; ...}`, the working object behind
+    `activityStatus`. The row is gone; what it said is on the card already.
+
+  The JSON export now keeps such an object as an object - it was written as an empty
+  string - so a report rebuilt with `Convert-adPEASReport` shows the same lines. An
+  attribute the report never shows, such as `nTSecurityDescriptor`, and pictures are still
+  left out of the file.
 
 ---
 

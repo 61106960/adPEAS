@@ -513,7 +513,18 @@ function Export-FindingsCache {
                 # Serialize primitive types directly, convert complex types to string.
                 # Dates, and whatever an array or dictionary holds, go through
                 # ConvertTo-FindingsCacheValue, so the file is the same on 5.1 and pwsh 7.
-                if ($p.Value -is [System.Collections.IDictionary] -or
+                #
+                # A PSCustomObject is kept as one too - a single certificate, the mailbox
+                # security descriptor. Its string is empty, so it used to reach the file as ""
+                # and a report rebuilt from it showed nothing where the live one showed the
+                # value. Two kinds stay strings: an attribute the report never shows
+                # ($Script:ExcludeAttributes - nTSecurityDescriptor would put every ACL of
+                # every listed object into the file) and a picture, whose bytes would.
+                $keepObject = $p.Value -is [System.Management.Automation.PSCustomObject] -and
+                    -not ($Script:ExcludeAttributes -contains $p.Name) -and
+                    -not ($p.Value.PSObject.TypeNames -contains 'adPEAS.ImageData')
+                if ($keepObject -or
+                    $p.Value -is [System.Collections.IDictionary] -or
                     $p.Value -is [array] -or
                     $p.Value -is [string] -or
                     $p.Value -is [int] -or $p.Value -is [long] -or
