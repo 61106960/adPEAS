@@ -1646,6 +1646,15 @@ function Collect-BHUsers {
     $domainName = $Script:LDAPContext.Domain.ToUpper()
     $users = Get-DomainUser @connectionParams
 
+    # Managed service accounts - gMSAs and standalone MSAs - go into the graph as users, the
+    # way SharpHound files them ("Override GMSA/MSA account to treat them as users for the
+    # graph"). They are computer objects whose objectCategory is their own class, so neither
+    # the query above (persons that are not computers) nor Collect-BHComputers'
+    # (objectCategory=computer) found them: the graph had no gMSA, and none of the
+    # ReadGMSAPassword edges ConvertTo-BHAces builds from msDS-GroupMSAMembership - which
+    # it only builds for an object it is asked about.
+    $users = @($users) + @(Get-DomainUser -GMSA @connectionParams)
+
     $bhUsers = @()
 
     foreach ($user in $users) {

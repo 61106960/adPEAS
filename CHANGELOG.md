@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   user cannot retrieve any gMSA passwords" - as a secure configuration - to an account
   listed among the readers. It now searches the managed service accounts and shows the
   NT hash it reads.
+- **The BloodHound export contains gMSAs and who may read their passwords.** A gMSA is a
+  computer object with its own objectCategory, so neither the collector's user query nor
+  its computer query found it: the export had no gMSA node, and none of the
+  `ReadGMSAPassword` edges the collector builds from `msDS-GroupMSAMembership`. Managed
+  service accounts - gMSA and standalone MSA - are now exported as users, the way
+  SharpHound files them, with their edges.
 - **Under PowerShell 7 every HTTPS endpoint read as not reachable.** Each HTTPS request -
   AD CS web enrollment, NDES, CEP/CES, the EPA probe, certificate submission over certsrv
   - accepted the server certificate through the script block `{ $true }`. PowerShell 7

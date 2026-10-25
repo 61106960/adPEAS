@@ -94571,6 +94571,7 @@ function Collect-BHUsers {
 	if ($Credential) { $connectionParams['Credential'] = $Credential }
 	$domainName = $Script:LDAPContext.Domain.ToUpper()
 	$users = Get-DomainUser @connectionParams
+	$users = @($users) + @(Get-DomainUser -GMSA @connectionParams)
 	$bhUsers = @()
 	foreach ($user in $users) {
 	    $sid = $null
@@ -95692,7 +95693,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261025-1439"
+$Script:adPEASVersion = "2.8.0+20261025-1504"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
