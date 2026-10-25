@@ -884,8 +884,9 @@ function Test-ExtendedProtection {
             Write-Log "[Test-ExtendedProtection] Failed to configure TLS: $($_.Exception.Message)"
         }
 
-        # Ignore SSL certificate errors (self-signed, expired, etc.)
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        # Ignore SSL certificate errors (self-signed, expired, etc.). A compiled delegate,
+        # not a script block: see New-AcceptAnyCertificateCallback for why pwsh 7 needs it.
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
         # FIX: NTLM is connection-oriented - we need Type1->Type2->Type3 on SAME TCP connection
         # Limit connections to 1 for this ServicePoint to ensure connection reuse

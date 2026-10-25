@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-23 08:32:37
-    Version: 2.8.0
+    Build: 2026-10-25 10:41:00
+    Version: 2.8.0+20261025-1041
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -34371,7 +34371,7 @@ function Connect-LDAP {
 
         # SSL Certificate Validation Callback (only relevant for LDAPS)
         if ($IgnoreSSLErrors) {
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
             # Disable CRL (Certificate Revocation List) checking to prevent ~15s timeout
             # during LDAPS Bind() when CRL Distribution Points are unreachable (lab/isolated environments)
             # SChannel performs CRL checks BEFORE VerifyServerCertificate callback is invoked
@@ -56982,6 +56982,69 @@ function Resolve-adPEASModules {
     }
 
     return @($selected)
+}
+
+
+
+# ----- New-AcceptAnyCertificateCallback.ps1 -----
+
+<#
+.SYNOPSIS
+    Returns a certificate validation callback that accepts every server certificate and
+    runs on any thread.
+
+.DESCRIPTION
+    adPEAS talks HTTPS to internal services - AD CS web enrollment, NDES, CEP/CES, the EPA
+    probe - whose certificates come from the customer's own CA or are self-signed, and
+    which the scanning host usually does not trust. Every one of those requests therefore
+    sets [System.Net.ServicePointManager]::ServerCertificateValidationCallback first.
+
+    It used to be set to the script block { $true }. PowerShell turns a script block into
+    a delegate that can only run on a thread with a runspace. Windows PowerShell 5.1 calls
+    the callback on the thread that called GetResponse(), which has one. PowerShell 7 does
+    not: HttpWebRequest is built on HttpClient there and validates the certificate on a
+    thread-pool thread, the script block throws "There is no Runspace available to run
+    scripts in this thread", the handshake fails, and every HTTPS endpoint read as not
+    reachable. Measured against a lab CA: CertSrv, CEP, CES and NDES over HTTPS all went
+    missing from the report under pwsh 7, the EPA probe failed, and nothing said why -
+    the scan fell back to the HTTP endpoints and reported those as all there is.
+
+    The delegate returned here is compiled from an expression tree, so no script block is
+    involved and it runs on whatever thread .NET calls it from. System.Linq.Expressions is
+    part of both .NET Framework and .NET, so this needs neither Add-Type nor a compiler.
+
+    The SslStream callback in Connect-LDAP and the VerifyServerCertificate callback of the
+    LDAPS connection stay script blocks on purpose: both are called synchronously on the
+    calling thread on both runtimes (measured), and the SslStream one reads
+    $IgnoreSSLErrors from its scope.
+
+.OUTPUTS
+    [System.Net.Security.RemoteCertificateValidationCallback]
+
+.EXAMPLE
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function New-AcceptAnyCertificateCallback {
+    [CmdletBinding()]
+    [OutputType([System.Net.Security.RemoteCertificateValidationCallback])]
+    param()
+
+    $expression = [System.Linq.Expressions.Expression]
+    $parameters = [System.Linq.Expressions.ParameterExpression[]]@(
+        $expression::Parameter([object], 'sender'),
+        $expression::Parameter([System.Security.Cryptography.X509Certificates.X509Certificate], 'certificate'),
+        $expression::Parameter([System.Security.Cryptography.X509Certificates.X509Chain], 'chain'),
+        $expression::Parameter([System.Net.Security.SslPolicyErrors], 'sslPolicyErrors')
+    )
+
+    return $expression::Lambda(
+        [System.Net.Security.RemoteCertificateValidationCallback],
+        $expression::Constant($true),
+        $parameters
+    ).Compile()
 }
 
 
@@ -91330,8 +91393,9 @@ function Test-ExtendedProtection {
             Write-Log "[Test-ExtendedProtection] Failed to configure TLS: $($_.Exception.Message)"
         }
 
-        # Ignore SSL certificate errors (self-signed, expired, etc.)
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        # Ignore SSL certificate errors (self-signed, expired, etc.). A compiled delegate,
+        # not a script block: see New-AcceptAnyCertificateCallback for why pwsh 7 needs it.
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
         # FIX: NTLM is connection-oriented - we need Type1->Type2->Type3 on SAME TCP connection
         # Limit connections to 1 for this ServicePoint to ensure connection reuse
@@ -91776,9 +91840,10 @@ function Set-TLSConfiguration {
         Write-Log "[Set-TLSConfiguration] Error configuring TLS: $_"
     }
 
-    # Ignore SSL certificate errors if requested
+    # Ignore SSL certificate errors if requested. A compiled delegate, not a script block:
+    # see New-AcceptAnyCertificateCallback for why pwsh 7 needs it.
     if ($IgnoreSSLErrors) {
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
         Write-Log "[Set-TLSConfiguration] SSL certificate validation disabled"
     }
 }
@@ -106556,7 +106621,7 @@ function Submit-CertsrvRequest {
         # Enable all TLS versions
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls13 } catch { }
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
         $request = [System.Net.HttpWebRequest]::Create($submitUrl)
         $request.Method = 'POST'
@@ -106761,7 +106826,7 @@ function Get-CertsrvCertificate {
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls13 } catch { }
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
         $request = [System.Net.HttpWebRequest]::Create($retrieveUrl)
         $request.Method = 'GET'
@@ -107649,7 +107714,7 @@ function Request-ADCSCertificate {
 
                         # Temporarily ignore SSL errors for reachability check
                         $origCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
                         if ($Credential) {
                             $testRequest.Credentials = $Credential.GetNetworkCredential()
@@ -154532,7 +154597,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0"
+$Script:adPEASVersion = "2.8.0+20261025-1041"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

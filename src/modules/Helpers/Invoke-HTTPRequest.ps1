@@ -252,9 +252,10 @@ function Set-TLSConfiguration {
         Write-Log "[Set-TLSConfiguration] Error configuring TLS: $_"
     }
 
-    # Ignore SSL certificate errors if requested
+    # Ignore SSL certificate errors if requested. A compiled delegate, not a script block:
+    # see New-AcceptAnyCertificateCallback for why pwsh 7 needs it.
     if ($IgnoreSSLErrors) {
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
         Write-Log "[Set-TLSConfiguration] SSL certificate validation disabled"
     }
 }

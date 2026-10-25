@@ -24910,7 +24910,7 @@ function Connect-LDAP {
 	        $Script:LastLDAPErrorCode = $null
 	    }
 	    if ($IgnoreSSLErrors) {
-	        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+	        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 	        [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
 	    }
 	    function Resolve-LDAPConnectionError {
@@ -38174,6 +38174,23 @@ function Resolve-adPEASModules {
 	    $selected = @($selected | Where-Object { $_ -notin $ExcludeModule })
 	}
 	return @($selected)
+}
+function New-AcceptAnyCertificateCallback {
+	[CmdletBinding()]
+	[OutputType([System.Net.Security.RemoteCertificateValidationCallback])]
+	param()
+	$expression = [System.Linq.Expressions.Expression]
+	$parameters = [System.Linq.Expressions.ParameterExpression[]]@(
+	    $expression::Parameter([object], 'sender'),
+	    $expression::Parameter([System.Security.Cryptography.X509Certificates.X509Certificate], 'certificate'),
+	    $expression::Parameter([System.Security.Cryptography.X509Certificates.X509Chain], 'chain'),
+	    $expression::Parameter([System.Net.Security.SslPolicyErrors], 'sslPolicyErrors')
+	)
+	return $expression::Lambda(
+	    [System.Net.Security.RemoteCertificateValidationCallback],
+	    $expression::Constant($true),
+	    $parameters
+	).Compile()
 }
 function Write-Log {
 	[CmdletBinding()]
@@ -56641,7 +56658,7 @@ function Test-ExtendedProtection {
 	    }
 	    catch {
 	    }
-	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 	    $servicePoint = [System.Net.ServicePointManager]::FindServicePoint($uri)
 	    if ($servicePoint) {
 	        $originalConnectionLimit = $servicePoint.ConnectionLimit
@@ -56851,7 +56868,7 @@ function Set-TLSConfiguration {
 	catch {
 	}
 	if ($IgnoreSSLErrors) {
-	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 	}
 }
 function Restore-TLSConfiguration {
@@ -65752,7 +65769,7 @@ function Submit-CertsrvRequest {
 	try {
 	    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
 	    try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls13 } catch { }
-	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 	    $request = [System.Net.HttpWebRequest]::Create($submitUrl)
 	    $request.Method = 'POST'
 	    $request.ContentType = 'application/x-www-form-urlencoded'
@@ -65910,7 +65927,7 @@ function Get-CertsrvCertificate {
 	try {
 	    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
 	    try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls13 } catch { }
-	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+	    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 	    $request = [System.Net.HttpWebRequest]::Create($retrieveUrl)
 	    $request.Method = 'GET'
 	    $request.Timeout = $TimeoutSeconds * 1000
@@ -66375,7 +66392,7 @@ function Request-ADCSCertificate {
 	                    $testRequest.Timeout = 5000
 	                    $testRequest.AllowAutoRedirect = $true
 	                    $origCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-	                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+	                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 	                    if ($Credential) {
 	                        $testRequest.Credentials = $Credential.GetNetworkCredential()
 	                    }
@@ -95513,7 +95530,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0"
+$Script:adPEASVersion = "2.8.0+20261025-1041"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -143,6 +143,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Format-adPEASDate.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-adPEASOutputBasePath.ps1"
     . "$Script:ScriptPath\modules\Helpers\Resolve-adPEASModules.ps1"
+    . "$Script:ScriptPath\modules\Helpers\New-AcceptAnyCertificateCallback.ps1"
     . "$Script:ScriptPath\modules\Helpers\Write-Log.ps1"
     . "$Script:ScriptPath\modules\Helpers\New-SafePassword.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-FormattedACE.ps1"

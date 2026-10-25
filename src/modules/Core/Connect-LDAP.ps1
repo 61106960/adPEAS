@@ -143,7 +143,7 @@ function Connect-LDAP {
 
         # SSL Certificate Validation Callback (only relevant for LDAPS)
         if ($IgnoreSSLErrors) {
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
             # Disable CRL (Certificate Revocation List) checking to prevent ~15s timeout
             # during LDAPS Bind() when CRL Distribution Points are unreachable (lab/isolated environments)
             # SChannel performs CRL checks BEFORE VerifyServerCertificate callback is invoked

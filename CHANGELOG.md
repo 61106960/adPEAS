@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Under PowerShell 7 every HTTPS endpoint read as not reachable.** Each HTTPS request -
+  AD CS web enrollment, NDES, CEP/CES, the EPA probe, certificate submission over certsrv
+  - accepted the server certificate through the script block `{ $true }`. PowerShell 7
+  validates the certificate on a thread-pool thread, where a script block has no runspace
+  to run in; the handshake failed, and the scan reported only the HTTP endpoints - a CA
+  serving web enrollment over HTTP and HTTPS came out as `HttpsAvailable: False`, without
+  the HTTPS endpoints and without their EPA result. Windows PowerShell 5.1 was not
+  affected. The callback is now a compiled delegate that runs on any thread.
+
+---
+
 ## [2.8.0] - 2026-10-23
 
 ### Added

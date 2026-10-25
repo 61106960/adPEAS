@@ -1027,7 +1027,7 @@ function Submit-CertsrvRequest {
         # Enable all TLS versions
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls13 } catch { }
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
         $request = [System.Net.HttpWebRequest]::Create($submitUrl)
         $request.Method = 'POST'
@@ -1232,7 +1232,7 @@ function Get-CertsrvCertificate {
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls13 } catch { }
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
         $request = [System.Net.HttpWebRequest]::Create($retrieveUrl)
         $request.Method = 'GET'
@@ -2120,7 +2120,7 @@ function Request-ADCSCertificate {
 
                         # Temporarily ignore SSL errors for reachability check
                         $origCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
 
                         if ($Credential) {
                             $testRequest.Credentials = $Credential.GetNetworkCredential()
