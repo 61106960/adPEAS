@@ -35,6 +35,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   5, so they were written as one space-separated string - silently under Windows
   PowerShell 5.1, with the warning "resulting JSON is truncated" after every module under
   pwsh 7.
+- **A certificate's CRL, AIA and OCSP locations are read whole.** The certificate details
+  shown for `userCertificate` and `cACertificate` cut each CRL distribution point at its
+  first comma or space: an AD CS LDAP location such as
+  `ldap:///CN=Contoso-CA,CN=srv-dc,CN=CDP,CN=Public Key Services,...` came out as
+  `ldap:///CN=Contoso-CA`, and twice, because Windows prints it once as stored and once
+  percent-encoded. The AIA and OCSP lists were always empty: they were parsed line by line
+  from a rendering that is a single line. All three now hold the full URLs, each once.
 
 ---
 

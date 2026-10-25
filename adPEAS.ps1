@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-25 11:31:50
-    Version: 2.8.0+20261025-1131
+    Build: 2026-10-25 12:06:48
+    Version: 2.8.0+20261025-1206
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -38706,16 +38706,24 @@ function Convert-CertificateToInfo {
             } catch { }
         }
 
+        # One URL per line of the multi-line Format($true). Windows prints a URL that needs
+        # escaping twice - "URL=<as stored> (<percent-encoded>)" - and the stored form of an
+        # LDAP URL has commas and spaces in its DN (CN=Public Key Services), so the URL is
+        # the rest of the line minus that encoded copy. Cutting at the first comma or space,
+        # as this did, turned every AD CS LDAP location into "ldap:///CN=<CA name>", once for
+        # each copy.
+        $urlLinePattern = '^\s*URL=(?<url>.+?)(?:\s\([a-z][a-z0-9+.-]*://[^\s)]*\))?\s*$'
+
         # CRL Distribution Points (OID 2.5.29.31)
         $CRLDistributionPoints = @()
         $crlExt = $Cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.31' }
         if ($crlExt) {
             try {
-                # Format() returns a multi-line string like:
-                # "Distribution Point\r\n  Full Name:\r\n    URL=http://..."
-                $crlFormatted = $crlExt.Format($false)
-                # Extract http(s):// and ldap:// URLs
-                $CRLDistributionPoints = @([regex]::Matches($crlFormatted, 'https?://[^\s,]+|ldap://[^\s,]+') | ForEach-Object { $_.Value })
+                # "[1]CRL Distribution Point\r\n  Distribution Point Name:\r\n    Full Name:\r\n      URL=..."
+                $crlFormatted = $crlExt.Format($true)
+                $CRLDistributionPoints = @(foreach ($line in ($crlFormatted -split '\r?\n')) {
+                    if ($line -match $urlLinePattern) { $Matches['url'] }
+                })
             } catch { }
         }
 
@@ -38725,20 +38733,22 @@ function Convert-CertificateToInfo {
         $aiaExt = $Cert.Extensions | Where-Object { $_.Oid.Value -eq '1.3.6.1.5.5.7.1.1' }
         if ($aiaExt) {
             try {
-                # Format() returns a string like:
+                # Format($true) returns one line per item:
                 # "Access Method=On-line Certificate Status Protocol (1.3.6.1.5.5.7.48.1)\r\nAlternative Name:\r\n  URL=http://ocsp...."
                 # "Access Method=Certification Authority Issuer (1.3.6.1.5.5.7.48.2)\r\nAlternative Name:\r\n  URL=http://..."
-                $aiaFormatted = $aiaExt.Format($false)
-                # Split into per-entry blocks by splitting on Access Method lines
-                # Process each URL with its preceding context
+                # Format($false), which this used to call, puts all of it on one line - the
+                # access method matched there and the URL on the same line never did, so
+                # neither list ever held anything.
+                $aiaFormatted = $aiaExt.Format($true)
+                # Process each URL with the access method above it
                 $lines = $aiaFormatted -split '\r?\n'
                 $currentIsOCSP = $false
                 $currentIsCAIssuer = $false
                 foreach ($line in $lines) {
                     if ($line -match '1\.3\.6\.1\.5\.5\.7\.48\.1') { $currentIsOCSP = $true; $currentIsCAIssuer = $false }
                     elseif ($line -match '1\.3\.6\.1\.5\.5\.7\.48\.2') { $currentIsOCSP = $false; $currentIsCAIssuer = $true }
-                    elseif ($line -match '^\s*URL=(https?://[^\s]+|ldap://[^\s]+)') {
-                        $url = $Matches[1]
+                    elseif ($line -match $urlLinePattern) {
+                        $url = $Matches['url']
                         if ($currentIsOCSP) { $OCSPURLs += $url }
                         elseif ($currentIsCAIssuer) { $AIAURLs += $url }
                     }
@@ -154761,7 +154771,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261025-1131"
+$Script:adPEASVersion = "2.8.0+20261025-1206"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

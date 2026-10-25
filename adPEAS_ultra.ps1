@@ -27335,12 +27335,15 @@ function Convert-CertificateToInfo {
 	            }
 	        } catch { }
 	    }
+	    $urlLinePattern = '^\s*URL=(?<url>.+?)(?:\s\([a-z][a-z0-9+.-]*://[^\s)]*\))?\s*$'
 	    $CRLDistributionPoints = @()
 	    $crlExt = $Cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.31' }
 	    if ($crlExt) {
 	        try {
-	            $crlFormatted = $crlExt.Format($false)
-	            $CRLDistributionPoints = @([regex]::Matches($crlFormatted, 'https?://[^\s,]+|ldap://[^\s,]+') | ForEach-Object { $_.Value })
+	            $crlFormatted = $crlExt.Format($true)
+	            $CRLDistributionPoints = @(foreach ($line in ($crlFormatted -split '\r?\n')) {
+	                if ($line -match $urlLinePattern) { $Matches['url'] }
+	            })
 	        } catch { }
 	    }
 	    $OCSPURLs = @()
@@ -27348,15 +27351,15 @@ function Convert-CertificateToInfo {
 	    $aiaExt = $Cert.Extensions | Where-Object { $_.Oid.Value -eq '1.3.6.1.5.5.7.1.1' }
 	    if ($aiaExt) {
 	        try {
-	            $aiaFormatted = $aiaExt.Format($false)
+	            $aiaFormatted = $aiaExt.Format($true)
 	            $lines = $aiaFormatted -split '\r?\n'
 	            $currentIsOCSP = $false
 	            $currentIsCAIssuer = $false
 	            foreach ($line in $lines) {
 	                if ($line -match '1\.3\.6\.1\.5\.5\.7\.48\.1') { $currentIsOCSP = $true; $currentIsCAIssuer = $false }
 	                elseif ($line -match '1\.3\.6\.1\.5\.5\.7\.48\.2') { $currentIsOCSP = $false; $currentIsCAIssuer = $true }
-	                elseif ($line -match '^\s*URL=(https?://[^\s]+|ldap://[^\s]+)') {
-	                    $url = $Matches[1]
+	                elseif ($line -match $urlLinePattern) {
+	                    $url = $Matches['url']
 	                    if ($currentIsOCSP) { $OCSPURLs += $url }
 	                    elseif ($currentIsCAIssuer) { $AIAURLs += $url }
 	                }
@@ -95614,7 +95617,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261025-1131"
+$Script:adPEASVersion = "2.8.0+20261025-1206"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
