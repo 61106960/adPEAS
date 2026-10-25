@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-25 15:04:13
-    Version: 2.8.0+20261025-1504
+    Build: 2026-10-25 15:45:57
+    Version: 2.8.0+20261025-1545
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -65216,6 +65216,81 @@ function Get-adPEASSession {
 
 
 
+# ----- Select-KerberosTGT.ps1 -----
+
+<#
+.SYNOPSIS
+    Picks, among the TGTs of the logon session's ticket cache, the one adPEAS's session
+    authenticates with.
+
+.DESCRIPTION
+    A ticket cache can hold more than one TGT: the one adPEAS imported for the account
+    it connected as, and one the logged-on user's own Windows session acquired - on a
+    domain-joined host, or a host signed in to Entra ID, Windows renews its user's TGT on
+    its own. Test-KerberosTGTExists took the first unexpired TGT it came across. When the
+    user's own one came first, the session was declared invalid - "Kerberos TGT client
+    mismatch (TGT=<logged-on user>, Expected=<scan account>)" - and Invoke-adPEAS aborted
+    the scan, while the scan account's TGT sat next to it in the cache. Measured: a full
+    scan aborted after 74 seconds that way, a TGT of the host's own user having appeared in
+    the cache during the run.
+
+    So the expected account's TGT wins, and among several of its TGTs one from the
+    session's realm, then one that has not expired. Only when no TGT belongs to the
+    expected account is another one returned, which the caller then reports as a
+    mismatch - that case is real: the scan account's ticket is gone.
+
+.PARAMETER Candidates
+    The TGTs of the cache, each with ClientName, Realm and Expired, in cache order.
+
+.PARAMETER ExpectedClient
+    The account the session's TGT was issued to (TGTInfo.UserName). Without it the
+    first unexpired TGT is returned, as before.
+
+.PARAMETER ExpectedRealm
+    The realm of the session (TGTInfo.Domain). Breaks a tie between TGTs of the same
+    account name in different realms.
+
+.OUTPUTS
+    One of the candidates, or $null when there are none.
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Select-KerberosTGT {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Candidates,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExpectedClient,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExpectedRealm
+    )
+
+    if ($Candidates.Count -eq 0) { return $null }
+
+    $pool = @($Candidates)
+    if ($ExpectedClient) {
+        $own = @($Candidates | Where-Object { $_.ClientName -ieq $ExpectedClient })
+        if ($own.Count -gt 0) {
+            $pool = $own
+            if ($ExpectedRealm) {
+                $inRealm = @($own | Where-Object { $_.Realm -ieq $ExpectedRealm })
+                if ($inRealm.Count -gt 0) { $pool = $inRealm }
+            }
+        }
+    }
+
+    $unexpired = @($pool | Where-Object { -not $_.Expired })
+    if ($unexpired.Count -gt 0) { return $unexpired[0] }
+    return $pool[0]
+}
+
+
+
 # ----- Test-KerberosTGTExists.ps1 -----
 
 <#
@@ -65529,17 +65604,12 @@ function Test-KerberosTGTExists {
                     # Calculate struct size (architecture-dependent)
                     $ticketStructSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type][LSA.KerberosEx+KERB_TICKET_CACHE_INFO_EX])
 
-                    # Scan ALL tickets to find TGT
-                    # IMPORTANT: Multiple krbtgt tickets may exist (e.g., expired + renewed).
-                    # We prefer a valid (non-expired) TGT over an expired one.
-                    $tgtFound = $false
-                    $tgtServerName = $null
-                    $tgtServerRealm = $null
-                    $tgtClientName = $null
-                    $tgtEndTime = $null
-                    $tgtExpired = $true
-                    $tgtEncType = $null
-                    $tgtFlags = $null
+                    # Collect ALL TGTs, then pick one with Select-KerberosTGT.
+                    # IMPORTANT: Multiple krbtgt tickets may exist - expired + renewed, and
+                    # the logged-on user's own next to the one adPEAS imported. Taking the
+                    # first unexpired one declared the session invalid whenever the user's
+                    # came first; see Select-KerberosTGT.
+                    $tgtCandidates = New-Object System.Collections.Generic.List[object]
 
                     for ($i = 0; $i -lt $responseEx.CountOfTickets; $i++) {
                         # Calculate offset: header (8 bytes) + (index * struct size)
@@ -65575,40 +65645,55 @@ function Test-KerberosTGTExists {
                                     }
                                 }
 
-                                # Accept this TGT if: (a) first TGT found, or (b) this one is valid and previous was expired
-                                if (-not $tgtFound -or ($tgtExpired -and -not $candidateExpired)) {
-                                    $tgtFound = $true
-                                    $tgtServerName = $serverName
-                                    $tgtEndTime = $candidateEndTime
-                                    $tgtExpired = $candidateExpired
-
-                                    # Extract additional TGT details
-                                    if ($ticket.ServerRealm.Buffer -ne [IntPtr]::Zero -and $ticket.ServerRealm.Length -gt 0) {
-                                        $tgtServerRealm = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-                                            $ticket.ServerRealm.Buffer,
-                                            $ticket.ServerRealm.Length / 2
-                                        )
-                                    }
-                                    if ($ticket.ClientName.Buffer -ne [IntPtr]::Zero -and $ticket.ClientName.Length -gt 0) {
-                                        $tgtClientName = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-                                            $ticket.ClientName.Buffer,
-                                            $ticket.ClientName.Length / 2
-                                        )
-                                    }
-
-                                    $tgtEncType = $ticket.EncryptionType
-                                    $tgtFlags = $ticket.TicketFlags
-
-                                    # If this TGT is valid, no need to keep looking
-                                    if (-not $candidateExpired) {
-                                        break
-                                    }
+                                $candidateRealm = $null
+                                if ($ticket.ServerRealm.Buffer -ne [IntPtr]::Zero -and $ticket.ServerRealm.Length -gt 0) {
+                                    $candidateRealm = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
+                                        $ticket.ServerRealm.Buffer,
+                                        $ticket.ServerRealm.Length / 2
+                                    )
                                 }
+                                $candidateClient = $null
+                                if ($ticket.ClientName.Buffer -ne [IntPtr]::Zero -and $ticket.ClientName.Length -gt 0) {
+                                    $candidateClient = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
+                                        $ticket.ClientName.Buffer,
+                                        $ticket.ClientName.Length / 2
+                                    )
+                                }
+
+                                $tgtCandidates.Add([PSCustomObject]@{
+                                    ServerName     = $serverName
+                                    Realm          = $candidateRealm
+                                    ClientName     = $candidateClient
+                                    EndTime        = $candidateEndTime
+                                    Expired        = $candidateExpired
+                                    EncryptionType = $ticket.EncryptionType
+                                    TicketFlags    = $ticket.TicketFlags
+                                })
                             }
                         } catch {
                             Write-Log "[Test-KerberosTGTExists] Error reading ticket[$i]: $_"
                             # Continue to next ticket
                         }
+                    }
+
+                    $expectedTGTClient = $null
+                    $expectedTGTRealm = $null
+                    if ($Script:LDAPContext -and $Script:LDAPContext.TGTInfo) {
+                        $expectedTGTClient = $Script:LDAPContext.TGTInfo.UserName
+                        $expectedTGTRealm = $Script:LDAPContext.TGTInfo.Domain
+                    }
+                    $selectedTGT = Select-KerberosTGT -Candidates $tgtCandidates.ToArray() -ExpectedClient $expectedTGTClient -ExpectedRealm $expectedTGTRealm
+
+                    $tgtFound = $null -ne $selectedTGT
+                    $tgtServerName = if ($tgtFound) { $selectedTGT.ServerName } else { $null }
+                    $tgtServerRealm = if ($tgtFound) { $selectedTGT.Realm } else { $null }
+                    $tgtClientName = if ($tgtFound) { $selectedTGT.ClientName } else { $null }
+                    $tgtEndTime = if ($tgtFound) { $selectedTGT.EndTime } else { $null }
+                    $tgtExpired = if ($tgtFound) { [bool]$selectedTGT.Expired } else { $true }
+                    $tgtEncType = if ($tgtFound) { $selectedTGT.EncryptionType } else { $null }
+                    $tgtFlags = if ($tgtFound) { $selectedTGT.TicketFlags } else { $null }
+                    if ($tgtCandidates.Count -gt 1) {
+                        Write-Log "[Test-KerberosTGTExists] $($tgtCandidates.Count) TGTs in the cache, selected: $tgtServerName (Client: $tgtClientName)"
                     }
 
                     # Determine client match (if TGT found and context available)
@@ -140194,8 +140279,11 @@ function Resolve-LAPSEncryptedComputer {
     report is the password rather than the envelope it came in - and the finding definitions
     see msLAPS-Password, which is what they describe.
 
-    Both callers need the same conversions beforehand: a -Raw query answers objectSid and
-    objectGUID as byte arrays, and Show-Object cannot render those.
+    Both callers need the same conversions beforehand: a -Raw query answers every attribute
+    as LDAP sends it, and the card showed them so. Only objectSid and objectGUID used to be
+    converted here; a live scan's card then read "userAccountControl: 4096",
+    "pwdLastSet: 133839533787743374". Every attribute but the blob now goes through
+    ConvertFrom-LDAPAttribute, the conversion each object of a normal query gets.
 
     .PARAMETER Computer
     A computer object from a -Raw query, carrying msLAPS-EncryptedPassword.
@@ -140218,16 +140306,19 @@ function Resolve-LAPSEncryptedComputer {
     $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
     if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) { return $false }
 
-    if ($Computer.objectSid -is [byte[]]) {
+    foreach ($property in @($Computer.PSObject.Properties)) {
+        if ($property.Name -ieq 'msLAPS-EncryptedPassword') { continue }
         try {
-            $sidObj = New-Object System.Security.Principal.SecurityIdentifier($Computer.objectSid, 0)
-            $Computer | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue $sidObj.Value -Force
-        } catch { }
-    }
-    if ($Computer.objectGUID -is [byte[]]) {
-        try {
-            $Computer | Add-Member -NotePropertyName 'objectGUID' -NotePropertyValue ([System.Guid]$Computer.objectGUID).ToString() -Force
-        } catch { }
+            $converted = ConvertFrom-LDAPAttribute -Name $property.Name -Value $property.Value
+        } catch {
+            Write-Log "[Resolve-LAPSEncryptedComputer] Could not convert $($property.Name): $_"
+            continue
+        }
+        $Computer.PSObject.Properties.Remove($property.Name)
+        if (-not $converted) { continue }
+        foreach ($convertedName in $converted.Keys) {
+            $Computer | Add-Member -NotePropertyName $convertedName -NotePropertyValue $converted[$convertedName] -Force
+        }
     }
 
     $Computer | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
@@ -154943,7 +155034,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261025-1504"
+$Script:adPEASVersion = "2.8.0+20261025-1545"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -23,6 +23,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `ReadGMSAPassword` edges the collector builds from `msDS-GroupMSAMembership`. Managed
   service accounts - gMSA and standalone MSA - are now exported as users, the way
   SharpHound files them, with their edges.
+- **A scan no longer aborts because the logged-on user has a TGT of its own.** The session
+  check took the first unexpired TGT in the logon session's ticket cache. On a host whose
+  own user acquires a TGT - domain-joined, or signed in to Entra ID - that one could come
+  first, and the scan stopped with "Kerberos TGT client mismatch (TGT=<host user>,
+  Expected=<scan account>)" while the scan account's TGT was in the same cache. It now
+  judges the session by the scan account's TGT, from the session's realm.
+- **The card of a decrypted Windows LAPS password shows the computer's attributes
+  converted.** The computer comes from a raw query, and only its SID and GUID were
+  converted: the card read `userAccountControl: 4096` and `pwdLastSet: 133839533787743374`.
 - **Under PowerShell 7 every HTTPS endpoint read as not reachable.** Each HTTPS request -
   AD CS web enrollment, NDES, CEP/CES, the EPA probe, certificate submission over certsrv
   - accepted the server certificate through the script block `{ $true }`. PowerShell 7

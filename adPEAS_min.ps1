@@ -43486,6 +43486,33 @@ function Get-adPEASSession {
         }
     }
 }
+function Select-KerberosTGT {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Candidates,
+        [Parameter(Mandatory = $false)]
+        [string]$ExpectedClient,
+        [Parameter(Mandatory = $false)]
+        [string]$ExpectedRealm
+    )
+    if ($Candidates.Count -eq 0) { return $null }
+    $pool = @($Candidates)
+    if ($ExpectedClient) {
+        $own = @($Candidates | Where-Object { $_.ClientName -ieq $ExpectedClient })
+        if ($own.Count -gt 0) {
+            $pool = $own
+            if ($ExpectedRealm) {
+                $inRealm = @($own | Where-Object { $_.Realm -ieq $ExpectedRealm })
+                if ($inRealm.Count -gt 0) { $pool = $inRealm }
+            }
+        }
+    }
+    $unexpired = @($pool | Where-Object { -not $_.Expired })
+    if ($unexpired.Count -gt 0) { return $unexpired[0] }
+    return $pool[0]
+}
 function Test-KerberosTGTExists {
     [CmdletBinding()]
     param(
@@ -43720,14 +43747,7 @@ function Test-KerberosTGTExists {
                         [Type][LSA.KerberosEx+KERB_QUERY_TKT_CACHE_EX_RESPONSE]
                     )
                     $ticketStructSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type][LSA.KerberosEx+KERB_TICKET_CACHE_INFO_EX])
-                    $tgtFound = $false
-                    $tgtServerName = $null
-                    $tgtServerRealm = $null
-                    $tgtClientName = $null
-                    $tgtEndTime = $null
-                    $tgtExpired = $true
-                    $tgtEncType = $null
-                    $tgtFlags = $null
+                    $tgtCandidates = New-Object System.Collections.Generic.List[object]
                     for ($i = 0; $i -lt $responseEx.CountOfTickets; $i++) {
                         $ticketOffset = 8 + ($i * $ticketStructSize)
                         $ticketPtr = [IntPtr]::Add($returnBuffer, $ticketOffset)
@@ -43754,33 +43774,51 @@ function Test-KerberosTGTExists {
                                         Write-Log "[Test-KerberosTGTExists] Failed to parse TGT EndTime for ticket[$i]: $_"
                                     }
                                 }
-                                if (-not $tgtFound -or ($tgtExpired -and -not $candidateExpired)) {
-                                    $tgtFound = $true
-                                    $tgtServerName = $serverName
-                                    $tgtEndTime = $candidateEndTime
-                                    $tgtExpired = $candidateExpired
-                                    if ($ticket.ServerRealm.Buffer -ne [IntPtr]::Zero -and $ticket.ServerRealm.Length -gt 0) {
-                                        $tgtServerRealm = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-                                            $ticket.ServerRealm.Buffer,
-                                            $ticket.ServerRealm.Length / 2
-                                        )
-                                    }
-                                    if ($ticket.ClientName.Buffer -ne [IntPtr]::Zero -and $ticket.ClientName.Length -gt 0) {
-                                        $tgtClientName = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-                                            $ticket.ClientName.Buffer,
-                                            $ticket.ClientName.Length / 2
-                                        )
-                                    }
-                                    $tgtEncType = $ticket.EncryptionType
-                                    $tgtFlags = $ticket.TicketFlags
-                                    if (-not $candidateExpired) {
-                                        break
-                                    }
+                                $candidateRealm = $null
+                                if ($ticket.ServerRealm.Buffer -ne [IntPtr]::Zero -and $ticket.ServerRealm.Length -gt 0) {
+                                    $candidateRealm = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
+                                        $ticket.ServerRealm.Buffer,
+                                        $ticket.ServerRealm.Length / 2
+                                    )
                                 }
+                                $candidateClient = $null
+                                if ($ticket.ClientName.Buffer -ne [IntPtr]::Zero -and $ticket.ClientName.Length -gt 0) {
+                                    $candidateClient = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
+                                        $ticket.ClientName.Buffer,
+                                        $ticket.ClientName.Length / 2
+                                    )
+                                }
+                                $tgtCandidates.Add([PSCustomObject]@{
+                                    ServerName     = $serverName
+                                    Realm          = $candidateRealm
+                                    ClientName     = $candidateClient
+                                    EndTime        = $candidateEndTime
+                                    Expired        = $candidateExpired
+                                    EncryptionType = $ticket.EncryptionType
+                                    TicketFlags    = $ticket.TicketFlags
+                                })
                             }
                         } catch {
                             Write-Log "[Test-KerberosTGTExists] Error reading ticket[$i]: $_"
                         }
+                    }
+                    $expectedTGTClient = $null
+                    $expectedTGTRealm = $null
+                    if ($Script:LDAPContext -and $Script:LDAPContext.TGTInfo) {
+                        $expectedTGTClient = $Script:LDAPContext.TGTInfo.UserName
+                        $expectedTGTRealm = $Script:LDAPContext.TGTInfo.Domain
+                    }
+                    $selectedTGT = Select-KerberosTGT -Candidates $tgtCandidates.ToArray() -ExpectedClient $expectedTGTClient -ExpectedRealm $expectedTGTRealm
+                    $tgtFound = $null -ne $selectedTGT
+                    $tgtServerName = if ($tgtFound) { $selectedTGT.ServerName } else { $null }
+                    $tgtServerRealm = if ($tgtFound) { $selectedTGT.Realm } else { $null }
+                    $tgtClientName = if ($tgtFound) { $selectedTGT.ClientName } else { $null }
+                    $tgtEndTime = if ($tgtFound) { $selectedTGT.EndTime } else { $null }
+                    $tgtExpired = if ($tgtFound) { [bool]$selectedTGT.Expired } else { $true }
+                    $tgtEncType = if ($tgtFound) { $selectedTGT.EncryptionType } else { $null }
+                    $tgtFlags = if ($tgtFound) { $selectedTGT.TicketFlags } else { $null }
+                    if ($tgtCandidates.Count -gt 1) {
+                        Write-Log "[Test-KerberosTGTExists] $($tgtCandidates.Count) TGTs in the cache, selected: $tgtServerName (Client: $tgtClientName)"
                     }
                     $clientMatch = $true
                     if ($tgtFound -and $tgtClientName -and $Script:LDAPContext -and $Script:LDAPContext.TGTInfo -and $Script:LDAPContext.TGTInfo.UserName) {
@@ -87077,16 +87115,19 @@ function Resolve-LAPSEncryptedComputer {
     if (-not $blob) { return $false }
     $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
     if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) { return $false }
-    if ($Computer.objectSid -is [byte[]]) {
+    foreach ($property in @($Computer.PSObject.Properties)) {
+        if ($property.Name -ieq 'msLAPS-EncryptedPassword') { continue }
         try {
-            $sidObj = New-Object System.Security.Principal.SecurityIdentifier($Computer.objectSid, 0)
-            $Computer | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue $sidObj.Value -Force
-        } catch { }
-    }
-    if ($Computer.objectGUID -is [byte[]]) {
-        try {
-            $Computer | Add-Member -NotePropertyName 'objectGUID' -NotePropertyValue ([System.Guid]$Computer.objectGUID).ToString() -Force
-        } catch { }
+            $converted = ConvertFrom-LDAPAttribute -Name $property.Name -Value $property.Value
+        } catch {
+            Write-Log "[Resolve-LAPSEncryptedComputer] Could not convert $($property.Name): $_"
+            continue
+        }
+        $Computer.PSObject.Properties.Remove($property.Name)
+        if (-not $converted) { continue }
+        foreach ($convertedName in $converted.Keys) {
+            $Computer | Add-Member -NotePropertyName $convertedName -NotePropertyValue $converted[$convertedName] -Force
+        }
     }
     $Computer | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
     $Computer | Add-Member -NotePropertyName 'msLAPS-Account' -NotePropertyValue $decryptedInfo.Account -Force
@@ -98800,7 +98841,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1504"
+$Script:adPEASVersion = "2.8.0+20261025-1545"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

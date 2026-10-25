@@ -309,17 +309,12 @@ function Test-KerberosTGTExists {
                     # Calculate struct size (architecture-dependent)
                     $ticketStructSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type][LSA.KerberosEx+KERB_TICKET_CACHE_INFO_EX])
 
-                    # Scan ALL tickets to find TGT
-                    # IMPORTANT: Multiple krbtgt tickets may exist (e.g., expired + renewed).
-                    # We prefer a valid (non-expired) TGT over an expired one.
-                    $tgtFound = $false
-                    $tgtServerName = $null
-                    $tgtServerRealm = $null
-                    $tgtClientName = $null
-                    $tgtEndTime = $null
-                    $tgtExpired = $true
-                    $tgtEncType = $null
-                    $tgtFlags = $null
+                    # Collect ALL TGTs, then pick one with Select-KerberosTGT.
+                    # IMPORTANT: Multiple krbtgt tickets may exist - expired + renewed, and
+                    # the logged-on user's own next to the one adPEAS imported. Taking the
+                    # first unexpired one declared the session invalid whenever the user's
+                    # came first; see Select-KerberosTGT.
+                    $tgtCandidates = New-Object System.Collections.Generic.List[object]
 
                     for ($i = 0; $i -lt $responseEx.CountOfTickets; $i++) {
                         # Calculate offset: header (8 bytes) + (index * struct size)
@@ -355,40 +350,55 @@ function Test-KerberosTGTExists {
                                     }
                                 }
 
-                                # Accept this TGT if: (a) first TGT found, or (b) this one is valid and previous was expired
-                                if (-not $tgtFound -or ($tgtExpired -and -not $candidateExpired)) {
-                                    $tgtFound = $true
-                                    $tgtServerName = $serverName
-                                    $tgtEndTime = $candidateEndTime
-                                    $tgtExpired = $candidateExpired
-
-                                    # Extract additional TGT details
-                                    if ($ticket.ServerRealm.Buffer -ne [IntPtr]::Zero -and $ticket.ServerRealm.Length -gt 0) {
-                                        $tgtServerRealm = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-                                            $ticket.ServerRealm.Buffer,
-                                            $ticket.ServerRealm.Length / 2
-                                        )
-                                    }
-                                    if ($ticket.ClientName.Buffer -ne [IntPtr]::Zero -and $ticket.ClientName.Length -gt 0) {
-                                        $tgtClientName = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
-                                            $ticket.ClientName.Buffer,
-                                            $ticket.ClientName.Length / 2
-                                        )
-                                    }
-
-                                    $tgtEncType = $ticket.EncryptionType
-                                    $tgtFlags = $ticket.TicketFlags
-
-                                    # If this TGT is valid, no need to keep looking
-                                    if (-not $candidateExpired) {
-                                        break
-                                    }
+                                $candidateRealm = $null
+                                if ($ticket.ServerRealm.Buffer -ne [IntPtr]::Zero -and $ticket.ServerRealm.Length -gt 0) {
+                                    $candidateRealm = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
+                                        $ticket.ServerRealm.Buffer,
+                                        $ticket.ServerRealm.Length / 2
+                                    )
                                 }
+                                $candidateClient = $null
+                                if ($ticket.ClientName.Buffer -ne [IntPtr]::Zero -and $ticket.ClientName.Length -gt 0) {
+                                    $candidateClient = [System.Runtime.InteropServices.Marshal]::PtrToStringUni(
+                                        $ticket.ClientName.Buffer,
+                                        $ticket.ClientName.Length / 2
+                                    )
+                                }
+
+                                $tgtCandidates.Add([PSCustomObject]@{
+                                    ServerName     = $serverName
+                                    Realm          = $candidateRealm
+                                    ClientName     = $candidateClient
+                                    EndTime        = $candidateEndTime
+                                    Expired        = $candidateExpired
+                                    EncryptionType = $ticket.EncryptionType
+                                    TicketFlags    = $ticket.TicketFlags
+                                })
                             }
                         } catch {
                             Write-Log "[Test-KerberosTGTExists] Error reading ticket[$i]: $_"
                             # Continue to next ticket
                         }
+                    }
+
+                    $expectedTGTClient = $null
+                    $expectedTGTRealm = $null
+                    if ($Script:LDAPContext -and $Script:LDAPContext.TGTInfo) {
+                        $expectedTGTClient = $Script:LDAPContext.TGTInfo.UserName
+                        $expectedTGTRealm = $Script:LDAPContext.TGTInfo.Domain
+                    }
+                    $selectedTGT = Select-KerberosTGT -Candidates $tgtCandidates.ToArray() -ExpectedClient $expectedTGTClient -ExpectedRealm $expectedTGTRealm
+
+                    $tgtFound = $null -ne $selectedTGT
+                    $tgtServerName = if ($tgtFound) { $selectedTGT.ServerName } else { $null }
+                    $tgtServerRealm = if ($tgtFound) { $selectedTGT.Realm } else { $null }
+                    $tgtClientName = if ($tgtFound) { $selectedTGT.ClientName } else { $null }
+                    $tgtEndTime = if ($tgtFound) { $selectedTGT.EndTime } else { $null }
+                    $tgtExpired = if ($tgtFound) { [bool]$selectedTGT.Expired } else { $true }
+                    $tgtEncType = if ($tgtFound) { $selectedTGT.EncryptionType } else { $null }
+                    $tgtFlags = if ($tgtFound) { $selectedTGT.TicketFlags } else { $null }
+                    if ($tgtCandidates.Count -gt 1) {
+                        Write-Log "[Test-KerberosTGTExists] $($tgtCandidates.Count) TGTs in the cache, selected: $tgtServerName (Client: $tgtClientName)"
                     }
 
                     # Determine client match (if TGT found and context available)

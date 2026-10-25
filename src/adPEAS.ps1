@@ -173,6 +173,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-DSHeuristics.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-CurrentUserTokenGroups.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-adPEASSession.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Select-KerberosTGT.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-KerberosTGTExists.ps1"
     . "$Script:ScriptPath\modules\Helpers\Ensure-LDAPConnection.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-AccountActivity.ps1"

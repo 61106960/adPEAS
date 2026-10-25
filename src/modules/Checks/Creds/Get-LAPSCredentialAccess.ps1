@@ -10,8 +10,11 @@ function Resolve-LAPSEncryptedComputer {
     report is the password rather than the envelope it came in - and the finding definitions
     see msLAPS-Password, which is what they describe.
 
-    Both callers need the same conversions beforehand: a -Raw query answers objectSid and
-    objectGUID as byte arrays, and Show-Object cannot render those.
+    Both callers need the same conversions beforehand: a -Raw query answers every attribute
+    as LDAP sends it, and the card showed them so. Only objectSid and objectGUID used to be
+    converted here; a live scan's card then read "userAccountControl: 4096",
+    "pwdLastSet: 133839533787743374". Every attribute but the blob now goes through
+    ConvertFrom-LDAPAttribute, the conversion each object of a normal query gets.
 
     .PARAMETER Computer
     A computer object from a -Raw query, carrying msLAPS-EncryptedPassword.
@@ -34,16 +37,19 @@ function Resolve-LAPSEncryptedComputer {
     $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
     if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) { return $false }
 
-    if ($Computer.objectSid -is [byte[]]) {
+    foreach ($property in @($Computer.PSObject.Properties)) {
+        if ($property.Name -ieq 'msLAPS-EncryptedPassword') { continue }
         try {
-            $sidObj = New-Object System.Security.Principal.SecurityIdentifier($Computer.objectSid, 0)
-            $Computer | Add-Member -NotePropertyName 'objectSid' -NotePropertyValue $sidObj.Value -Force
-        } catch { }
-    }
-    if ($Computer.objectGUID -is [byte[]]) {
-        try {
-            $Computer | Add-Member -NotePropertyName 'objectGUID' -NotePropertyValue ([System.Guid]$Computer.objectGUID).ToString() -Force
-        } catch { }
+            $converted = ConvertFrom-LDAPAttribute -Name $property.Name -Value $property.Value
+        } catch {
+            Write-Log "[Resolve-LAPSEncryptedComputer] Could not convert $($property.Name): $_"
+            continue
+        }
+        $Computer.PSObject.Properties.Remove($property.Name)
+        if (-not $converted) { continue }
+        foreach ($convertedName in $converted.Keys) {
+            $Computer | Add-Member -NotePropertyName $convertedName -NotePropertyValue $converted[$convertedName] -Force
+        }
     }
 
     $Computer | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
