@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A scan without Domain Admin rights names every Fine-Grained Password Policy.** It found
+  the policies only through their assignments and said a policy assigned to nobody stays
+  invisible. Measured as a domain user: a one-level search below the Password Settings
+  Container returns the name of every policy, without its attributes - the one assigned
+  to nobody included. The check now lists the container as well; a policy without a
+  readable target reads "assigned to no user or group this account can read", which
+  covers both a policy assigned to nobody and one assigned only to objects the account
+  may not read. The settings stay unknown, as before.
 - **A Fine-Grained Password Policy assigned to nobody no longer shows red rows.** The
   check names such a policy "assigned to no user and no group, and therefore not
   assessed", and its rows still hit the triggers of the domain policy: a weak, unassigned

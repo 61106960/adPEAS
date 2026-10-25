@@ -146,8 +146,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Which users or groups each PSO applies to"
             "Password requirements defined in each PSO"
             "Priority/precedence of overlapping policies"
-            "Without Domain Admin rights: by default only Domain Admins may read a PSO, so it is found by assignment - through msDS-PSOApplied on the users and groups it applies to, and msDS-ResultantPSO of the scanning account (inEffectForThisAccount: the PSO that wins for it). That gives the name and the direct targets, not the settings or the precedence"
-            "Not visible that way: a PSO assigned to nobody, and an assignment on a user or group this account may not read - msDS-PSOApplied needs Read all properties, which Pre-Windows 2000 Compatible Access holds on users and groups"
+            "Without Domain Admin rights: by default only Domain Admins may read a PSO, so it is found by name and by assignment - by name in the listing of the Password Settings Container, which returns every PSO without its attributes; by assignment through msDS-PSOApplied on the users and groups it applies to, and msDS-ResultantPSO of the scanning account (inEffectForThisAccount: the PSO that wins for it). That gives the names and the direct targets, not the settings or the precedence"
+            "Not visible that way: an assignment on a user or group this account may not read - msDS-PSOApplied needs Read all properties, which Pre-Windows 2000 Compatible Access holds on users and groups. A PSO without a readable target is shown as assigned to no user or group this account can read: assigned to nobody, or only to such objects"
         )
         SecureMessage = "All Fine-Grained Password Policies are properly configured with strong password requirements. No PSO allows weaker passwords than the domain default policy."
     }

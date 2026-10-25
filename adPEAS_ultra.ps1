@@ -21425,8 +21425,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Which users or groups each PSO applies to"
 	        "Password requirements defined in each PSO"
 	        "Priority/precedence of overlapping policies"
-	        "Without Domain Admin rights: by default only Domain Admins may read a PSO, so it is found by assignment - through msDS-PSOApplied on the users and groups it applies to, and msDS-ResultantPSO of the scanning account (inEffectForThisAccount: the PSO that wins for it). That gives the name and the direct targets, not the settings or the precedence"
-	        "Not visible that way: a PSO assigned to nobody, and an assignment on a user or group this account may not read - msDS-PSOApplied needs Read all properties, which Pre-Windows 2000 Compatible Access holds on users and groups"
+	        "Without Domain Admin rights: by default only Domain Admins may read a PSO, so it is found by name and by assignment - by name in the listing of the Password Settings Container, which returns every PSO without its attributes; by assignment through msDS-PSOApplied on the users and groups it applies to, and msDS-ResultantPSO of the scanning account (inEffectForThisAccount: the PSO that wins for it). That gives the names and the direct targets, not the settings or the precedence"
+	        "Not visible that way: an assignment on a user or group this account may not read - msDS-PSOApplied needs Read all properties, which Pre-Windows 2000 Compatible Access holds on users and groups. A PSO without a readable target is shown as assigned to no user or group this account can read: assigned to nobody, or only to such objects"
 	    )
 	    SecureMessage = "All Fine-Grained Password Policies are properly configured with strong password requirements. No PSO allows weaker passwords than the domain default policy."
 	}
@@ -67833,9 +67833,17 @@ function Get-PSOAssignment {
 	            Name                   = $policyName
 	            Targets                = @()
 	            InEffectForThisAccount = $false
+	            Listed                 = $false
 	        }
 	    }
 	    return $policies[$PolicyDN]
+	}
+	$psoContainerDN = "CN=Password Settings Container,CN=System,$DomainDN"
+	$listedPolicies = @(Get-DomainObject -LDAPFilter '(objectClass=*)' -SearchBase $psoContainerDN -Scope OneLevel -Properties 'distinguishedName' @ConnectionParams)
+	foreach ($listedPolicy in $listedPolicies) {
+	    $listedDN = if ($listedPolicy) { [string]$listedPolicy.distinguishedName } else { '' }
+	    if (-not $listedDN.EndsWith(",$psoContainerDN", [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+	    (Add-PSOEntry -PolicyDN $listedDN).Listed = $true
 	}
 	$assignedObjects = @(Get-DomainObject -LDAPFilter '(msDS-PSOApplied=*)' -Properties 'distinguishedName', 'msDS-PSOApplied' @ConnectionParams)
 	foreach ($assignedObject in $assignedObjects) {
@@ -68182,7 +68190,8 @@ function Get-DomainPasswordPolicy {
 	                    Write-Warning "[Get-DomainPasswordPolicy] Failed to look up Fine-Grained Password Policy assignments: $_"
 	                }
 	                if ($null -ne $assignedPSOs -and $assignedPSOs.Count -gt 0) {
-	                    Show-Line "Found $($assignedPSOs.Count) Fine-Grained Password Polic$(if($assignedPSOs.Count -eq 1){'y'}else{'ies'}) by assignment:" -Class Hint
+	                    $foundBy = if (@($assignedPSOs | Where-Object { $_.Listed }).Count -gt 0) { 'by name and assignment' } else { 'by assignment' }
+	                    Show-Line "Found $($assignedPSOs.Count) Fine-Grained Password Polic$(if($assignedPSOs.Count -eq 1){'y'}else{'ies'}) $($foundBy):" -Class Hint
 	                    foreach ($assignedPSO in $assignedPSOs) {
 	                        $targetNames = @()
 	                        $privilegedTargetNames = @()
@@ -68196,7 +68205,7 @@ function Get-DomainPasswordPolicy {
 	                        $assignedObj = [PSCustomObject]@{
 	                            psoName   = $assignedPSO.Name
 	                            settings  = 'Unknown (readable by Domain Admins only)'
-	                            appliesTo = if ($targetNames.Count -gt 0) { $targetNames -join ', ' } else { 'Unknown (not readable)' }
+	                            appliesTo = if ($targetNames.Count -gt 0) { $targetNames -join ', ' } else { 'Unknown - assigned to no user or group this account can read' }
 	                        }
 	                        if ($privilegedTargetNames.Count -gt 0) {
 	                            $assignedObj | Add-Member -NotePropertyName 'appliesToPrivileged' -NotePropertyValue ($privilegedTargetNames -join ', ') -Force
@@ -68208,7 +68217,7 @@ function Get-DomainPasswordPolicy {
 	                        Show-Object $assignedObj -Class Hint
 	                    }
 	                } elseif ($null -ne $assignedPSOs) {
-	                    Show-Line "No Fine-Grained Password Policy assigned to a readable user or group" -Class Note
+	                    Show-Line "No Fine-Grained Password Policy found by name or by assignment" -Class Note
 	                }
 	            }
 	        } else {
@@ -95753,7 +95762,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261025-1745"
+$Script:adPEASVersion = "2.8.0+20261025-1816"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
