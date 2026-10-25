@@ -23693,6 +23693,90 @@ function Set-FindingsCollection {
     $Script:adPEAS_FindingsCollection = [System.Collections.ArrayList]@($Findings)
     Write-Log "[FindingsCollection] Set to $($Findings.Count) findings"
 }
+function ConvertTo-FindingsCacheValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false, Position=0)]
+        $Value,
+        [Parameter(Mandatory=$false, Position=1)]
+        [int]$Depth = 0
+    )
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    if ($Depth -ge 6) { return [string]$Value }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $copy = if ($Value -is [System.Collections.Specialized.OrderedDictionary]) { [ordered]@{} } else { @{} }
+        foreach ($key in $Value.Keys) { $copy[$key] = ConvertTo-FindingsCacheValue $Value[$key] ($Depth + 1) }
+        return $copy
+    }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $copy = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $copy[$property.Name] = ConvertTo-FindingsCacheValue $property.Value ($Depth + 1)
+        }
+        return [PSCustomObject]$copy
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) { $items.Add((ConvertTo-FindingsCacheValue $item ($Depth + 1))) }
+        return ,$items.ToArray()
+    }
+    return $Value.ToString()
+}
+function ConvertFrom-FindingsCacheValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false, Position=0)]
+        $Value,
+        [Parameter(Mandatory=$false, Position=1)]
+        [int]$Depth = 0
+    )
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) {
+        if ($Value -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?(Z|[+-]\d{2}:\d{2})?$') {
+            try {
+                return [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+            } catch {
+                return $Value
+            }
+        }
+        return $Value
+    }
+    if ($Depth -ge 6) { return $Value }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            $property.Value = ConvertFrom-FindingsCacheValue $property.Value ($Depth + 1)
+        }
+        return $Value
+    }
+    if ($Value -is [array]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) { $items.Add((ConvertFrom-FindingsCacheValue $item ($Depth + 1))) }
+        return ,$items.ToArray()
+    }
+    return $Value
+}
+function ConvertFrom-FindingsCacheJson {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$Json
+    )
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
+    $utcAttributes = $Script:LDAPGeneralizedTimeAttributes
+    $epoch = New-Object DateTime(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    $Json = [regex]::Replace($Json, '(?:"(?<key>[^"\\]+)":\s*)?"\\/Date\((?<ms>-?\d+)(?:[+-]\d{4})?\)\\/"', {
+        param($match)
+        $instant = $epoch.AddMilliseconds([double]$match.Groups['ms'].Value)
+        $key = $match.Groups['key'].Value
+        $date = if ($key -and $utcAttributes -and $utcAttributes.Contains($key)) { $instant } else { $instant.ToLocalTime() }
+        $prefix = if ($key) { '"' + $key + '":' } else { '' }
+        $prefix + '"' + $date.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) + '"'
+    })
+    return $Json | ConvertFrom-Json
+}
 function Export-FindingsCache {
     [CmdletBinding()]
     param(
@@ -23716,7 +23800,7 @@ function Export-FindingsCache {
                     $p.Value -is [int] -or $p.Value -is [long] -or
                     $p.Value -is [bool] -or $p.Value -is [datetime] -or
                     $null -eq $p.Value) {
-                    $objectProps[$p.Name] = $p.Value
+                    $objectProps[$p.Name] = ConvertTo-FindingsCacheValue $p.Value
                 } else {
                     $objectProps[$p.Name] = $p.Value.ToString()
                 }
@@ -23750,7 +23834,7 @@ function Export-FindingsCache {
         FindingCount  = $serializable.Count
         Findings      = @($serializable)
     }
-    $json = $cache | ConvertTo-Json -Depth 5 -Compress
+    $json = $cache | ConvertTo-Json -Depth 8 -Compress
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
     $tempPath = "$resolvedPath.tmp"
@@ -23777,7 +23861,7 @@ function Import-FindingsCache {
         [string]$Path
     )
     $raw = Get-Content -Path $Path -Raw -Encoding UTF8
-    $cache = $raw | ConvertFrom-Json
+    $cache = ConvertFrom-FindingsCacheJson -Json $raw
     if ($cache.CacheVersion -ne 1) {
         Write-Warning "[FindingsCache] Unsupported cache version $($cache.CacheVersion) - expected 1"
         return @()
@@ -23802,7 +23886,7 @@ function Import-FindingsFromCache {
         if ($f.ObjectProperties) {
             $props = @{}
             foreach ($p in $f.ObjectProperties.PSObject.Properties) {
-                $props[$p.Name] = $p.Value
+                $props[$p.Name] = ConvertFrom-FindingsCacheValue $p.Value
             }
             $adObject = [PSCustomObject]$props
         }
@@ -95370,7 +95454,7 @@ function Convert-adPEASReport {
         $previousDisclaimer = $Script:adPEASDisclaimer
         try {
             $rawJson = Get-Content -Path $InputJson -Raw -Encoding UTF8
-            $cache = $rawJson | ConvertFrom-Json
+            $cache = ConvertFrom-FindingsCacheJson -Json $rawJson
             if (-not $cache.CacheVersion) {
                 Write-Error "[Convert-adPEASReport] Invalid JSON file - missing CacheVersion field"
                 return
@@ -95570,8 +95654,8 @@ function Compare-adPEASReport {
                 [System.IO.File]::WriteAllText($textPath, "", [System.Text.Encoding]::UTF8)
             }
             $Script:adPEAS_OutputColor = if ($NoColor) { $false } else { $null }
-            $baselineCache = (Get-Content -Path $Baseline -Raw -Encoding UTF8) | ConvertFrom-Json
-            $currentCache = (Get-Content -Path $Current -Raw -Encoding UTF8) | ConvertFrom-Json
+            $baselineCache = ConvertFrom-FindingsCacheJson -Json (Get-Content -Path $Baseline -Raw -Encoding UTF8)
+            $currentCache = ConvertFrom-FindingsCacheJson -Json (Get-Content -Path $Current -Raw -Encoding UTF8)
             foreach ($entry in @(@{Name='Baseline'; Cache=$baselineCache; Path=$Baseline}, @{Name='Current'; Cache=$currentCache; Path=$Current})) {
                 if (-not $entry.Cache.CacheVersion) {
                     Write-Error "[Compare-adPEASReport] Invalid JSON file ($($entry.Name)): $($entry.Path)"
@@ -98637,7 +98721,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1041"
+$Script:adPEASVersion = "2.8.0+20261025-1131"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

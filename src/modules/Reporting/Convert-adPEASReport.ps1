@@ -85,7 +85,7 @@ function Convert-adPEASReport {
         try {
             # 1. Read and validate JSON (single read, reused for metadata and import)
             $rawJson = Get-Content -Path $InputJson -Raw -Encoding UTF8
-            $cache = $rawJson | ConvertFrom-Json
+            $cache = ConvertFrom-FindingsCacheJson -Json $rawJson
 
             if (-not $cache.CacheVersion) {
                 Write-Error "[Convert-adPEASReport] Invalid JSON file - missing CacheVersion field"

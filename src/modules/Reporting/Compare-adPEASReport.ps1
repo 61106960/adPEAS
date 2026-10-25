@@ -90,8 +90,8 @@ function Compare-adPEASReport {
             $Script:adPEAS_OutputColor = if ($NoColor) { $false } else { $null }
 
             # 1. Load and validate JSON (single read per file, reused for metadata and import)
-            $baselineCache = (Get-Content -Path $Baseline -Raw -Encoding UTF8) | ConvertFrom-Json
-            $currentCache = (Get-Content -Path $Current -Raw -Encoding UTF8) | ConvertFrom-Json
+            $baselineCache = ConvertFrom-FindingsCacheJson -Json (Get-Content -Path $Baseline -Raw -Encoding UTF8)
+            $currentCache = ConvertFrom-FindingsCacheJson -Json (Get-Content -Path $Current -Raw -Encoding UTF8)
 
             # Validate cache versions
             foreach ($entry in @(@{Name='Baseline'; Cache=$baselineCache; Path=$Baseline}, @{Name='Current'; Cache=$currentCache; Path=$Current})) {

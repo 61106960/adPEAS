@@ -19,6 +19,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the HTTPS endpoints and without their EPA result. Windows PowerShell 5.1 was not
   affected. The callback is now a compiled delegate that runs on any thread.
 
+- **Dates read back from the JSON export are no longer shifted or raw.** Windows
+  PowerShell 5.1 wrote a date into the export as `\/Date(<ms since 1970 UTC>)\/`, which
+  drops whether it was local time, and pwsh 7 as an ISO string - which 5.1 then did not
+  read as a date. A report rebuilt from the export (`-OutputAppend`,
+  `Convert-adPEASReport`) therefore showed every logon and password time of a 5.1 scan
+  shifted by the UTC offset, and 5.1 printed a pwsh 7 export's dates as
+  `2022-04-26T17:01:58.8141482+02:00`. Both runtimes now write the same round-trip string
+  and read it back as the date the live report showed. An export written by an earlier
+  version is read correctly as well: its FILETIME and certificate dates in local time,
+  `whenCreated`, `whenChanged` and `msExchWhenMailboxCreated` in UTC, as the live report
+  shows them.
+- **The JSON export no longer cuts a certificate's lists short.** A certificate's CRL
+  distribution points, AIA and OCSP URLs lie one level deeper than the export's depth of
+  5, so they were written as one space-separated string - silently under Windows
+  PowerShell 5.1, with the warning "resulting JSON is truncated" after every module under
+  pwsh 7.
+
 ---
 
 ## [2.8.0] - 2026-10-23

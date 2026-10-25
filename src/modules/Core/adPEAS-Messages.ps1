@@ -313,6 +313,163 @@ function Set-FindingsCollection {
 
 <#
 .SYNOPSIS
+    Prepares one object property for the findings cache, the same way on every host.
+.DESCRIPTION
+    The two ConvertTo-Json implementations write a date differently. Windows PowerShell
+    5.1 writes "\/Date(<milliseconds since 1970 UTC>)\/", which loses whether the value
+    was local time; pwsh 7 writes a round-trip string with the offset. The reader then
+    had to guess, and guessed differently per host: a report rebuilt from a 5.1 export
+    showed every logon time shifted by the UTC offset, and one rebuilt by 5.1 from a
+    pwsh 7 export printed the raw string. So a date leaves here as its round-trip string,
+    which keeps both the instant and whether it was local or UTC.
+
+    Nested values are walked as well, because that is where the dates of a certificate
+    (usercertificate[].NotBefore) and the arrays of a certificate (its CRL distribution
+    points) sit. A nested object that is neither a PSCustomObject, a dictionary nor an
+    array becomes its string, the rule Export-FindingsCache already applies at the top
+    level - it keeps the depth of the file bounded by the data adPEAS builds rather than
+    by the object graph of whatever .NET type ends up in a list.
+.PARAMETER Value
+    The property value.
+.PARAMETER Depth
+    Recursion depth, for the guard. Callers leave it out.
+#>
+function ConvertTo-FindingsCacheValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false, Position=0)]
+        $Value,
+
+        [Parameter(Mandatory=$false, Position=1)]
+        [int]$Depth = 0
+    )
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    if ($Depth -ge 6) { return [string]$Value }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $copy = if ($Value -is [System.Collections.Specialized.OrderedDictionary]) { [ordered]@{} } else { @{} }
+        foreach ($key in $Value.Keys) { $copy[$key] = ConvertTo-FindingsCacheValue $Value[$key] ($Depth + 1) }
+        return $copy
+    }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $copy = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $copy[$property.Name] = ConvertTo-FindingsCacheValue $property.Value ($Depth + 1)
+        }
+        return [PSCustomObject]$copy
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) { $items.Add((ConvertTo-FindingsCacheValue $item ($Depth + 1))) }
+        # The comma keeps a one-element list a list on the way out of the function
+        return ,$items.ToArray()
+    }
+    return $Value.ToString()
+}
+
+<#
+.SYNOPSIS
+    Turns the dates in one object property of a findings cache back into DateTime.
+.DESCRIPTION
+    The reading half of ConvertTo-FindingsCacheValue. pwsh 7's ConvertFrom-Json already
+    returns a round-trip string as a DateTime; Windows PowerShell 5.1 leaves it a string,
+    and the report then showed "2022-04-26T17:01:58.8141482+02:00" where a date belongs.
+    Parsed with RoundtripKind, so a value written as local time comes back as local time
+    and one written as UTC stays UTC - which is how the live report shows them.
+.PARAMETER Value
+    The property value as ConvertFrom-Json returned it.
+.PARAMETER Depth
+    Recursion depth, for the guard. Callers leave it out.
+#>
+function ConvertFrom-FindingsCacheValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false, Position=0)]
+        $Value,
+
+        [Parameter(Mandatory=$false, Position=1)]
+        [int]$Depth = 0
+    )
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) {
+        # A date as ConvertTo-FindingsCacheValue writes it ('o': seven fractional digits) or
+        # as pwsh 7's ConvertTo-Json wrote it before that (trailing zeros dropped, 'Z' for
+        # UTC). Anchored at both ends, so a description that merely contains a date stays
+        # text.
+        if ($Value -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?(Z|[+-]\d{2}:\d{2})?$') {
+            try {
+                return [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+            } catch {
+                return $Value
+            }
+        }
+        return $Value
+    }
+    if ($Depth -ge 6) { return $Value }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            $property.Value = ConvertFrom-FindingsCacheValue $property.Value ($Depth + 1)
+        }
+        return $Value
+    }
+    if ($Value -is [array]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) { $items.Add((ConvertFrom-FindingsCacheValue $item ($Depth + 1))) }
+        return ,$items.ToArray()
+    }
+    return $Value
+}
+
+<#
+.SYNOPSIS
+    Parses the text of a findings cache, including one written by an earlier version.
+.DESCRIPTION
+    Every reader of the cache goes through here - -OutputAppend, Convert-adPEASReport,
+    Compare-adPEASReport - so a file reads the same whichever of them opens it.
+
+    Before ConvertTo-FindingsCacheValue existed, a cache written by Windows PowerShell 5.1
+    held its dates as "\/Date(<milliseconds since 1970 UTC>)\/". Both ConvertFrom-Json
+    implementations read that as a UTC DateTime, and the report printed it as such - every
+    logon and password time of such a file came out shifted by the UTC offset of the
+    scanning host. Those values are rewritten to round-trip strings before parsing, in the
+    form the live report uses: UTC for the generalized-time attributes
+    ($Script:LDAPGeneralizedTimeAttributes - whenCreated, whenChanged and
+    msExchWhenMailboxCreated), local time for everything else, which is what the FILETIME
+    attributes and the certificate dates are.
+.PARAMETER Json
+    The file content.
+#>
+function ConvertFrom-FindingsCacheJson {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$Json
+    )
+
+    # An empty file parses to nothing, as it did through ConvertFrom-Json, so each caller
+    # still reports it through its own "invalid file" path rather than a binding error.
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
+
+    $utcAttributes = $Script:LDAPGeneralizedTimeAttributes
+    $epoch = New-Object DateTime(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    $Json = [regex]::Replace($Json, '(?:"(?<key>[^"\\]+)":\s*)?"\\/Date\((?<ms>-?\d+)(?:[+-]\d{4})?\)\\/"', {
+        param($match)
+        $instant = $epoch.AddMilliseconds([double]$match.Groups['ms'].Value)
+        $key = $match.Groups['key'].Value
+        $date = if ($key -and $utcAttributes -and $utcAttributes.Contains($key)) { $instant } else { $instant.ToLocalTime() }
+        $prefix = if ($key) { '"' + $key + '":' } else { '' }
+        $prefix + '"' + $date.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) + '"'
+    })
+    return $Json | ConvertFrom-Json
+}
+
+<#
+.SYNOPSIS
     Exports the current findings collection to a JSON cache file.
 .DESCRIPTION
     Serializes all collected findings to a JSON file for persistence between runs.
@@ -353,14 +510,16 @@ function Export-FindingsCache {
         if ($f.Object) {
             $objectProps = @{}
             foreach ($p in $f.Object.PSObject.Properties) {
-                # Serialize primitive types directly, convert complex types to string
+                # Serialize primitive types directly, convert complex types to string.
+                # Dates, and whatever an array or dictionary holds, go through
+                # ConvertTo-FindingsCacheValue, so the file is the same on 5.1 and pwsh 7.
                 if ($p.Value -is [System.Collections.IDictionary] -or
                     $p.Value -is [array] -or
                     $p.Value -is [string] -or
                     $p.Value -is [int] -or $p.Value -is [long] -or
                     $p.Value -is [bool] -or $p.Value -is [datetime] -or
                     $null -eq $p.Value) {
-                    $objectProps[$p.Name] = $p.Value
+                    $objectProps[$p.Name] = ConvertTo-FindingsCacheValue $p.Value
                 } else {
                     $objectProps[$p.Name] = $p.Value.ToString()
                 }
@@ -399,7 +558,12 @@ function Export-FindingsCache {
         Findings      = @($serializable)
     }
 
-    $json = $cache | ConvertTo-Json -Depth 5 -Compress
+    # Depth 8, not 5: a certificate's CRL distribution points are the sixth level
+    # (Findings > finding > ObjectProperties > usercertificate > certificate > list), and
+    # at 5 that list was joined into one space-separated string - silently on 5.1, with a
+    # warning per checkpoint on pwsh 7. 6 would do; the rest is headroom, which
+    # ConvertTo-FindingsCacheValue keeps bounded.
+    $json = $cache | ConvertTo-Json -Depth 8 -Compress
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
 
@@ -450,7 +614,7 @@ function Import-FindingsCache {
     )
 
     $raw = Get-Content -Path $Path -Raw -Encoding UTF8
-    $cache = $raw | ConvertFrom-Json
+    $cache = ConvertFrom-FindingsCacheJson -Json $raw
 
     # Version check
     if ($cache.CacheVersion -ne 1) {
@@ -494,7 +658,7 @@ function Import-FindingsFromCache {
         if ($f.ObjectProperties) {
             $props = @{}
             foreach ($p in $f.ObjectProperties.PSObject.Properties) {
-                $props[$p.Name] = $p.Value
+                $props[$p.Name] = ConvertFrom-FindingsCacheValue $p.Value
             }
             $adObject = [PSCustomObject]$props
         }
