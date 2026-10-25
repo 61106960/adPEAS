@@ -340,47 +340,41 @@ function Parse-CMSEnvelopedData {
     }
 
     try {
-        # Look for SID pattern in the data (S-1-5-21-...)
-        # SIDs in DPAPI-NG are stored in binary format
-        # Domain SIDs have format: S-1-5-21-<DomainID1>-<DomainID2>-<DomainID3>-<RID>
-        # That's 4 sub-authorities after the "21" (which is the first sub-authority)
+        # The principal the password is encrypted to is in the DPAPI-NG protection
+        # descriptor, which the KEK recipient carries as an attribute
+        # (1.3.6.1.4.1.311.74.1). The descriptor is text: "SID=S-1-5-21-...", encoded as
+        # a pair of UTF8Strings - "SID", then the SID string:
+        #
+        #   0C 03 'S' 'I' 'D'   0C <length> 'S-1-5-21-...'
+        #
+        # This used to look for a binary SID instead. A real blob holds none, so the
+        # target SID was always empty, Get-LAPSCredentialAccess counted the scanning
+        # account as authorized for no computer, and never tried the decryption - an
+        # account that could read every encrypted LAPS password was reported as reading
+        # none (measured as a domain admin against a Windows LAPS lab).
+        $sidKeyword = [byte[]](0x0C, 0x03, 0x53, 0x49, 0x44, 0x0C)
+        for ($i = 0; $i -le $Data.Length - $sidKeyword.Length - 1; $i++) {
+            $isKeyword = $true
+            for ($j = 0; $j -lt $sidKeyword.Length; $j++) {
+                if ($Data[$i + $j] -ne $sidKeyword[$j]) { $isKeyword = $false; break }
+            }
+            if (-not $isKeyword) { continue }
 
-        # Search for SID header: 0x01 (revision) followed by sub-authority count
-        for ($i = 0; $i -lt $Data.Length - 8; $i++) {
-            # Check for SID revision 1 and reasonable sub-authority count (4-5 for domain SIDs)
-            # Domain SID without RID = 4, with RID = 5
-            if ($Data[$i] -eq 0x01 -and $Data[$i + 1] -ge 4 -and $Data[$i + 1] -le 6) {
-                $subAuthCount = $Data[$i + 1]
+            # DER length of the value: short form, or long form with one length byte
+            $lengthAt = $i + $sidKeyword.Length
+            $valueLength = [int]$Data[$lengthAt]
+            $valueAt = $lengthAt + 1
+            if ($valueLength -eq 0x81 -and $valueAt -lt $Data.Length) {
+                $valueLength = [int]$Data[$valueAt]
+                $valueAt++
+            }
+            if ($valueLength -ge 0x80 -or $valueAt + $valueLength -gt $Data.Length) { continue }
 
-                # Check bounds before accessing authority bytes
-                if ($i + 8 + ($subAuthCount * 4) -gt $Data.Length) {
-                    continue
-                }
-
-                # Check for NT Authority (0x00 0x00 0x00 0x00 0x00 0x05) at offset +2
-                if ($Data[$i + 2] -eq 0 -and $Data[$i + 3] -eq 0 -and
-                    $Data[$i + 4] -eq 0 -and $Data[$i + 5] -eq 0 -and
-                    $Data[$i + 6] -eq 0 -and $Data[$i + 7] -eq 5) {
-
-                    # Extract sub-authorities (each is 4 bytes, Little-Endian)
-                    $subAuths = @()
-                    for ($j = 0; $j -lt $subAuthCount; $j++) {
-                        $offset = $i + 8 + ($j * 4)
-                        $subAuth = [BitConverter]::ToUInt32($Data, $offset)
-                        $subAuths += $subAuth
-                    }
-
-                    # Build SID string
-                    $sidString = "S-1-5-" + ($subAuths -join '-')
-
-                    # Validate it looks like a domain SID (S-1-5-21-<3 domain parts>[-RID])
-                    # Domain SIDs: S-1-5-21-xxxxxxx-xxxxxxx-xxxxxxx or S-1-5-21-xxxxxxx-xxxxxxx-xxxxxxx-RID
-                    if ($sidString -match '^S-1-5-21-\d+-\d+-\d+(-\d+)?$') {
-                        $result.TargetSID = $sidString
-                        Write-Log "[Parse-CMSEnvelopedData] Found Target SID: $sidString"
-                        break
-                    }
-                }
+            $sidString = [System.Text.Encoding]::UTF8.GetString($Data, $valueAt, $valueLength)
+            if ($sidString -match '^S-1-\d+(-\d+)+$') {
+                $result.TargetSID = $sidString
+                Write-Log "[Parse-CMSEnvelopedData] Found Target SID: $sidString"
+                break
             }
         }
 
@@ -389,6 +383,13 @@ function Parse-CMSEnvelopedData {
         $aes256GcmOid = @(0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2E)
         if (Find-BytePattern -Data $Data -Pattern $aes256GcmOid) {
             $result.ContentEncryptionAlgorithm = "AES-256-GCM (2.16.840.1.101.3.4.1.46)"
+        }
+
+        # The key encryption algorithm of the KEK recipient: AES-256 key wrap,
+        # 2.16.840.1.101.3.4.1.45. The result field existed and was never filled.
+        $aes256WrapOid = @(0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2D)
+        if (Find-BytePattern -Data $Data -Pattern $aes256WrapOid) {
+            $result.KeyEncryptionAlgorithm = "AES-256-KeyWrap (2.16.840.1.101.3.4.1.45)"
         }
 
     } catch {

@@ -42453,33 +42453,35 @@ function Parse-CMSEnvelopedData {
         KeyEncryptionAlgorithm = $null
     }
     try {
-        for ($i = 0; $i -lt $Data.Length - 8; $i++) {
-            if ($Data[$i] -eq 0x01 -and $Data[$i + 1] -ge 4 -and $Data[$i + 1] -le 6) {
-                $subAuthCount = $Data[$i + 1]
-                if ($i + 8 + ($subAuthCount * 4) -gt $Data.Length) {
-                    continue
-                }
-                if ($Data[$i + 2] -eq 0 -and $Data[$i + 3] -eq 0 -and
-                    $Data[$i + 4] -eq 0 -and $Data[$i + 5] -eq 0 -and
-                    $Data[$i + 6] -eq 0 -and $Data[$i + 7] -eq 5) {
-                    $subAuths = @()
-                    for ($j = 0; $j -lt $subAuthCount; $j++) {
-                        $offset = $i + 8 + ($j * 4)
-                        $subAuth = [BitConverter]::ToUInt32($Data, $offset)
-                        $subAuths += $subAuth
-                    }
-                    $sidString = "S-1-5-" + ($subAuths -join '-')
-                    if ($sidString -match '^S-1-5-21-\d+-\d+-\d+(-\d+)?$') {
-                        $result.TargetSID = $sidString
-                        Write-Log "[Parse-CMSEnvelopedData] Found Target SID: $sidString"
-                        break
-                    }
-                }
+        $sidKeyword = [byte[]](0x0C, 0x03, 0x53, 0x49, 0x44, 0x0C)
+        for ($i = 0; $i -le $Data.Length - $sidKeyword.Length - 1; $i++) {
+            $isKeyword = $true
+            for ($j = 0; $j -lt $sidKeyword.Length; $j++) {
+                if ($Data[$i + $j] -ne $sidKeyword[$j]) { $isKeyword = $false; break }
+            }
+            if (-not $isKeyword) { continue }
+            $lengthAt = $i + $sidKeyword.Length
+            $valueLength = [int]$Data[$lengthAt]
+            $valueAt = $lengthAt + 1
+            if ($valueLength -eq 0x81 -and $valueAt -lt $Data.Length) {
+                $valueLength = [int]$Data[$valueAt]
+                $valueAt++
+            }
+            if ($valueLength -ge 0x80 -or $valueAt + $valueLength -gt $Data.Length) { continue }
+            $sidString = [System.Text.Encoding]::UTF8.GetString($Data, $valueAt, $valueLength)
+            if ($sidString -match '^S-1-\d+(-\d+)+$') {
+                $result.TargetSID = $sidString
+                Write-Log "[Parse-CMSEnvelopedData] Found Target SID: $sidString"
+                break
             }
         }
         $aes256GcmOid = @(0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2E)
         if (Find-BytePattern -Data $Data -Pattern $aes256GcmOid) {
             $result.ContentEncryptionAlgorithm = "AES-256-GCM (2.16.840.1.101.3.4.1.46)"
+        }
+        $aes256WrapOid = @(0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2D)
+        if (Find-BytePattern -Data $Data -Pattern $aes256WrapOid) {
+            $result.KeyEncryptionAlgorithm = "AES-256-KeyWrap (2.16.840.1.101.3.4.1.45)"
         }
     } catch {
         Write-Log "[Parse-CMSEnvelopedData] Error parsing CMS: $_"
@@ -98724,7 +98726,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1206"
+$Script:adPEASVersion = "2.8.0+20261025-1239"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

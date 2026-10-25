@@ -42,6 +42,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `ldap:///CN=Contoso-CA`, and twice, because Windows prints it once as stored and once
   percent-encoded. The AIA and OCSP lists were always empty: they were parsed line by line
   from a rendering that is a single line. All three now hold the full URLs, each once.
+- **An encrypted Windows LAPS password the scanning account can read is reported as
+  readable.** `Get-LAPSCredentialAccess` only tries to decrypt `msLAPS-EncryptedPassword`
+  when the account is a member of the principal the password is encrypted to, and it took
+  that principal from the blob by looking for a binary SID. A real blob names it in its
+  DPAPI-NG protection descriptor as text (`SID=S-1-5-21-...`), so the target was always
+  empty, no decryption was ever attempted, and an account that could read every encrypted
+  LAPS password was reported with "1 computer(s) have a LAPS password stored that this
+  account may not read". The target is now read from the descriptor; the key encryption
+  algorithm, a field that was never filled, is named as well.
 
 ---
 
