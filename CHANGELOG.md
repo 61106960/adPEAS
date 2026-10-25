@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`Set-DomainUser -PasswordCantChange` and `-ClearPasswordCantChange`.** Both wrote the
+  `PASSWD_CANT_CHANGE` bit (0x0040) into `userAccountControl`, where it has no effect:
+  "User cannot change password" is a Deny ACE on the User-Change-Password right for
+  Everyone and SELF. The switches never changed what they claimed to, and rebuilding them
+  on the ACL was not worth it - the setting only stops an account from changing its own
+  password, while a reset still works, so it has no use in an attack. A script that still
+  passes either switch now fails with a parameter error instead of silently doing nothing.
+
 ### Fixed
 
 - **The risk score no longer lists modifiers for a locked-out account or an expired

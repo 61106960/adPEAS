@@ -89,8 +89,6 @@ Modifies user objects in Active Directory for privilege escalation and persisten
 | **Unlock Account** | `-Unlock` | Unlock locked account | Access recovery |
 | **Password Not Required** | `-PasswordNotRequired` | Set PASSWD_NOTREQD flag (UAC 0x0020) | Account weakening |
 | **Clear Password Not Required** | `-ClearPasswordNotRequired` | Remove PASSWD_NOTREQD flag | Cleanup |
-| **Password Can't Change** | `-PasswordCantChange` | Set PASSWD_CANT_CHANGE flag (UAC 0x0040) | Persistence |
-| **Clear Password Can't Change** | `-ClearPasswordCantChange` | Remove PASSWD_CANT_CHANGE flag | Cleanup |
 | **Reversible Encryption** | `-ReversibleEncryption` | Set ENCRYPTED_TEXT_PWD_ALLOWED flag (UAC 0x0080) | Credential theft |
 | **Clear Reversible Encryption** | `-ClearReversibleEncryption` | Remove ENCRYPTED_TEXT_PWD_ALLOWED flag | Cleanup |
 | **Password Never Expires** | `-PasswordNeverExpires` | Set DONT_EXPIRE_PASSWORD flag (UAC 0x10000) | Persistence |
@@ -122,7 +120,6 @@ Set-DomainUser
     [-Disable]
     [-Unlock]
     [-PasswordNotRequired] [-ClearPasswordNotRequired]
-    [-PasswordCantChange] [-ClearPasswordCantChange]
     [-ReversibleEncryption] [-ClearReversibleEncryption]
     [-PasswordNeverExpires] [-ClearPasswordNeverExpires]
     [-SmartcardRequired] [-ClearSmartcardRequired]

@@ -32802,8 +32802,6 @@ function Set-DomainUser {
         [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='UnlockAccount')]
         [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='SetPasswordNotRequired')]
         [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='ClearPasswordNotRequired')]
-        [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='SetPasswordCantChange')]
-        [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='ClearPasswordCantChange')]
         [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='SetReversibleEncryption')]
         [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='ClearReversibleEncryption')]
         [Parameter(Position=0, Mandatory=$true, ValueFromPipeline=$true, ParameterSetName='SetPasswordNeverExpires')]
@@ -32866,10 +32864,6 @@ function Set-DomainUser {
         [switch]$PasswordNotRequired,
         [Parameter(ParameterSetName='ClearPasswordNotRequired', Mandatory=$true)]
         [switch]$ClearPasswordNotRequired,
-        [Parameter(ParameterSetName='SetPasswordCantChange', Mandatory=$true)]
-        [switch]$PasswordCantChange,
-        [Parameter(ParameterSetName='ClearPasswordCantChange', Mandatory=$true)]
-        [switch]$ClearPasswordCantChange,
         [Parameter(ParameterSetName='SetReversibleEncryption', Mandatory=$true)]
         [switch]$ReversibleEncryption,
         [Parameter(ParameterSetName='ClearReversibleEncryption', Mandatory=$true)]
@@ -33654,106 +33648,6 @@ function Set-DomainUser {
                         }
                     } catch {
                         throw "Failed to clear PASSWD_NOTREQD: $_"
-                    }
-                }
-                'SetPasswordCantChange' {
-                    Write-Log "[Set-DomainUser] Setting PASSWD_CANT_CHANGE flag: $($TargetUser.sAMAccountName)"
-                    try {
-                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
-                        Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
-                        $PASSWD_CANT_CHANGE = 0x0040
-                        if (($CurrentUAC -band $PASSWD_CANT_CHANGE) -ne 0) {
-                            if ($PassThru) {
-                                return [PSCustomObject]@{
-                                    Operation = "SetPasswordCantChange"
-                                    User = $TargetUser.sAMAccountName
-                                    DistinguishedName = $UserDN
-                                    Success = $true
-                                    Message = "PASSWD_CANT_CHANGE already set (no change)"
-                                }
-                            } else {
-                                Show-Line "PASSWD_CANT_CHANGE already set on: $($TargetUser.sAMAccountName)" -Class Note
-                            }
-                        } else {
-                            $NewUAC = $CurrentUAC -bor $PASSWD_CANT_CHANGE
-                            Write-Log "[Set-DomainUser] New userAccountControl: $NewUAC (0x$($NewUAC.ToString('X')))"
-                            $ModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
-                            $ModifyRequest.DistinguishedName = $UserDN
-                            $Modification = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
-                            $Modification.Name = "userAccountControl"
-                            $Modification.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
-                            $Modification.Add([string]$NewUAC) | Out-Null
-                            $ModifyRequest.Modifications.Add($Modification) | Out-Null
-                            $Response = $Script:LdapConnection.SendRequest($ModifyRequest)
-                            if ($Response.ResultCode -ne [System.DirectoryServices.Protocols.ResultCode]::Success) {
-                                throw "LDAP ModifyRequest failed: $($Response.ResultCode) - $($Response.ErrorMessage)"
-                            }
-                            if ($PassThru) {
-                                return [PSCustomObject]@{
-                                    Operation = "SetPasswordCantChange"
-                                    User = $TargetUser.sAMAccountName
-                                    DistinguishedName = $UserDN
-                                    OldUAC = $CurrentUAC
-                                    NewUAC = $NewUAC
-                                    Success = $true
-                                    Message = "PASSWD_CANT_CHANGE flag set"
-                                }
-                            } else {
-                                Show-Line "Successfully set PASSWD_CANT_CHANGE on: $($TargetUser.sAMAccountName)" -Class Hint
-                            }
-                        }
-                    } catch {
-                        throw "Failed to set PASSWD_CANT_CHANGE: $_"
-                    }
-                }
-                'ClearPasswordCantChange' {
-                    Write-Log "[Set-DomainUser] Clearing PASSWD_CANT_CHANGE flag: $($TargetUser.sAMAccountName)"
-                    try {
-                        $CurrentUAC = ConvertTo-UACValue -Value $TargetUser.userAccountControl -Default 512
-                        Write-Log "[Set-DomainUser] Current userAccountControl: $CurrentUAC (0x$($CurrentUAC.ToString('X')))"
-                        $PASSWD_CANT_CHANGE = 0x0040
-                        if (($CurrentUAC -band $PASSWD_CANT_CHANGE) -eq 0) {
-                            if ($PassThru) {
-                                return [PSCustomObject]@{
-                                    Operation = "ClearPasswordCantChange"
-                                    User = $TargetUser.sAMAccountName
-                                    DistinguishedName = $UserDN
-                                    Success = $true
-                                    Message = "PASSWD_CANT_CHANGE already cleared (no change)"
-                                }
-                            } else {
-                                Show-Line "PASSWD_CANT_CHANGE already cleared on: $($TargetUser.sAMAccountName)" -Class Note
-                            }
-                        } else {
-                            $NewUAC = $CurrentUAC -band (-bnot $PASSWD_CANT_CHANGE)
-                            Write-Log "[Set-DomainUser] New userAccountControl: $NewUAC (0x$($NewUAC.ToString('X')))"
-                            $ModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
-                            $ModifyRequest.DistinguishedName = $UserDN
-                            $Modification = New-Object System.DirectoryServices.Protocols.DirectoryAttributeModification
-                            $Modification.Name = "userAccountControl"
-                            $Modification.Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
-                            $Modification.Add([string]$NewUAC) | Out-Null
-                            $ModifyRequest.Modifications.Add($Modification) | Out-Null
-                            $Response = $Script:LdapConnection.SendRequest($ModifyRequest)
-                            if ($Response.ResultCode -ne [System.DirectoryServices.Protocols.ResultCode]::Success) {
-                                throw "LDAP ModifyRequest failed: $($Response.ResultCode) - $($Response.ErrorMessage)"
-                            }
-                            if ($PassThru) {
-                                return [PSCustomObject]@{
-                                    Operation = "ClearPasswordCantChange"
-                                    User = $TargetUser.sAMAccountName
-                                    DistinguishedName = $UserDN
-                                    OldUAC = $CurrentUAC
-                                    NewUAC = $NewUAC
-                                    Success = $true
-                                    Message = "PASSWD_CANT_CHANGE flag cleared - user can change password again"
-                                }
-                            } else {
-                                Show-Line "Successfully cleared PASSWD_CANT_CHANGE on: $($TargetUser.sAMAccountName)" -Class Hint
-                            }
-                        }
-                    } catch {
-                        throw "Failed to clear PASSWD_CANT_CHANGE: $_"
                     }
                 }
                 'SetReversibleEncryption' {
@@ -98853,7 +98747,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1952"
+$Script:adPEASVersion = "2.8.0+20261025-2015"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
