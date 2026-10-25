@@ -23,7 +23,7 @@ FINAL_SCORE = (BASE × IMPACT × EXPLOITABILITY × SECURITY) + CORRELATION
 | **BASE** | 0-100 | Intrinsic severity of the finding type |
 | **IMPACT** | 1.0-2.0 | Multiplier based on account privilege tier |
 | **EXPLOITABILITY** | 0.72-3.64 | Product of four factors: password age, minimum length, complexity, encryption |
-| **SECURITY** | 0.07-1.3 | Mitigating controls, multiplied together |
+| **SECURITY** | 0.003-1.3 | Mitigating controls, multiplied together |
 | **CORRELATION** | 0-15, or 0-30 for a non-privileged account | Bonus for accounts appearing in multiple findings |
 
 **Final score is clamped to 0-100.**
@@ -36,8 +36,9 @@ The ranges above are the products of the tables in
   bottom and 3.64 at the top - this component can raise a score as well as lower it,
   and it is applied only to the attacks that need cracking (Kerberoast, AS-REP,
   pre-auth).
-- **SECURITY** multiplies whichever mitigations apply, so two of them compound: a
-  disabled account (0.1) whose password has expired (0.7) comes out at 0.07. One entry
+- **SECURITY** multiplies whichever mitigations apply, so they compound: on a cracking
+  finding, a disabled account (0.1) that requires a smartcard (0.15) and sits in
+  Protected Users (0.2) comes out at 0.003. One entry
   in that table is above 1 - `USE_DES_KEY_ONLY` at 1.3, which raises the score because
   DES is weak encryption rather than a mitigation. It sits in this table for historical
   reasons and belongs with the exploitability factors; moving it would change scores,
@@ -315,11 +316,19 @@ Security modifiers **reduce** the score when mitigating controls are in place.
 | Flag | Modifier | Applies To | Description |
 |------|----------|------------|-------------|
 | `ACCOUNTDISABLE` | ×0.1 | All findings | Account is disabled |
-| `LOCKOUT` | ×0.3 | All findings | Account is locked out |
 | `SMARTCARD_REQUIRED` | ×0.15 | Cracking attacks | Password is random/unknown |
-| `PASSWORD_EXPIRED` | ×0.7 | Credential attacks | Password may be changed soon |
 | `USE_DES_KEY_ONLY` | ×1.3 | Kerberos attacks | Weak encryption (increases risk) |
-| `NOT_DELEGATED` | ×0.3 | Delegation attacks | Delegation protection enabled |
+
+Not applied:
+
+- **A locked-out account or an expired password.** The DC computes `LOCKOUT` and
+  `PASSWORD_EXPIRED` into `msDS-User-Account-Control-Computed` and never stores them in
+  `userAccountControl`, which is where the report reads the flags from.
+- **`NOT_DELEGATED`** ("Account is sensitive and cannot be delegated"). It protects the
+  account from being delegated by someone else and says nothing about the delegation the
+  account itself performs, which is what a delegation finding is about. The value
+  (×0.3) stays in the table for a version that measures whether the accounts worth
+  impersonating are protected.
 
 ### Protected Users Group
 
@@ -338,11 +347,6 @@ Protected Users membership is detected via:
 // Cracking attacks: Kerberoast, AS-REP Roast
 if (isCrackingAttack && hasSmartcardRequired) {
     modifier *= 0.15;  // Password is random, can't crack
-}
-
-// Delegation attacks: Unconstrained, Constrained, RBCD
-if (isDelegationAttack && hasNotDelegated) {
-    modifier *= 0.3;   // Delegation protection enabled
 }
 
 // All attacks: Account disabled

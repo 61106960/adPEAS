@@ -21222,9 +21222,7 @@ $Script:EncryptionTypeModifiers = @{
 }
 $Script:SecurityModifiers = @{
     'ACCOUNTDISABLE'      = 0.1
-    'LOCKOUT'             = 0.3
     'SMARTCARD_REQUIRED'  = 0.15
-    'PASSWORD_EXPIRED'    = 0.7
     'USE_DES_KEY_ONLY'    = 1.3
     'NOT_DELEGATED'       = 0.3
     'PROTECTED_USERS'     = 0.2
@@ -21304,9 +21302,7 @@ function ConvertTo-ScoringJavaScript {
 
         const securityModifiers = {
             ACCOUNTDISABLE: $($Script:SecurityModifiers['ACCOUNTDISABLE']),
-            LOCKOUT: $($Script:SecurityModifiers['LOCKOUT']),
             SMARTCARD_REQUIRED: $($Script:SecurityModifiers['SMARTCARD_REQUIRED']),
-            PASSWORD_EXPIRED: $($Script:SecurityModifiers['PASSWORD_EXPIRED']),
             USE_DES_KEY_ONLY: $($Script:SecurityModifiers['USE_DES_KEY_ONLY']),
             NOT_DELEGATED: $($Script:SecurityModifiers['NOT_DELEGATED']),
             PROTECTED_USERS: $($Script:SecurityModifiers['PROTECTED_USERS'])
@@ -93847,7 +93843,6 @@ function Get-HTMLTemplate {
             let modifier = 1.0;
             const flags = accountInfo.uacFlags;
             const isCrackingAttack = ['kerberoast', 'asrep', 'preauth'].some(a => findingType.includes(a));
-            const isCredentialAttack = ['credential', 'password', 'gpp', 'autoadmin'].some(a => findingType.includes(a));
 
             // ========================================
             // ACCOUNT STATUS FLAGS (affect ALL attacks)
@@ -93857,9 +93852,10 @@ function Get-HTMLTemplate {
                 modifier *= securityModifiers.ACCOUNTDISABLE;
             }
 
-            if (flags.includes('LOCKOUT') || flags.includes('Locked')) {
-                modifier *= securityModifiers.LOCKOUT;
-            }
+            // No modifier for a locked-out account or an expired password. The DC
+            // computes LOCKOUT and PASSWORD_EXPIRED into msDS-User-Account-Control-Computed
+            // and never stores them in userAccountControl, where these flags come from -
+            // the two modifiers that read them here never fired.
 
             // ========================================
             // KERBEROS SECURITY FLAGS (affect cracking attacks)
@@ -93895,16 +93891,6 @@ function Get-HTMLTemplate {
             // Get-ProtectedUsersStatus already computes - whether the accounts worth
             // impersonating are protected from delegation - rather than the UAC flags of
             // the delegating host.
-
-            // ========================================
-            // PASSWORD FLAGS (affect credential attacks)
-            // ========================================
-
-            if (isCrackingAttack || isCredentialAttack) {
-                if (flags.includes('PASSWORD_EXPIRED') || flags.includes('PasswordExpired')) {
-                    modifier *= securityModifiers.PASSWORD_EXPIRED;
-                }
-            }
 
             // ========================================
             // ENCRYPTION FLAGS (affect Kerberoast specifically)
@@ -93981,7 +93967,7 @@ function Get-HTMLTemplate {
         //   pwdAgeDays            the oldest password
         //   encryptionTypes       RC4-only if ANY of them is RC4-only, else the union
         //   uacFlags              the INTERSECTION: every flag the scorer reads here is a
-        //                         mitigation (disabled, locked out, smartcard required),
+        //                         mitigation (disabled, smartcard required),
         //                         so it may only count when it holds for all of them
         //   isProtectedUser       likewise, only when every account is protected
         //
@@ -98867,7 +98853,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261025-1816"
+$Script:adPEASVersion = "2.8.0+20261025-1952"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

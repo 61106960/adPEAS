@@ -1787,7 +1787,6 @@
             let modifier = 1.0;
             const flags = accountInfo.uacFlags;
             const isCrackingAttack = ['kerberoast', 'asrep', 'preauth'].some(a => findingType.includes(a));
-            const isCredentialAttack = ['credential', 'password', 'gpp', 'autoadmin'].some(a => findingType.includes(a));
 
             // ========================================
             // ACCOUNT STATUS FLAGS (affect ALL attacks)
@@ -1797,9 +1796,10 @@
                 modifier *= securityModifiers.ACCOUNTDISABLE;
             }
 
-            if (flags.includes('LOCKOUT') || flags.includes('Locked')) {
-                modifier *= securityModifiers.LOCKOUT;
-            }
+            // No modifier for a locked-out account or an expired password. The DC
+            // computes LOCKOUT and PASSWORD_EXPIRED into msDS-User-Account-Control-Computed
+            // and never stores them in userAccountControl, where these flags come from -
+            // the two modifiers that read them here never fired.
 
             // ========================================
             // KERBEROS SECURITY FLAGS (affect cracking attacks)
@@ -1835,16 +1835,6 @@
             // Get-ProtectedUsersStatus already computes - whether the accounts worth
             // impersonating are protected from delegation - rather than the UAC flags of
             // the delegating host.
-
-            // ========================================
-            // PASSWORD FLAGS (affect credential attacks)
-            // ========================================
-
-            if (isCrackingAttack || isCredentialAttack) {
-                if (flags.includes('PASSWORD_EXPIRED') || flags.includes('PasswordExpired')) {
-                    modifier *= securityModifiers.PASSWORD_EXPIRED;
-                }
-            }
 
             // ========================================
             // ENCRYPTION FLAGS (affect Kerberoast specifically)
@@ -1921,7 +1911,7 @@
         //   pwdAgeDays            the oldest password
         //   encryptionTypes       RC4-only if ANY of them is RC4-only, else the union
         //   uacFlags              the INTERSECTION: every flag the scorer reads here is a
-        //                         mitigation (disabled, locked out, smartcard required),
+        //                         mitigation (disabled, smartcard required),
         //                         so it may only count when it holds for all of them
         //   isProtectedUser       likewise, only when every account is protected
         //

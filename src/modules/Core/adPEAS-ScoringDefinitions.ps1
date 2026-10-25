@@ -126,10 +126,11 @@ $Script:EncryptionTypeModifiers = @{
 $Script:SecurityModifiers = @{
     # UAC Flags
     'ACCOUNTDISABLE'      = 0.1     # Account is disabled - can't be used
-    'LOCKOUT'             = 0.3     # Account is locked out
     'SMARTCARD_REQUIRED'  = 0.15    # Password is random/unknown (cracking attacks)
-    'PASSWORD_EXPIRED'    = 0.7     # Password may be changed soon
     'USE_DES_KEY_ONLY'    = 1.3     # Weak encryption - INCREASES risk
+    # No LOCKOUT and no PASSWORD_EXPIRED: the DC computes both into
+    # msDS-User-Account-Control-Computed and never stores them in userAccountControl,
+    # which is what the report script reads.
     # Currently unused by the report script, deliberately. It was applied to delegation
     # findings using the UAC flags of the account the card is about - the host that
     # performs the delegation - while NOT_DELEGATED protects THAT account's identity from
@@ -257,9 +258,7 @@ function ConvertTo-ScoringJavaScript {
 
         const securityModifiers = {
             ACCOUNTDISABLE: $($Script:SecurityModifiers['ACCOUNTDISABLE']),
-            LOCKOUT: $($Script:SecurityModifiers['LOCKOUT']),
             SMARTCARD_REQUIRED: $($Script:SecurityModifiers['SMARTCARD_REQUIRED']),
-            PASSWORD_EXPIRED: $($Script:SecurityModifiers['PASSWORD_EXPIRED']),
             USE_DES_KEY_ONLY: $($Script:SecurityModifiers['USE_DES_KEY_ONLY']),
             NOT_DELEGATED: $($Script:SecurityModifiers['NOT_DELEGATED']),
             PROTECTED_USERS: $($Script:SecurityModifiers['PROTECTED_USERS'])

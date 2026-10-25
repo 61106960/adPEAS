@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The risk score no longer lists modifiers for a locked-out account or an expired
+  password.** The report script multiplied a card by 0.3 for `LOCKOUT` and by 0.7 for
+  `PASSWORD_EXPIRED` in `userAccountControl`. The DC never stores either bit there - both
+  are computed into `msDS-User-Account-Control-Computed` - so neither modifier ever fired,
+  while the scoring documentation listed both. They are removed. The documentation also no
+  longer lists `NOT_DELEGATED`, which the script deliberately does not apply.
 - **A scan without Domain Admin rights names every Fine-Grained Password Policy.** It found
   the policies only through their assignments and said a policy assigned to nobody stays
   invisible. Measured as a domain user: a one-level search below the Password Settings
