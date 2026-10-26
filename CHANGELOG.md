@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   High like a computer, and the finding opens a card of its own. The CreateChild card says
   that "All Objects" includes the class wherever a domain controller runs Windows Server
   2025.
+- **`Get-ManagedServiceAccountSecurity` checks delegated Managed Service Account links.**
+  A dMSA names the account it replaces, and once that account names the dMSA back, a
+  Windows Server 2025 KDC issues the dMSA tickets with the account's group memberships and
+  hands over the account's keys. The links are read from the replaced account, because a
+  domain user can read that one: the dMSA class grants Authenticated Users nothing by
+  default, and measured as a domain user a dMSA returns its DN and no attribute. Reported:
+  a pairing outside a regular migration - the account still enabled after completion, or
+  no migration state at all - as a finding; a link the account does not return, and a
+  privileged account replaced by a dMSA, as hints; migrations started or completed as
+  notes. The section appears only where the schema has the dMSA class.
 
 ### Removed
 

@@ -748,6 +748,16 @@ $Script:PrimaryAttributes = @{
         'accountsRead', 'protectedByAdminSDHolder', 'accountsNotRead'
     )
 
+    # An account a delegated Managed Service Account names as its predecessor
+    # (Get-ManagedServiceAccountSecurity). The back link names the dMSA; the verdict below it
+    # says what the pairing is. The forward link and the migration state stay on the card,
+    # where they back the verdict up - on the console they would repeat it.
+    dMSALink = @(
+        'sAMAccountName', 'distinguishedName', 'objectSid', 'memberOf',
+        'msDS-ManagedAccountPrecededByLinkBL', 'dmsaLink',
+        'userAccountControl', 'pwdLastSet', 'lastLogonTimestamp'
+    )
+
     # Logon scripts of accounts a principal beyond the administrators may change
     # (Get-LogonScriptPermissions)
     LogonScriptPermission = @(

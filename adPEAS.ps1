@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-26 08:04:50
-    Version: 2.8.0+20261026-0804
+    Build: 2026-10-26 08:31:18
+    Version: 2.8.0+20261026-0831
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -7684,6 +7684,16 @@ $Script:PrimaryAttributes = @{
     # AdminSDHolder protects, and the unreadable.
     PrivilegedAccountsRead = @(
         'accountsRead', 'protectedByAdminSDHolder', 'accountsNotRead'
+    )
+
+    # An account a delegated Managed Service Account names as its predecessor
+    # (Get-ManagedServiceAccountSecurity). The back link names the dMSA; the verdict below it
+    # says what the pairing is. The forward link and the migration state stay on the card,
+    # where they back the verdict up - on the console they would repeat it.
+    dMSALink = @(
+        'sAMAccountName', 'distinguishedName', 'objectSid', 'memberOf',
+        'msDS-ManagedAccountPrecededByLinkBL', 'dmsaLink',
+        'userAccountControl', 'pwdLastSet', 'lastLogonTimestamp'
     )
 
     # Logon scripts of accounts a principal beyond the administrators may change
@@ -22106,6 +22116,121 @@ $acl.Access | Where-Object {
         )
     }
 
+    'DMSA_LINK_IRREGULAR' = @{
+        Title = "Account Paired with a dMSA Outside a Regular Migration"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "This account and a delegated Managed Service Account (dMSA, Windows Server 2025) name each other: the dMSA in msDS-ManagedAccountPrecededByLink, the account in msDS-SupersededManagedAccountLink. A Windows Server 2025 KDC honours such a pairing - it issues the dMSA tickets carrying this account's group memberships and hands over this account's keys. The account is not in the state a migration leaves it in, though: either the migration is recorded as complete (msDS-SupersededServiceAccountState 2) and the account is still enabled, or no migration state is recorded at all. Complete-ADServiceAccountMigration disables the account; a pairing written by hand by someone who controls a dMSA and may write to this account leaves it as it was."
+        Impact = @(
+            "Whoever may use the dMSA acts with this account's group memberships"
+            "The dMSA's key package holds this account's keys - a credential dump without DCSync"
+            "The account keeps working on its own beside the dMSA"
+        )
+        Attack = @(
+            "1. Control a dMSA - create one, or hold write access to an existing one"
+            "2. With write access to the target account, write both halves of the pairing: msDS-ManagedAccountPrecededByLink on the dMSA, msDS-SupersededManagedAccountLink on the account"
+            "3. Request a ticket for the dMSA: it carries the account's group memberships, and its key package holds the account's keys"
+        )
+        Remediation = @(
+            "Establish whether a migration to this dMSA was intended"
+            "If it was not: clear both links, find out who wrote them (event 5136) and treat the account's keys as known"
+            "If it was: complete it with Complete-ADServiceAccountMigration, which also disables the account"
+            "Restrict who may create dMSAs and who may write to accounts that could be paired with one"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show both sides of the link, the migration state and whether the account is enabled"
+                Command = "Get-ADObject -Identity 'CN=ACCOUNT,OU=OU,DC=domain,DC=com' -Properties 'msDS-ManagedAccountPrecededByLinkBL', 'msDS-SupersededManagedAccountLink', 'msDS-SupersededServiceAccountState', userAccountControl, whenChanged | Format-List Name, msDS-*, userAccountControl, whenChanged"
+            }
+            @{
+                Description = "Remove an unintended pairing on both sides"
+                Command = "Set-ADObject -Identity 'CN=DMSA,OU=OU,DC=domain,DC=com' -Clear 'msDS-ManagedAccountPrecededByLink'; Set-ADObject -Identity 'CN=ACCOUNT,OU=OU,DC=domain,DC=com' -Clear 'msDS-SupersededManagedAccountLink', 'msDS-SupersededServiceAccountState'"
+            }
+        )
+        References = @(
+            @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+        )
+        Tools = @("SharpSuccessor", "Rubeus", "bloodyAD", "NetExec")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'dmsaLink'; Pattern = '^Irregular link'; Severity = 'Finding' }
+        )
+    }
+
+    'DMSA_LINK_ONE_SIDED' = @{
+        Title = "dMSA Names an Account That Does Not Name It Back"
+        Risk = "Hint"
+        BaseScore = 35
+        Description = "A delegated Managed Service Account (dMSA, Windows Server 2025) names this account as the account it replaces (msDS-ManagedAccountPrecededByLink), and this account does not name the dMSA back (msDS-SupersededManagedAccountLink). The KDC honours only a pairing in which both sides name each other, so the link grants nothing on its own. But it is half of one: whoever wrote it controls the dMSA, and a single write to this account completes the pairing - the dMSA then carries this account's group memberships and holds its keys. A migration writes both sides at once, so a lone half was written by hand or left behind by a migration that was undone on one side only."
+        Impact = @(
+            "Nothing yet - the KDC ignores half a pairing"
+            "One write to this account completes it, and the dMSA then acts with this account's group memberships and holds its keys"
+            "Shows that someone controls a dMSA and aimed it at this account"
+        )
+        Attack = @(
+            "1. Control a dMSA and point its msDS-ManagedAccountPrecededByLink at the target - the half already written here"
+            "2. Gain write access to the target and set its msDS-SupersededManagedAccountLink to the dMSA"
+            "3. Request a ticket for the dMSA: it carries the target's group memberships, and its key package holds the target's keys"
+        )
+        Remediation = @(
+            "Find out who created or changed the dMSA (events 5137 and 5136)"
+            "Clear msDS-ManagedAccountPrecededByLink on the dMSA, or delete the dMSA if nobody needs it"
+            "Restrict who may create dMSAs and who may write to this account"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show when the dMSA was created and changed, who owns it and what it names"
+                Command = "Get-ADObject -Identity 'CN=DMSA,OU=OU,DC=domain,DC=com' -Properties whenCreated, whenChanged, 'msDS-ManagedAccountPrecededByLink', 'msDS-DelegatedMSAState', nTSecurityDescriptor | Select-Object Name, whenCreated, whenChanged, 'msDS-ManagedAccountPrecededByLink', 'msDS-DelegatedMSAState', @{ Name = 'Owner'; Expression = { `$_.nTSecurityDescriptor.Owner } }"
+            }
+            @{
+                Description = "Remove the link from the dMSA"
+                Command = "Set-ADObject -Identity 'CN=DMSA,OU=OU,DC=domain,DC=com' -Clear 'msDS-ManagedAccountPrecededByLink'"
+            }
+        )
+        References = @(
+            @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+        )
+        Tools = @("SharpSuccessor", "Rubeus", "bloodyAD", "NetExec")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'dmsaLink'; Pattern = '^One-sided link'; Severity = 'Hint' }
+        )
+    }
+
+    'DMSA_PRIVILEGED_PREDECESSOR' = @{
+        Title = "Privileged Account Replaced by a dMSA"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "A delegated Managed Service Account (dMSA, Windows Server 2025) has completed its migration from this privileged account. The KDC issues the dMSA tickets carrying this account's group memberships, so the dMSA acts as a privileged account although it is a member of no privileged group - a list of group members does not show it. Every host allowed to use the dMSA (msDS-GroupMSAMembership) holds these privileges, and so does whoever may change that list."
+        Impact = @(
+            "The dMSA's privileges appear in no group membership"
+            "Every host allowed to use the dMSA is a Tier 0 system"
+            "Write access to the dMSA object is a path to this account's privileges"
+        )
+        Attack = @(
+            "1. Take over a host allowed to use the dMSA, or gain write access to its msDS-GroupMSAMembership"
+            "2. Obtain a ticket for the dMSA: it carries this account's group memberships"
+        )
+        Remediation = @(
+            "Grant the service only the rights it needs instead of a privileged group membership"
+            "Treat every host in the dMSA's msDS-GroupMSAMembership as Tier 0"
+            "Restrict write access to the dMSA object to Tier 0 administrators"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the principals allowed to use the dMSA"
+                Command = "Get-ADServiceAccount -Identity 'DMSA_NAME' -Properties PrincipalsAllowedToRetrieveManagedPassword | Select-Object -ExpandProperty PrincipalsAllowedToRetrieveManagedPassword"
+            }
+        )
+        References = @(
+            @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+        )
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'dmsaLink'; Pattern = '^Privileged predecessor'; Severity = 'Hint' }
+        )
+    }
+
     'GMSA_MEMBERSHIP_INFO' = @{
         Title = "gMSA Membership Information"
         Risk = "Hint"
@@ -29778,6 +29903,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "No legacy standalone Managed Service Accounts (sMSAs) found. All service accounts use the more secure gMSA technology with automatic password rotation."
         PrimaryFindingId = 'STANDALONE_MSA_LEGACY'
+    }
+
+    'dMSALink' = @{
+        TitleFormat = "dMSA Link: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Delegated Managed Service Account Links"
+        Summary = "Reviews the accounts that delegated Managed Service Accounts (Windows Server 2025) name as their predecessor."
+        WhyItMatters = "A dMSA names the account it replaces, and once that account names the dMSA back, the KDC issues the dMSA tickets carrying the account's group memberships and hands over the account's keys. A pairing outside a regular migration gives whoever controls the dMSA that account's privileges, and a privileged account replaced by a dMSA lends its privileges to an object that is a member of no privileged group."
+        WhatWeCheck = @(
+            "Accounts a dMSA names as predecessor (msDS-ManagedAccountPrecededByLinkBL) against the dMSA they name (msDS-SupersededManagedAccountLink)"
+            "Pairings outside a regular migration: the account still enabled after completion, or no migration state (msDS-SupersededServiceAccountState)"
+            "Links the account does not return"
+            "Privileged accounts replaced by a dMSA"
+            "Migrations started and completed"
+            "Read from the accounts: the dMSA objects are readable only by administrators, Account Operators and their creator by default, and an account whose attributes the scan cannot read shows no link"
+        )
+        PrimaryFindingId = 'DMSA_LINK_IRREGULAR'
     }
 
     'NonDefaultOwner' = @{
@@ -116438,10 +116581,21 @@ function Get-ManagedServiceAccountSecurity {
          the gMSA delegation model: the password cannot be shared across hosts and
          there is no msDS-GroupMSAMembership to say who may retrieve it
 
+    4. Delegated Managed Service Account (dMSA) Links (Windows Server 2025):
+       - A dMSA names the account it replaces, and once that account names the dMSA back
+         the KDC issues the dMSA tickets with the account's group memberships and hands
+         over the account's keys
+       - Read from the replaced account, which a domain user can read - the dMSA itself
+         grants Authenticated Users nothing by default
+       - Reports a pairing outside a regular migration (account still enabled, or no
+         migration state), a link the account does not return, and a privileged account
+         a dMSA replaces
+
     Security Relevance:
     - gMSA passwords readable by non-privileged accounts = credential theft risk
     - Standalone MSAs are bound to one host and have no delegated retrieval model
     - Misconfigured gMSA access can lead to lateral movement
+    - A dMSA paired with an account acts with that account's privileges and holds its keys
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -117087,6 +117241,154 @@ function Get-ManagedServiceAccountSecurity {
                 Show-Line "No standalone MSAs found" -Class Note
             }
 
+            # ===== Check 4: Delegated Managed Service Account links =====
+            #
+            # A dMSA (Windows Server 2025) names the account it replaces in
+            # msDS-ManagedAccountPrecededByLink. Once that account names the dMSA back in
+            # msDS-SupersededManagedAccountLink, the KDC issues the dMSA tickets with the
+            # account's group memberships and hands over the account's keys.
+            #
+            # Read from the replaced account, because a domain user can read that one: the
+            # dMSA class grants Authenticated Users nothing by default. Measured on Windows
+            # Server 2025 as a plain domain user, a dMSA returned its DN and no attribute,
+            # while every link showed on the accounts. Get-DomainUser -GMSA does not find a
+            # dMSA either - the class derives from computer, not from
+            # msDS-ManagedServiceAccount.
+            Write-Log "[Get-ManagedServiceAccountSecurity] Checking delegated Managed Service Account links"
+
+            # Only a schema with the class can hold a dMSA. Without it the section stays away
+            # rather than reporting the absence of something the forest cannot have.
+            $schemaDN = $null
+            if ($Script:LDAPContext) {
+                $schemaDN = [string]$Script:LDAPContext.SchemaNamingContext
+                if (-not $schemaDN -and $Script:LDAPContext.ConfigurationNamingContext) {
+                    # The schema container is always a direct child of the configuration
+                    # container.
+                    $schemaDN = "CN=Schema,$($Script:LDAPContext.ConfigurationNamingContext)"
+                }
+            }
+            $dmsaClass = $null
+            if ($schemaDN) {
+                $dmsaClass = @(Get-DomainObject -LDAPFilter '(&(objectClass=classSchema)(lDAPDisplayName=msDS-DelegatedManagedServiceAccount))' -SearchBase $schemaDN -Properties 'lDAPDisplayName' @PSBoundParameters)[0]
+            } else {
+                Write-Log "[Get-ManagedServiceAccountSecurity] No schema naming context - dMSA links not checked"
+            }
+
+            if ($dmsaClass) {
+                Show-SubHeader "Checking delegated Managed Service Account (dMSA) links..." -ObjectType "dMSALink"
+
+                $linkedAccounts = @(Get-DomainObject -LDAPFilter '(|(msDS-ManagedAccountPrecededByLinkBL=*)(msDS-SupersededManagedAccountLink=*))' @PSBoundParameters)
+
+                $irregularLinks = @()
+                $oneSidedLinks = @()
+                $oneSidedPrivileged = 0
+                $privilegedPredecessors = @()
+                $startedPairs = @()
+                $completedPairs = @()
+                $stalePairs = @()
+                $linkedDMSAs = @()
+
+                foreach ($account in $linkedAccounts) {
+                    $link = Get-DelegatedMSALinkVerdict -Account $account
+                    if (-not $link.Verdict) { continue }
+                    $linkedDMSAs += @($link.DMSA)
+
+                    # "account -> dMSA" for the note lines, the dMSA by its CN
+                    $accountName = [string]$account.sAMAccountName
+                    if (-not $accountName) { $accountName = [string]$account.distinguishedName }
+                    $dmsaNames = @($link.DMSA | ForEach-Object {
+                        if ([string]$_ -match '^CN=((?:\\.|[^,])+)') { $Matches[1] } else { [string]$_ }
+                    })
+                    $pairText = "$accountName -> $($dmsaNames -join ', ')"
+
+                    # A completed migration hands the account's group memberships to the dMSA,
+                    # which is then privileged without being a member of any privileged group.
+                    $isPrivileged = $false
+                    if ($link.Verdict -in @('OneSided', 'Completed') -and $account.objectSid) {
+                        $isPrivileged = [bool](Test-IsPrivileged -Identity ([string]$account.objectSid) -IncludeOperators).IsPrivileged
+                    }
+
+                    switch ($link.Verdict) {
+                        'IrregularEnabled' {
+                            $account | Add-Member -NotePropertyName 'dmsaLink' -NotePropertyValue 'Irregular link - migration complete, account still enabled' -Force
+                            $irregularLinks += $account
+                        }
+                        'IrregularNoState' {
+                            $account | Add-Member -NotePropertyName 'dmsaLink' -NotePropertyValue 'Irregular link - no migration state on the account' -Force
+                            $irregularLinks += $account
+                        }
+                        'OneSided' {
+                            $account | Add-Member -NotePropertyName 'dmsaLink' -NotePropertyValue 'One-sided link - the account does not name the dMSA back' -Force
+                            $oneSidedLinks += $account
+                            if ($isPrivileged) { $oneSidedPrivileged++ }
+                        }
+                        'Completed' {
+                            if ($isPrivileged) {
+                                $account | Add-Member -NotePropertyName 'dmsaLink' -NotePropertyValue 'Privileged predecessor - the dMSA acts with its group memberships' -Force
+                                $privilegedPredecessors += $account
+                            } else {
+                                $completedPairs += $pairText
+                            }
+                        }
+                        'Started' { $startedPairs += $pairText }
+                        'Stale'   { $stalePairs += $pairText }
+                    }
+                }
+
+                foreach ($reported in @($irregularLinks) + @($oneSidedLinks) + @($privilegedPredecessors)) {
+                    $reported | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'dMSALink' -Force
+                }
+
+                # Both sides name each other, so the KDC honours the pairing - and the account
+                # is not in the state a migration leaves it in.
+                if (@($irregularLinks).Count -gt 0) {
+                    Show-Line "Found $(@($irregularLinks).Count) account(s) linked to a dMSA outside a regular migration:" -Class Finding
+                    foreach ($reported in $irregularLinks) { Show-Object $reported -Class Finding }
+                }
+
+                # Half a pairing. The KDC honours only both halves, so this grants nothing yet;
+                # whoever wrote it controls the dMSA, and one write to the account completes it.
+                if (@($oneSidedLinks).Count -gt 0) {
+                    $privilegedText = ''
+                    if ($oneSidedPrivileged -gt 0) { $privilegedText = " ($oneSidedPrivileged privileged)" }
+                    Show-Line "Found $(@($oneSidedLinks).Count) account(s) named as predecessor by a dMSA they do not name back$privilegedText`:" -Class Hint
+                    foreach ($reported in $oneSidedLinks) { Show-Object $reported -Class Hint }
+                }
+
+                if (@($privilegedPredecessors).Count -gt 0) {
+                    Show-Line "Found $(@($privilegedPredecessors).Count) privileged account(s) replaced by a dMSA:" -Class Hint
+                    foreach ($reported in $privilegedPredecessors) { Show-Object $reported -Class Hint }
+                }
+
+                if (@($startedPairs).Count -gt 0) {
+                    Show-Line "dMSA migration started: $(@($startedPairs) -join ', ')" -Class Note
+                }
+                if (@($completedPairs).Count -gt 0) {
+                    Show-Line "dMSA migration completed: $(@($completedPairs) -join ', ')" -Class Note
+                }
+                if (@($stalePairs).Count -gt 0) {
+                    Show-Line "Account(s) naming a dMSA that does not name them back: $(@($stalePairs) -join ', ')" -Class Note
+                }
+
+                if (@($linkedDMSAs).Count -eq 0) {
+                    Show-Line "No account names or is named by a delegated Managed Service Account" -Class Note
+                } else {
+                    # The dMSA side - who may use it, which hosts - is on the dMSA object, and
+                    # by default only administrators, Account Operators and its creator may
+                    # read that (the section's help text says so). Said once, for the whole
+                    # section, rather than left to look like an evaluation that found nothing.
+                    $readableDMSA = $null
+                    try {
+                        $readableDMSA = @(Get-DomainObject -Identity ([string]@($linkedDMSAs)[0]) -Properties 'objectClass' @PSBoundParameters)[0]
+                    } catch {
+                        Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the dMSA $(@($linkedDMSAs)[0]): $_"
+                    }
+                    if (-not $readableDMSA) {
+                        Show-Line "The dMSA objects are not readable by this account - who may use each dMSA was not evaluated" -Class Note
+                    }
+                }
+            }
+
         } catch {
             Write-Log "[Get-ManagedServiceAccountSecurity] Error: $_" -Level Error
             Show-Line "Error during check - managed service accounts could not be evaluated: $_" -Class Finding
@@ -117095,6 +117397,88 @@ function Get-ManagedServiceAccountSecurity {
 
     end {
         Write-Log "[Get-ManagedServiceAccountSecurity] Check completed"
+    }
+}
+
+<#
+.SYNOPSIS
+    What the delegated Managed Service Account links on one account say.
+
+.DESCRIPTION
+    A dMSA names the account it replaces in msDS-ManagedAccountPrecededByLink; the account
+    carries that as the back link msDS-ManagedAccountPrecededByLinkBL. In a migration the
+    account names the dMSA in turn in msDS-SupersededManagedAccountLink, with
+    msDS-SupersededServiceAccountState 1 while it runs and 2 once it is complete -
+    Complete-ADServiceAccountMigration also disables the account. The KDC honours a pairing
+    only when both sides name each other.
+
+    One verdict per account, the first that applies:
+    - OneSided:         a dMSA names the account and the account does not name it back.
+    - Started:          both sides name each other, state 1.
+    - Completed:        both sides name each other, state 2, the account disabled.
+    - IrregularEnabled: both sides name each other, state 2, the account still enabled.
+    - IrregularNoState: both sides name each other, no migration state at all.
+    - Stale:            the account names a dMSA that does not name it.
+
+.PARAMETER Account
+    The account as Get-DomainObject returns it.
+
+.OUTPUTS
+    PSCustomObject with Verdict ($null for an account without a link) and DMSA, the DNs of
+    the dMSAs the verdict is about.
+#>
+function Get-DelegatedMSALinkVerdict {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Account
+    )
+
+    $namedBy = @(@($Account.'msDS-ManagedAccountPrecededByLinkBL') | Where-Object { $_ } | ForEach-Object { [string]$_ })
+    $names   = @(@($Account.'msDS-SupersededManagedAccountLink') | Where-Object { $_ } | ForEach-Object { [string]$_ })
+    $state   = [string](@($Account.'msDS-SupersededServiceAccountState') | Where-Object { $null -ne $_ } | Select-Object -First 1)
+
+    # Get-DomainObject hands userAccountControl over as flag names; a bare number is read
+    # as well. Without the attribute the state is unknown, and an unknown state must not
+    # turn a completed migration into a finding.
+    $enabled = $null
+    $uac = @($Account.userAccountControl | Where-Object { $null -ne $_ })
+    if ($uac.Count -gt 0) {
+        $uacNumber = 0
+        if ($uac.Count -eq 1 -and [int]::TryParse([string]$uac[0], [ref]$uacNumber)) {
+            $enabled = -not ($uacNumber -band 2)
+        } else {
+            $enabled = -not ($uac -contains 'ACCOUNTDISABLE')
+        }
+    }
+
+    # -contains compares strings without regard to case, as the DC compares DNs.
+    $oneSided = @($namedBy | Where-Object { $names -notcontains $_ })
+    $paired   = @($namedBy | Where-Object { $names -contains $_ })
+    $stale    = @($names | Where-Object { $namedBy -notcontains $_ })
+
+    $verdict = $null
+    $dmsa = @()
+    if ($oneSided.Count -gt 0) {
+        $verdict = 'OneSided'
+        $dmsa = $oneSided
+    } elseif ($paired.Count -gt 0) {
+        $dmsa = $paired
+        if ($state -eq '1') {
+            $verdict = 'Started'
+        } elseif ($state -eq '2') {
+            if ($enabled -eq $true) { $verdict = 'IrregularEnabled' } else { $verdict = 'Completed' }
+        } else {
+            $verdict = 'IrregularNoState'
+        }
+    } elseif ($stale.Count -gt 0) {
+        $verdict = 'Stale'
+        $dmsa = $stale
+    }
+
+    [PSCustomObject]@{
+        Verdict = $verdict
+        DMSA    = $dmsa
     }
 }
 
@@ -155045,7 +155429,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261026-0804"
+$Script:adPEASVersion = "2.8.0+20261026-0831"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

@@ -883,8 +883,9 @@ Get-SIDHistoryInjection -IncludeNonPrivileged
 - gMSA password readers (who can read the managed password)
 - Constrained delegation configuration
 - Password age and rotation status
+- Delegated Managed Service Account (dMSA, Windows Server 2025) links, read from the accounts a dMSA replaces: pairings outside a regular migration, links the account does not return, privileged accounts replaced by a dMSA, and migrations started or completed
 
-**Security Impact**: Overly permissive gMSA password readers can obtain service account credentials. Misconfigured delegation enables privilege escalation.
+**Security Impact**: Overly permissive gMSA password readers can obtain service account credentials. Misconfigured delegation enables privilege escalation. A dMSA paired with an account receives that account's group memberships and keys from the KDC, so a pairing outside a migration hands the account to whoever controls the dMSA.
 
 **Usage**:
 ```powershell

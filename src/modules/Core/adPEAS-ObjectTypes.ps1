@@ -1163,6 +1163,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'STANDALONE_MSA_LEGACY'
     }
 
+    'dMSALink' = @{
+        TitleFormat = "dMSA Link: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Delegated Managed Service Account Links"
+        Summary = "Reviews the accounts that delegated Managed Service Accounts (Windows Server 2025) name as their predecessor."
+        WhyItMatters = "A dMSA names the account it replaces, and once that account names the dMSA back, the KDC issues the dMSA tickets carrying the account's group memberships and hands over the account's keys. A pairing outside a regular migration gives whoever controls the dMSA that account's privileges, and a privileged account replaced by a dMSA lends its privileges to an object that is a member of no privileged group."
+        WhatWeCheck = @(
+            "Accounts a dMSA names as predecessor (msDS-ManagedAccountPrecededByLinkBL) against the dMSA they name (msDS-SupersededManagedAccountLink)"
+            "Pairings outside a regular migration: the account still enabled after completion, or no migration state (msDS-SupersededServiceAccountState)"
+            "Links the account does not return"
+            "Privileged accounts replaced by a dMSA"
+            "Migrations started and completed"
+            "Read from the accounts: the dMSA objects are readable only by administrators, Account Operators and their creator by default, and an account whose attributes the scan cannot read shows no link"
+        )
+        PrimaryFindingId = 'DMSA_LINK_IRREGULAR'
+    }
+
     'NonDefaultOwner' = @{
         TitleFormat = "Non-Default Owner: {Name}"
         Module = "Accounts"
