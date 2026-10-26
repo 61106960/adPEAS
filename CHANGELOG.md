@@ -58,6 +58,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   SPNs and delegation settings of the account it replaces onto the dMSA. Measured: on a
   schema without the class the added term matches nothing, costs nothing and raises no
   error.
+- **A delegated Managed Service Account in a privileged group is reviewed like a gMSA.**
+  `Get-PrivilegedGroupMembers` filed a dMSA as a computer - it derives from computer
+  directly - so it was counted as one and left out of the ACL review of privileged
+  accounts. It is counted as a dMSA now, reviewed, and a write to its
+  msDS-GroupMSAMembership reads "may allow itself to use the account". The certificate
+  mapping check's query for protected accounts also asks for the dMSA class: neither
+  objectCategory=computer nor the MSA classes match one.
 - **The OU permission headline counts only the OUs where the reported accounts hold
   rights.** It counted every OU with any finding, including those where only an Exchange
   service group holds rights - a group the check hides without `-IncludePrivileged` and

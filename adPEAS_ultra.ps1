@@ -69552,6 +69552,9 @@ function Get-PrivilegedGroupMembers {
 	                                    elseif ($objectClassArray -icontains 'msDS-ManagedServiceAccount') {
 	                                        $detectedClass = 'msDS-ManagedServiceAccount'
 	                                    }
+	                                    elseif ($objectClassArray -icontains 'msDS-DelegatedManagedServiceAccount') {
+	                                        $detectedClass = 'msDS-DelegatedManagedServiceAccount'
+	                                    }
 	                                    elseif ($objectClassArray -icontains 'computer') {
 	                                        $detectedClass = 'computer'
 	                                    }
@@ -69693,6 +69696,8 @@ function Get-PrivilegedGroupMembers {
 	                            $primaryClass = 'msDS-GroupManagedServiceAccount'
 	                        } elseif ($primaryClassArray -icontains 'msDS-ManagedServiceAccount') {
 	                            $primaryClass = 'msDS-ManagedServiceAccount'
+	                        } elseif ($primaryClassArray -icontains 'msDS-DelegatedManagedServiceAccount') {
+	                            $primaryClass = 'msDS-DelegatedManagedServiceAccount'
 	                        } elseif ($primaryClassArray -icontains 'computer') {
 	                            $primaryClass = 'computer'
 	                        }
@@ -69841,6 +69846,7 @@ function Get-PrivilegedGroupMembers {
 	        $UserCount = 0
 	        $ComputerCount = 0
 	        $gMSACount = 0
+	        $dMSACount = 0
 	        $ForeignCount = 0
 	        $totalMembers = @($TotalUniqueMembers.Values).Count
 	        $currentIndex = 0
@@ -69853,6 +69859,9 @@ function Get-PrivilegedGroupMembers {
 	            $samName = $memberData.SAMAccountName
 	            if ($objClass -ieq 'msDS-GroupManagedServiceAccount' -or $objClass -ieq 'msDS-ManagedServiceAccount') {
 	                $gMSACount++
+	            }
+	            elseif ($objClass -ieq 'msDS-DelegatedManagedServiceAccount') {
+	                $dMSACount++
 	            }
 	            elseif ($objClass -ieq 'computer') {
 	                $ComputerCount++
@@ -69935,6 +69944,9 @@ function Get-PrivilegedGroupMembers {
 	            }
 	            if ($gMSACount -gt 0) {
 	                $summaryParts += "$gMSACount gMSA(s)"
+	            }
+	            if ($dMSACount -gt 0) {
+	                $summaryParts += "$dMSACount dMSA(s)"
 	            }
 	            if ($ComputerCount -gt 0) {
 	                $summaryParts += "$ComputerCount computer(s)"
@@ -70684,6 +70696,9 @@ function Get-AccountTakeoverRight {
 	if ($ObjectClass -eq 'msDS-GroupManagedServiceAccount') {
 	    $written += @{ Guid = '888eedd6-ce04-df40-b462-b8a50e41ba38'; Key = 'msDS-GroupMSAMembership'
 	                   Text = 'WriteProperty on msDS-GroupMSAMembership - may allow itself to read the password of the account' }
+	} elseif ($ObjectClass -eq 'msDS-DelegatedManagedServiceAccount') {
+	    $written += @{ Guid = '888eedd6-ce04-df40-b462-b8a50e41ba38'; Key = 'msDS-GroupMSAMembership'
+	                   Text = 'WriteProperty on msDS-GroupMSAMembership - may allow itself to use the account' }
 	}
 	foreach ($entry in $written) {
 	    if ($entry.Guid -and $objectTypeText -eq ([string]$entry.Guid).ToLowerInvariant()) {
@@ -81676,7 +81691,8 @@ function Get-WeakCertificateMapping {
 	    $writeAnalysisFailed = $false
 	    try {
 	        $privilegedFilter = '(&(adminCount=1)(|(objectCategory=person)(objectCategory=computer)' +
-	                            '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)))'
+	                            '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)' +
+	                            '(objectClass=msDS-DelegatedManagedServiceAccount)))'
 	        $privilegedTargets = @(Get-DomainObject -LDAPFilter $privilegedFilter `
 	            -Properties 'distinguishedName', 'sAMAccountName', 'nTSecurityDescriptor' -Raw @connectionParams)
 	        $altSecPropertySet = Get-AltSecurityIdentitiesPropertySet -CredParams $connectionParams
@@ -96210,7 +96226,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261026-1242"
+$Script:adPEASVersion = "2.8.0+20261026-1259"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

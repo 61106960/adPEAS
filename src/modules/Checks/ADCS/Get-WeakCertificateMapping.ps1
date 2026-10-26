@@ -267,8 +267,11 @@ function Get-WeakCertificateMapping {
             # computer account and every managed service account fell out of the query, and
             # the section closed with "No non-privileged principal can write
             # altSecurityIdentities on a privileged account".
+            # A delegated managed service account has an objectCategory of its own and
+            # derives from computer, not from the MSA class, so it needs a term of its own.
             $privilegedFilter = '(&(adminCount=1)(|(objectCategory=person)(objectCategory=computer)' +
-                                '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)))'
+                                '(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)' +
+                                '(objectClass=msDS-DelegatedManagedServiceAccount)))'
             $privilegedTargets = @(Get-DomainObject -LDAPFilter $privilegedFilter `
                 -Properties 'distinguishedName', 'sAMAccountName', 'nTSecurityDescriptor' -Raw @connectionParams)
 

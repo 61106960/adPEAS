@@ -314,7 +314,7 @@ function Get-PrivilegedGroupMembers {
                                         }
                                     } else {
                                         # Regular member - determine object type from objectClass array
-                                        # Priority: gMSA/sMSA > computer > user (most specific first)
+                                        # Priority: gMSA/sMSA/dMSA > computer > user (most specific first)
                                         $objectClassArray = @($Member.objectClass)
                                         $detectedClass = 'user'  # Default fallback
 
@@ -323,6 +323,14 @@ function Get-PrivilegedGroupMembers {
                                         }
                                         elseif ($objectClassArray -icontains 'msDS-ManagedServiceAccount') {
                                             $detectedClass = 'msDS-ManagedServiceAccount'
+                                        }
+                                        # A delegated managed service account derives from
+                                        # computer directly. Filed as a computer, it was
+                                        # counted as one and left out of the account ACL
+                                        # review, where msDS-GroupMSAMembership decides who
+                                        # may use it.
+                                        elseif ($objectClassArray -icontains 'msDS-DelegatedManagedServiceAccount') {
+                                            $detectedClass = 'msDS-DelegatedManagedServiceAccount'
                                         }
                                         elseif ($objectClassArray -icontains 'computer') {
                                             $detectedClass = 'computer'
@@ -567,6 +575,8 @@ function Get-PrivilegedGroupMembers {
                                 $primaryClass = 'msDS-GroupManagedServiceAccount'
                             } elseif ($primaryClassArray -icontains 'msDS-ManagedServiceAccount') {
                                 $primaryClass = 'msDS-ManagedServiceAccount'
+                            } elseif ($primaryClassArray -icontains 'msDS-DelegatedManagedServiceAccount') {
+                                $primaryClass = 'msDS-DelegatedManagedServiceAccount'
                             } elseif ($primaryClassArray -icontains 'computer') {
                                 $primaryClass = 'computer'
                             }
@@ -779,6 +789,7 @@ function Get-PrivilegedGroupMembers {
             $UserCount = 0
             $ComputerCount = 0
             $gMSACount = 0
+            $dMSACount = 0
             # Foreign Security Principals get a count of their own. They used to be added to
             # $UserCount, so "Found 7 user(s) across 5 privileged group(s)" could mean six
             # users and one principal from a trusted domain - and if that principal names a
@@ -805,6 +816,10 @@ function Get-PrivilegedGroupMembers {
                 if ($objClass -ieq 'msDS-GroupManagedServiceAccount' -or $objClass -ieq 'msDS-ManagedServiceAccount') {
                     $gMSACount++
                     Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as gMSA"
+                }
+                elseif ($objClass -ieq 'msDS-DelegatedManagedServiceAccount') {
+                    $dMSACount++
+                    Write-Log "[Get-PrivilegedGroupMembers]   -> Counted as dMSA"
                 }
                 # Computer accounts (regular computers and DCs)
                 elseif ($objClass -ieq 'computer') {
@@ -930,6 +945,9 @@ function Get-PrivilegedGroupMembers {
                 }
                 if ($gMSACount -gt 0) {
                     $summaryParts += "$gMSACount gMSA(s)"
+                }
+                if ($dMSACount -gt 0) {
+                    $summaryParts += "$dMSACount dMSA(s)"
                 }
                 if ($ComputerCount -gt 0) {
                     $summaryParts += "$ComputerCount computer(s)"
@@ -2139,8 +2157,8 @@ function Show-UnprotectedGroupACL {
     An ActiveDirectoryAccessRule.
 
 .PARAMETER ObjectClass
-    The class of the account; msDS-GroupMSAMembership counts on a group managed service
-    account only, the one class that has the attribute.
+    The class of the account; msDS-GroupMSAMembership counts on a group or delegated
+    managed service account only, the two classes that have the attribute.
 #>
 function Get-AccountTakeoverRight {
     [CmdletBinding()]
@@ -2208,6 +2226,11 @@ function Get-AccountTakeoverRight {
         # list of who may read the managed password.
         $written += @{ Guid = '888eedd6-ce04-df40-b462-b8a50e41ba38'; Key = 'msDS-GroupMSAMembership'
                        Text = 'WriteProperty on msDS-GroupMSAMembership - may allow itself to read the password of the account' }
+    } elseif ($ObjectClass -eq 'msDS-DelegatedManagedServiceAccount') {
+        # The same attribute on a dMSA names who may request its ticket. Nobody reads a
+        # dMSA's password, so the row says what the write gets instead.
+        $written += @{ Guid = '888eedd6-ce04-df40-b462-b8a50e41ba38'; Key = 'msDS-GroupMSAMembership'
+                       Text = 'WriteProperty on msDS-GroupMSAMembership - may allow itself to use the account' }
     }
     foreach ($entry in $written) {
         if ($entry.Guid -and $objectTypeText -eq ([string]$entry.Guid).ToLowerInvariant()) {
