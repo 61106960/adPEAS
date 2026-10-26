@@ -800,6 +800,10 @@ $Script:PrimaryAttributes = @{
 # Built from the User list so that the two cannot drift apart.
 $tier0AccountRows = [System.Collections.ArrayList]$Script:PrimaryAttributes['User']
 $tier0AccountRows.Insert($tier0AccountRows.IndexOf('privilegedGroups') + 1, 'tier0Groups')
+# Whether an authentication policy silo or policy applies to it - the other half of the
+# protection Protected Users gives. Only present where the account is linked to one.
+$tier0AccountRows.Insert($tier0AccountRows.IndexOf('tier0Groups') + 1, 'authenticationPolicySilo')
+$tier0AccountRows.Insert($tier0AccountRows.IndexOf('authenticationPolicySilo') + 1, 'authenticationPolicy')
 $Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('excludedReason')
 Remove-Variable -Name tier0AccountRows
 

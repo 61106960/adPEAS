@@ -902,6 +902,7 @@ Get-ManagedServiceAccountSecurity
 **What it checks**:
 - Membership of privileged accounts in Protected Users group
 - Which admin accounts are missing protection
+- For a Tier-0 account linked to an authentication policy silo or a policy: whether it actually applies - enforced, audit only, no policy, half an enrollment, superseded by the silo, or exempt as the built-in Administrator
 
 **Security Impact**: Protected Users group provides: no NTLM authentication, no delegation, no DES/RC4 encryption, Kerberos TGT limited to 4 hours. Accounts outside this group are more vulnerable to credential theft.
 

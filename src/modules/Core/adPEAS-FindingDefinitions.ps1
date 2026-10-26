@@ -13295,6 +13295,10 @@ $acl.Access | Where-Object {
         )
         Triggers = @(
             @{ Attribute = 'siloStatus'; Pattern = '^(Audit only|No authentication policy|No account enrolled)'; Severity = 'Hint' }
+            # The same verdict on a Tier-0 account (Get-ProtectedUsersStatus), and its secure
+            # counterpart, which colours the row without opening this card.
+            @{ Attribute = 'authenticationPolicySilo'; Pattern = '^(Audit only|No policy):'; Severity = 'Hint' }
+            @{ Attribute = 'authenticationPolicySilo'; Pattern = '^Enforced:'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 
@@ -13328,6 +13332,7 @@ $acl.Access | Where-Object {
         Triggers = @(
             @{ Attribute = 'siloMembersNotAssigned'; Severity = 'Hint' }
             @{ Attribute = 'siloAssignedNotMembers'; Severity = 'Hint' }
+            @{ Attribute = 'authenticationPolicySilo'; Pattern = '^Not applied:'; Severity = 'Hint' }
         )
     }
 
@@ -13349,6 +13354,8 @@ $acl.Access | Where-Object {
         Triggers = @(
             @{ Attribute = 'siloExemptAccount'; Severity = 'Hint' }
             @{ Attribute = 'policyExemptAccount'; Severity = 'Hint' }
+            @{ Attribute = 'authenticationPolicySilo'; Pattern = '^Exempt:'; Severity = 'Hint' }
+            @{ Attribute = 'authenticationPolicy'; Pattern = '^Exempt:'; Severity = 'Hint' }
         )
     }
 
@@ -13374,6 +13381,8 @@ $acl.Access | Where-Object {
         )
         Triggers = @(
             @{ Attribute = 'policyStatus'; Pattern = '^Audit only'; Severity = 'Hint' }
+            @{ Attribute = 'authenticationPolicy'; Pattern = '^Audit only:'; Severity = 'Hint' }
+            @{ Attribute = 'authenticationPolicy'; Pattern = '^Enforced:'; Severity = 'Secure'; SeverityOnly = $true }
         )
     }
 

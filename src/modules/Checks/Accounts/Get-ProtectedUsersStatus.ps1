@@ -343,6 +343,19 @@ function Get-ProtectedUsersStatus {
                 }
             }
 
+            # ===== Step 4b: Authentication policy silos of the Tier-0 accounts =====
+            # Protected Users and a silo are two halves of one protection: the group takes
+            # NTLM, delegation and long-lived tickets away, the silo confines where the
+            # account may sign on. Whether a silo applies cannot be read off the account -
+            # the KDC needs the assignment, the membership and the silo's own enforcement -
+            # so the rows say it. Nothing changes for an account without a link to a silo or
+            # a policy, and without one the silos are not even read.
+            $connectionParams = @{}
+            foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($connectionKey)) { $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey] }
+            }
+            $authNRows = Get-Tier0AuthNPolicyRows -Account @($tier0Accounts.Values) -ConnectionParams $connectionParams
+
             # ===== Step 5: Calculate coverage and determine severity =====
             $totalEligible = $eligibleAccounts.Count
             $totalProtected = $protectedTier0.Count
@@ -374,6 +387,7 @@ function Get-ProtectedUsersStatus {
                     # lists. The context carries the verdict, and the tier0Groups row - why the
                     # account is Tier-0 - carries the card (tier0_unprotected).
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
+                    Add-Tier0AuthNPolicyRow -Account $account -Rows $authNRows
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unprotected' -Force
                     # Finding, whatever the coverage line above says. That line rates the
@@ -395,6 +409,7 @@ function Get-ProtectedUsersStatus {
                     $account = $item.Account
                     # Its tier0Groups row is green (tier0_protected) - see above.
                     $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
+                    Add-Tier0AuthNPolicyRow -Account $account -Rows $authNRows
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Protected' -Force
                     Show-Object $account -Class Secure
@@ -409,6 +424,7 @@ function Get-ProtectedUsersStatus {
                     $info = $excludedAccounts[$sid]
                     $account = $info.Account
                     $account | Add-Member -NotePropertyName 'excludedReason' -NotePropertyValue $info.Reason -Force
+                    Add-Tier0AuthNPolicyRow -Account $account -Rows $authNRows
                     $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
                     $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Excluded' -Force
                     Show-Object $account -Class Note
@@ -482,5 +498,167 @@ function Get-ProtectedUsersStatus {
 
     end {
         Write-Log "[Get-ProtectedUsersStatus] Check completed"
+    }
+}
+
+<#
+.SYNOPSIS
+    Whether an authentication policy silo or policy applies to each Tier-0 account.
+
+.DESCRIPTION
+    The KDC applies a silo to an account only when the silo is assigned to it
+    (msDS-AssignedAuthNPolicySilo) and lists it among its members
+    (msDS-AuthNPolicySiloMembers, seen from the account as msDS-AuthNPolicySiloMembersBL) -
+    MS-KILE 3.3.5.4. For a silo member the silo's enforcement decides, and a policy
+    assigned directly to the account applies only where no silo does (MS-KILE 3.3.5.5).
+    Windows exempts the built-in Administrator from both.
+
+    One row each, starting with its verdict so that each card's pattern stands alone:
+    - authenticationPolicySilo: "Enforced: SILO", "Audit only: SILO", "No policy: SILO",
+      "Not applied: SILO (assigned, not a member)", "Not applied: SILO (member, not
+      assigned)", "Exempt: SILO (built-in Administrator)"
+    - authenticationPolicy: "Enforced: POLICY", "Audit only: POLICY", "Superseded: POLICY
+      (the silo's policy applies)", "Exempt: POLICY (built-in Administrator)"
+
+    The silos and policies are read only when an account carries a link to one.
+
+.PARAMETER Account
+    The Tier-0 accounts.
+
+.PARAMETER ConnectionParams
+    Domain, Server and Credential of the calling check.
+
+.OUTPUTS
+    Hashtable: lowercased DN of an account -> hashtable of its rows. Accounts without a
+    link are absent.
+#>
+function Get-Tier0AuthNPolicyRows {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
+        [object[]]$Account = @(),
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $rows = @{}
+    $linked = @($Account | Where-Object {
+        $_ -and ($_.'msDS-AssignedAuthNPolicySilo' -or $_.'msDS-AuthNPolicySiloMembersBL' -or $_.'msDS-AssignedAuthNPolicy')
+    })
+    if ($linked.Count -eq 0) { return $rows }
+
+    $silos = @{}
+    $policies = @{}
+    $configNC = [string]$Script:LDAPContext.ConfigurationNamingContext
+    if ($configNC) {
+        $authNBase = "CN=AuthN Policy Configuration,CN=Services,$configNC"
+        try {
+            foreach ($silo in @(Get-DomainObject -LDAPFilter '(objectClass=msDS-AuthNPolicySilo)' -SearchBase $authNBase `
+                    -Properties 'distinguishedName', 'name', 'msDS-AuthNPolicySiloEnforced', 'msDS-UserAuthNPolicy', 'msDS-ComputerAuthNPolicy', 'msDS-ServiceAuthNPolicy' @ConnectionParams)) {
+                if ($silo.distinguishedName) { $silos[([string]$silo.distinguishedName).ToLowerInvariant()] = $silo }
+            }
+            foreach ($policy in @(Get-DomainObject -LDAPFilter '(objectClass=msDS-AuthNPolicy)' -SearchBase $authNBase `
+                    -Properties 'distinguishedName', 'name', 'msDS-AuthNPolicyEnforced' @ConnectionParams)) {
+                if ($policy.distinguishedName) { $policies[([string]$policy.distinguishedName).ToLowerInvariant()] = $policy }
+            }
+        } catch {
+            Write-Log "[Get-ProtectedUsersStatus] The authentication policy silos could not be read: $_"
+        }
+    }
+
+    foreach ($entry in $linked) {
+        $isBuiltinAdmin = ([string]$entry.objectSid) -match '-500$'
+        $assignedSilo = [string]@($entry.'msDS-AssignedAuthNPolicySilo')[0]
+        $memberOf = @(@($entry.'msDS-AuthNPolicySiloMembersBL') | Where-Object { $_ } | ForEach-Object { [string]$_ })
+        $entryRows = @{}
+
+        $siloApplies = $false
+        if ($assignedSilo) {
+            $siloName = Get-Tier0AuthNName -DistinguishedName $assignedSilo -Known $silos
+            $silo = $silos[$assignedSilo.ToLowerInvariant()]
+            if ($isBuiltinAdmin) {
+                $entryRows['authenticationPolicySilo'] = "Exempt: $siloName (built-in Administrator)"
+            } elseif ($memberOf -notcontains $assignedSilo) {
+                $entryRows['authenticationPolicySilo'] = "Not applied: $siloName (assigned, not a member)"
+            } elseif (-not $silo) {
+                $entryRows['authenticationPolicySilo'] = "Unknown: $siloName (the silo could not be read)"
+            } elseif (([string]@($silo.'msDS-AuthNPolicySiloEnforced')[0]) -ne 'TRUE') {
+                $entryRows['authenticationPolicySilo'] = "Audit only: $siloName"
+            } elseif (-not ($silo.'msDS-UserAuthNPolicy' -or $silo.'msDS-ComputerAuthNPolicy' -or $silo.'msDS-ServiceAuthNPolicy')) {
+                $entryRows['authenticationPolicySilo'] = "No policy: $siloName"
+            } else {
+                $entryRows['authenticationPolicySilo'] = "Enforced: $siloName"
+                $siloApplies = $true
+            }
+        } elseif ($memberOf.Count -gt 0) {
+            $names = @($memberOf | ForEach-Object { Get-Tier0AuthNName -DistinguishedName $_ -Known $silos }) -join ', '
+            $entryRows['authenticationPolicySilo'] = "Not applied: $names (member, not assigned)"
+        }
+
+        $assignedPolicy = [string]@($entry.'msDS-AssignedAuthNPolicy')[0]
+        if ($assignedPolicy) {
+            $policyName = Get-Tier0AuthNName -DistinguishedName $assignedPolicy -Known $policies
+            $policy = $policies[$assignedPolicy.ToLowerInvariant()]
+            if ($isBuiltinAdmin) {
+                $entryRows['authenticationPolicy'] = "Exempt: $policyName (built-in Administrator)"
+            } elseif ($siloApplies) {
+                $entryRows['authenticationPolicy'] = "Superseded: $policyName (the silo's policy applies)"
+            } elseif ($policy -and ([string]@($policy.'msDS-AuthNPolicyEnforced')[0]) -eq 'TRUE') {
+                $entryRows['authenticationPolicy'] = "Enforced: $policyName"
+            } elseif ($policy) {
+                $entryRows['authenticationPolicy'] = "Audit only: $policyName"
+            } else {
+                $entryRows['authenticationPolicy'] = "Unknown: $policyName (the policy could not be read)"
+            }
+        }
+
+        if ($entryRows.Count -gt 0 -and $entry.distinguishedName) {
+            $rows[([string]$entry.distinguishedName).ToLowerInvariant()] = $entryRows
+        }
+    }
+    return $rows
+}
+
+<#
+.SYNOPSIS
+    The name of a silo or policy, from the object read or from its DN.
+#>
+function Get-Tier0AuthNName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistinguishedName,
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Known = @{}
+    )
+
+    $object = $Known[$DistinguishedName.ToLowerInvariant()]
+    if ($object -and $object.name) { return [string]$object.name }
+    if ($DistinguishedName -match '^CN=((?:\\.|[^,])+)') { return $Matches[1] }
+    return $DistinguishedName
+}
+
+<#
+.SYNOPSIS
+    Puts the silo and policy rows Get-Tier0AuthNPolicyRows computed on an account.
+#>
+function Add-Tier0AuthNPolicyRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Account,
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Rows = @{}
+    )
+
+    if (-not $Account -or -not $Account.distinguishedName) { return }
+    $entryRows = $Rows[([string]$Account.distinguishedName).ToLowerInvariant()]
+    if (-not $entryRows) { return }
+    foreach ($rowName in @($entryRows.Keys)) {
+        $Account | Add-Member -NotePropertyName $rowName -NotePropertyValue $entryRows[$rowName] -Force
     }
 }

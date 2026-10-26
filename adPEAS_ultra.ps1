@@ -4024,6 +4024,8 @@ $Script:PrimaryAttributes = @{
 }
 $tier0AccountRows = [System.Collections.ArrayList]$Script:PrimaryAttributes['User']
 $tier0AccountRows.Insert($tier0AccountRows.IndexOf('privilegedGroups') + 1, 'tier0Groups')
+$tier0AccountRows.Insert($tier0AccountRows.IndexOf('tier0Groups') + 1, 'authenticationPolicySilo')
+$tier0AccountRows.Insert($tier0AccountRows.IndexOf('authenticationPolicySilo') + 1, 'authenticationPolicy')
 $Script:PrimaryAttributes['Tier0Account'] = @($tier0AccountRows) + @('excludedReason')
 Remove-Variable -Name tier0AccountRows
 $Script:StrictAttributeTypes = @(
@@ -16731,6 +16733,8 @@ $acl.Access | Where-Object {
 	    )
 	    Triggers = @(
 	        @{ Attribute = 'siloStatus'; Pattern = '^(Audit only|No authentication policy|No account enrolled)'; Severity = 'Hint' }
+	        @{ Attribute = 'authenticationPolicySilo'; Pattern = '^(Audit only|No policy):'; Severity = 'Hint' }
+	        @{ Attribute = 'authenticationPolicySilo'; Pattern = '^Enforced:'; Severity = 'Secure'; SeverityOnly = $true }
 	    )
 	}
 	'AUTHN_SILO_INCOMPLETE_ENROLLMENT' = @{
@@ -16763,6 +16767,7 @@ $acl.Access | Where-Object {
 	    Triggers = @(
 	        @{ Attribute = 'siloMembersNotAssigned'; Severity = 'Hint' }
 	        @{ Attribute = 'siloAssignedNotMembers'; Severity = 'Hint' }
+	        @{ Attribute = 'authenticationPolicySilo'; Pattern = '^Not applied:'; Severity = 'Hint' }
 	    )
 	}
 	'AUTHN_POLICY_EXEMPT_ADMINISTRATOR' = @{
@@ -16783,6 +16788,8 @@ $acl.Access | Where-Object {
 	    Triggers = @(
 	        @{ Attribute = 'siloExemptAccount'; Severity = 'Hint' }
 	        @{ Attribute = 'policyExemptAccount'; Severity = 'Hint' }
+	        @{ Attribute = 'authenticationPolicySilo'; Pattern = '^Exempt:'; Severity = 'Hint' }
+	        @{ Attribute = 'authenticationPolicy'; Pattern = '^Exempt:'; Severity = 'Hint' }
 	    )
 	}
 	'AUTHN_POLICY_NOT_EFFECTIVE' = @{
@@ -16807,6 +16814,8 @@ $acl.Access | Where-Object {
 	    )
 	    Triggers = @(
 	        @{ Attribute = 'policyStatus'; Pattern = '^Audit only'; Severity = 'Hint' }
+	        @{ Attribute = 'authenticationPolicy'; Pattern = '^Audit only:'; Severity = 'Hint' }
+	        @{ Attribute = 'authenticationPolicy'; Pattern = '^Enforced:'; Severity = 'Secure'; SeverityOnly = $true }
 	    )
 	}
 	'AUTHN_POLICY_BROAD_CONDITION' = @{
@@ -71305,6 +71314,11 @@ function Get-ProtectedUsersStatus {
 	                }
 	            }
 	        }
+	        $connectionParams = @{}
+	        foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+	            if ($PSBoundParameters.ContainsKey($connectionKey)) { $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey] }
+	        }
+	        $authNRows = Get-Tier0AuthNPolicyRows -Account @($tier0Accounts.Values) -ConnectionParams $connectionParams
 	        $totalEligible = $eligibleAccounts.Count
 	        $totalProtected = $protectedTier0.Count
 	        $coveragePercent = if ($totalEligible -gt 0) {
@@ -71323,6 +71337,7 @@ function Get-ProtectedUsersStatus {
 	            foreach ($item in $unprotectedTier0) {
 	                $account = $item.Account
 	                $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
+	                Add-Tier0AuthNPolicyRow -Account $account -Rows $authNRows
 	                $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
 	                $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Unprotected' -Force
 	                Show-Object $account -Class Finding
@@ -71336,6 +71351,7 @@ function Get-ProtectedUsersStatus {
 	            foreach ($item in $protectedTier0) {
 	                $account = $item.Account
 	                $account | Add-Member -NotePropertyName 'tier0Groups' -NotePropertyValue $item.Groups -Force
+	                Add-Tier0AuthNPolicyRow -Account $account -Rows $authNRows
 	                $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
 	                $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Protected' -Force
 	                Show-Object $account -Class Secure
@@ -71347,6 +71363,7 @@ function Get-ProtectedUsersStatus {
 	                $info = $excludedAccounts[$sid]
 	                $account = $info.Account
 	                $account | Add-Member -NotePropertyName 'excludedReason' -NotePropertyValue $info.Reason -Force
+	                Add-Tier0AuthNPolicyRow -Account $account -Rows $authNRows
 	                $account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'Tier0Account' -Force
 	                $account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Excluded' -Force
 	                Show-Object $account -Class Note
@@ -71395,6 +71412,114 @@ function Get-ProtectedUsersStatus {
 	    } catch {
 	        Show-Line "Error during check - the Protected Users coverage could not be evaluated: $_" -Class Finding
 	    }
+	}
+}
+function Get-Tier0AuthNPolicyRows {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyCollection()]
+	    [object[]]$Account = @(),
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$ConnectionParams = @{}
+	)
+	$rows = @{}
+	$linked = @($Account | Where-Object {
+	    $_ -and ($_.'msDS-AssignedAuthNPolicySilo' -or $_.'msDS-AuthNPolicySiloMembersBL' -or $_.'msDS-AssignedAuthNPolicy')
+	})
+	if ($linked.Count -eq 0) { return $rows }
+	$silos = @{}
+	$policies = @{}
+	$configNC = [string]$Script:LDAPContext.ConfigurationNamingContext
+	if ($configNC) {
+	    $authNBase = "CN=AuthN Policy Configuration,CN=Services,$configNC"
+	    try {
+	        foreach ($silo in @(Get-DomainObject -LDAPFilter '(objectClass=msDS-AuthNPolicySilo)' -SearchBase $authNBase `
+	                -Properties 'distinguishedName', 'name', 'msDS-AuthNPolicySiloEnforced', 'msDS-UserAuthNPolicy', 'msDS-ComputerAuthNPolicy', 'msDS-ServiceAuthNPolicy' @ConnectionParams)) {
+	            if ($silo.distinguishedName) { $silos[([string]$silo.distinguishedName).ToLowerInvariant()] = $silo }
+	        }
+	        foreach ($policy in @(Get-DomainObject -LDAPFilter '(objectClass=msDS-AuthNPolicy)' -SearchBase $authNBase `
+	                -Properties 'distinguishedName', 'name', 'msDS-AuthNPolicyEnforced' @ConnectionParams)) {
+	            if ($policy.distinguishedName) { $policies[([string]$policy.distinguishedName).ToLowerInvariant()] = $policy }
+	        }
+	    } catch {
+	    }
+	}
+	foreach ($entry in $linked) {
+	    $isBuiltinAdmin = ([string]$entry.objectSid) -match '-500$'
+	    $assignedSilo = [string]@($entry.'msDS-AssignedAuthNPolicySilo')[0]
+	    $memberOf = @(@($entry.'msDS-AuthNPolicySiloMembersBL') | Where-Object { $_ } | ForEach-Object { [string]$_ })
+	    $entryRows = @{}
+	    $siloApplies = $false
+	    if ($assignedSilo) {
+	        $siloName = Get-Tier0AuthNName -DistinguishedName $assignedSilo -Known $silos
+	        $silo = $silos[$assignedSilo.ToLowerInvariant()]
+	        if ($isBuiltinAdmin) {
+	            $entryRows['authenticationPolicySilo'] = "Exempt: $siloName (built-in Administrator)"
+	        } elseif ($memberOf -notcontains $assignedSilo) {
+	            $entryRows['authenticationPolicySilo'] = "Not applied: $siloName (assigned, not a member)"
+	        } elseif (-not $silo) {
+	            $entryRows['authenticationPolicySilo'] = "Unknown: $siloName (the silo could not be read)"
+	        } elseif (([string]@($silo.'msDS-AuthNPolicySiloEnforced')[0]) -ne 'TRUE') {
+	            $entryRows['authenticationPolicySilo'] = "Audit only: $siloName"
+	        } elseif (-not ($silo.'msDS-UserAuthNPolicy' -or $silo.'msDS-ComputerAuthNPolicy' -or $silo.'msDS-ServiceAuthNPolicy')) {
+	            $entryRows['authenticationPolicySilo'] = "No policy: $siloName"
+	        } else {
+	            $entryRows['authenticationPolicySilo'] = "Enforced: $siloName"
+	            $siloApplies = $true
+	        }
+	    } elseif ($memberOf.Count -gt 0) {
+	        $names = @($memberOf | ForEach-Object { Get-Tier0AuthNName -DistinguishedName $_ -Known $silos }) -join ', '
+	        $entryRows['authenticationPolicySilo'] = "Not applied: $names (member, not assigned)"
+	    }
+	    $assignedPolicy = [string]@($entry.'msDS-AssignedAuthNPolicy')[0]
+	    if ($assignedPolicy) {
+	        $policyName = Get-Tier0AuthNName -DistinguishedName $assignedPolicy -Known $policies
+	        $policy = $policies[$assignedPolicy.ToLowerInvariant()]
+	        if ($isBuiltinAdmin) {
+	            $entryRows['authenticationPolicy'] = "Exempt: $policyName (built-in Administrator)"
+	        } elseif ($siloApplies) {
+	            $entryRows['authenticationPolicy'] = "Superseded: $policyName (the silo's policy applies)"
+	        } elseif ($policy -and ([string]@($policy.'msDS-AuthNPolicyEnforced')[0]) -eq 'TRUE') {
+	            $entryRows['authenticationPolicy'] = "Enforced: $policyName"
+	        } elseif ($policy) {
+	            $entryRows['authenticationPolicy'] = "Audit only: $policyName"
+	        } else {
+	            $entryRows['authenticationPolicy'] = "Unknown: $policyName (the policy could not be read)"
+	        }
+	    }
+	    if ($entryRows.Count -gt 0 -and $entry.distinguishedName) {
+	        $rows[([string]$entry.distinguishedName).ToLowerInvariant()] = $entryRows
+	    }
+	}
+	return $rows
+}
+function Get-Tier0AuthNName {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$DistinguishedName,
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$Known = @{}
+	)
+	$object = $Known[$DistinguishedName.ToLowerInvariant()]
+	if ($object -and $object.name) { return [string]$object.name }
+	if ($DistinguishedName -match '^CN=((?:\\.|[^,])+)') { return $Matches[1] }
+	return $DistinguishedName
+}
+function Add-Tier0AuthNPolicyRow {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    $Account,
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$Rows = @{}
+	)
+	if (-not $Account -or -not $Account.distinguishedName) { return }
+	$entryRows = $Rows[([string]$Account.distinguishedName).ToLowerInvariant()]
+	if (-not $entryRows) { return }
+	foreach ($rowName in @($entryRows.Keys)) {
+	    $Account | Add-Member -NotePropertyName $rowName -NotePropertyValue $entryRows[$rowName] -Force
 	}
 }
 function Get-AuthenticationPolicySilos {
@@ -96758,7 +96883,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261026-1428"
+$Script:adPEASVersion = "2.8.0+20261026-1502"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

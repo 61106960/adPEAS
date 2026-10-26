@@ -21,6 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Domain Computers, and write access to silos and policies outside Tier 0. Lifetimes are
   shown in minutes and conditions as SDDL. Everything lives in the configuration partition
   and is readable by a domain user (measured).
+- **`Get-ProtectedUsersStatus` says whether a silo or policy applies to a Tier-0 account.**
+  Protected Users and an authentication policy silo are two halves of one protection, and
+  whether a silo applies cannot be read off the account. A Tier-0 account linked to a silo
+  or a policy now carries a row each - enforced, audit only, no policy, not applied (half
+  an enrollment), superseded by the silo, or exempt as the built-in Administrator. Nothing
+  changes for an account without such a link, and without one the silos are not read.
 
 - **The OU permission check knows delegated Managed Service Accounts (Windows Server 2025).**
   A dMSA receives the group memberships and keys of the account it is paired with, and its
