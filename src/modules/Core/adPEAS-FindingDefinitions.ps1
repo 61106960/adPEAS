@@ -13380,6 +13380,74 @@ $acl.Access | Where-Object {
         )
     }
 
+    'DMSA_USABLE_BY_NONPRIVILEGED' = @{
+        Title = "dMSA Usable by Non-Privileged Principals"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "msDS-GroupMSAMembership of this delegated Managed Service Account (dMSA, Windows Server 2025) names who may use it, and it names a principal that is neither privileged nor a host that runs the service. A principal named there can request the dMSA's ticket with its own credentials. Once the dMSA has replaced an account, that ticket carries the replaced account's group memberships - so whoever may use the dMSA acts as that account."
+        Impact = @(
+            "The listed principals can act as the dMSA"
+            "After a migration they act with the group memberships of the account the dMSA replaced"
+            "A broad group in the list hands this to every account in the domain"
+        )
+        Attack = @(
+            "1. Authenticate as a principal named in msDS-GroupMSAMembership"
+            "2. Request a ticket for the dMSA with that principal's own ticket"
+            "3. Use it - with the group memberships of the account the dMSA replaced"
+        )
+        Remediation = @(
+            "Name only the hosts that run the service, ideally through a group that holds only their computer accounts"
+            "Remove user accounts and broad groups from the list"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the principals allowed to use the dMSA"
+                Command = "Get-ADServiceAccount -Identity 'DMSA_NAME' -Properties PrincipalsAllowedToRetrieveManagedPassword | Select-Object -ExpandProperty PrincipalsAllowedToRetrieveManagedPassword"
+            }
+            @{
+                Description = "Allow only the hosts that run the service"
+                Command = "Set-ADServiceAccount -Identity 'DMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'SERVICE_HOSTS'"
+            }
+        )
+        References = @(
+            @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+        )
+        Tools = @("Rubeus", "SharpSuccessor")
+        MITRE = "T1078.002"
+    }
+
+    'DMSA_MEMBERSHIP_OWNER' = @{
+        Title = "dMSA Usage Descriptor Owned by a Non-Privileged Principal"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "msDS-GroupMSAMembership is a security descriptor, and who may use this delegated Managed Service Account (dMSA) is the DACL inside it. The owner of a security descriptor may rewrite that DACL whether or not the DACL grants it anything - so this principal can name itself and then request the dMSA's ticket, which after a migration carries the replaced account's group memberships. It does not appear among the principals the descriptor names today."
+        Impact = @(
+            "The owner can allow itself to use the dMSA and remove the entry afterwards"
+            "It holds that right without appearing in the list of principals allowed to use it"
+            "After a migration this is a path to the replaced account's privileges"
+        )
+        Attack = @(
+            "1. Control the owner of msDS-GroupMSAMembership"
+            "2. Rewrite the descriptor to name itself"
+            "3. Request a ticket for the dMSA, then restore the descriptor"
+        )
+        Remediation = @(
+            "Set the owner of msDS-GroupMSAMembership back to Domain Admins or SYSTEM - rewriting the list with Set-ADServiceAccount does that"
+            "Review who holds WriteOwner on the dMSA object itself"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Rewrite the descriptor with the intended principals, which also resets its owner"
+                Command = "Set-ADServiceAccount -Identity 'DMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'SERVICE_HOSTS'"
+            }
+        )
+        References = @(
+            @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+            @{ Title = "Owner Rights on an Object - MS-ADTS"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/d2435927-0999-4c62-8c6d-13ba31a52e1a" }
+        )
+        Tools = @("PowerShell", "Rubeus")
+    }
+
     'GMSA_MEMBERSHIP_INFO' = @{
         Title = "gMSA Membership Information"
         Risk = "Hint"

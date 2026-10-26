@@ -1163,6 +1163,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'STANDALONE_MSA_LEGACY'
     }
 
+    'dMSA' = @{
+        TitleFormat = "dMSA: {Name}{Context}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Delegated Managed Service Accounts"
+        Summary = "Reviews who may use each delegated Managed Service Account (Windows Server 2025)."
+        WhyItMatters = "msDS-GroupMSAMembership names who may request a dMSA's ticket. Once the dMSA has replaced an account, that ticket carries the replaced account's group memberships, so whoever may use the dMSA acts as that account. The attribute exists to name the hosts that run the service; anyone else named there holds the account."
+        WhatWeCheck = @(
+            "msDS-GroupMSAMembership (who may use the dMSA)"
+            "Principals other than privileged accounts, operators and service hosts"
+            "The owner of that descriptor, who may rewrite the DACL inside it"
+            "Read only where the scan can read the dMSAs - by default only administrators, Account Operators and their creator can"
+        )
+        SecureMessage = "Every dMSA can be used only by privileged accounts and the hosts that run its service."
+        PrimaryFindingId = 'DMSA_USABLE_BY_NONPRIVILEGED'
+    }
+
     'dMSALink' = @{
         TitleFormat = "dMSA Link: {Name}"
         Module = "Accounts"

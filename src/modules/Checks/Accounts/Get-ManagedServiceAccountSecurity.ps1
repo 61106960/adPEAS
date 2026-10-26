@@ -88,6 +88,12 @@ function Get-ManagedServiceAccountSecurity {
                 return
             }
 
+            # For the helpers below, which have no $PSBoundParameters of this function.
+            $connectionParams = @{}
+            foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($connectionKey)) { $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey] }
+            }
+
             Show-SubHeader "Analyzing Managed Service Account security..." -ObjectType "gMSA"
 
             # ===== Check 1: gMSA Password Access Analysis =====
@@ -102,40 +108,10 @@ function Get-ManagedServiceAccountSecurity {
 
                 $nonPrivilegedAccessFindings = @()
 
-                # msDS-GroupMSAMembership is a security descriptor, and by the time
-                # Get-DomainUser has returned it ConvertFrom-LDAPAttribute has already
-                # replaced it with a parsed object carrying Owner and ACEs. Neither of the
-                # two guards that used to stand here - [byte[]] and
-                # ResultPropertyValueCollection - could therefore ever be true: the parse
-                # branch was dead code, $passwordReaders stayed empty, and every domain was
-                # told its gMSA password access was properly restricted, no matter who
-                # could actually read the passwords.
-                #
-                # The parsed form cannot carry the verdict either. It renders the access
-                # mask as ActiveDirectoryRights names, and the SDDL generic bits have no
-                # name in that enum - an ACE written as "(A;;GA;;;<sid>)" comes out as the
-                # bare number 268435456, which no rights test can read. So the descriptors
-                # are fetched once as raw bytes for all gMSAs, the same route the
-                # AdminSDHolder check in Get-PrivilegedGroupMembers takes.
-                #
-                # Keyed by both identifiers the query asks for. If one of them did not
-                # come back, the lookup below would miss every gMSA and the check would
-                # report that it could not analyze anything - honest, but useless, and a
-                # second key costs nothing.
-                $gmsaDescriptors = @{}
+                # The descriptors as raw bytes - Get-ManagedAccountDescriptorMap says why
+                # the parsed form Get-DomainUser hands over cannot be used.
+                $gmsaDescriptors = Get-ManagedAccountDescriptorMap -ConnectionParams $connectionParams
                 $gmsaDescriptorOwners = @{}
-                try {
-                    foreach ($rawGMSA in @(Get-DomainUser -GMSA -Properties 'distinguishedName', 'sAMAccountName', 'msDS-GroupMSAMembership' -Raw @PSBoundParameters)) {
-                        $rawSD = $rawGMSA.'msDS-GroupMSAMembership'
-                        if (-not ($rawSD -is [byte[]]) -or $rawSD.Length -eq 0) { continue }
-
-                        foreach ($rawKey in @([string]$rawGMSA.distinguishedName, [string]$rawGMSA.sAMAccountName)) {
-                            if ($rawKey) { $gmsaDescriptors[$rawKey.ToLowerInvariant()] = $rawSD }
-                        }
-                    }
-                } catch {
-                    Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the gMSA membership descriptors: $_" -Level Warning
-                }
 
                 # ----- Phase 1: who is granted password access, per gMSA -----
                 $gmsaReaderSIDs = @{}
@@ -168,48 +144,16 @@ function Get-ManagedServiceAccountSecurity {
                         continue
                     }
 
-                    $grantedSIDs = @()
                     try {
-                        $gmsaSD = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                        $gmsaSD.SetSecurityDescriptorBinaryForm($sdBytes)
+                        $descriptor = Get-ManagedAccountDescriptorReader -Descriptor $sdBytes -Name $gmsaName
+                        foreach ($aceSID in @($descriptor.SIDs)) { $allReaderSIDs[$aceSID] = $true }
 
-                        # GetAccessRules with SecurityIdentifier rather than .Access: .Access
-                        # asks for the rules as NTAccount, which makes the scanning host
-                        # resolve every SID and silently drops the ones it cannot - against
-                        # a domain this host is not joined to that is every domain principal.
-                        foreach ($ace in $gmsaSD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-                            if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-
-                            # Retrieving the password means reading msDS-ManagedPassword, so
-                            # ReadProperty is the right that decides - Windows writes
-                            # "(A;;RP;;;<sid>)" for
-                            # -PrincipalsAllowedToRetrieveManagedPassword. Test-ADRightsMask
-                            # expands the generic bits, so an ACE granting it through GA or
-                            # GR counts as well, while an ACE carrying ReadControl alone -
-                            # which the old code counted as a reader - entitles its holder
-                            # to nothing here.
-                            if (-not (Test-ADRightsMask -Rights $ace.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty))) { continue }
-
-                            $aceSID = [string]$ace.IdentityReference.Value
-                            if ($aceSID -and ($grantedSIDs -notcontains $aceSID)) {
-                                $grantedSIDs += $aceSID
-                                $allReaderSIDs[$aceSID] = $true
-                            }
-                        }
-
-                        # The owner of this descriptor may rewrite the DACL that the
-                        # loop above just read, so it can grant itself the password
-                        # without ever appearing among the readers. The check parsed
-                        # the descriptor and looked only at its ACEs.
-                        try {
-                            $sdOwner = $gmsaSD.GetOwner([System.Security.Principal.SecurityIdentifier])
-                            if ($sdOwner) { $gmsaDescriptorOwners[$gmsaName] = [string]$sdOwner.Value }
-                        } catch {
-                            Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the descriptor owner of $gmsaName : $_"
-                        }
+                        # The owner of this descriptor may rewrite its DACL, so it can grant
+                        # itself the password without ever appearing among the readers.
+                        if ($descriptor.Owner) { $gmsaDescriptorOwners[$gmsaName] = $descriptor.Owner }
 
                         $analyzedGMSAs++
-                        $gmsaReaderSIDs[$gmsaName] = $grantedSIDs
+                        $gmsaReaderSIDs[$gmsaName] = @($descriptor.SIDs)
                     } catch {
                         $unparsedGMSAs += $gmsaName
                         Write-Log "[Get-ManagedServiceAccountSecurity] Failed to parse msDS-GroupMSAMembership for $gmsaName : $_"
@@ -218,56 +162,7 @@ function Get-ManagedServiceAccountSecurity {
                 if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
 
                 # ----- Phase 2: what kind of principal each reader is -----
-                #
-                # What the attribute is for is naming the hosts that run the service, so a
-                # computer account - or a group that holds only computer accounts, which is
-                # the documented way to grant them - is the intended configuration and not
-                # a finding. Calling everything outside Privileged/Operator a
-                # non-privileged reader, as this check did, would have turned every
-                # correctly configured gMSA into a finding the moment the parse above
-                # started working.
-                $hostClasses = @('computer', 'msDS-ManagedServiceAccount', 'msDS-GroupManagedServiceAccount')
-                $readerKinds = @{}
-                foreach ($readerSID in @($allReaderSIDs.Keys)) {
-                    # For a broad group, a privileged principal or an operator the
-                    # category below decides on its own, so no lookup is made for those -
-                    # it would also send a query after SIDs that are not directory objects
-                    # at all, such as S-1-5-11 or an NT SERVICE SID. Test-IsPrivileged
-                    # caches its answer, so asking it here costs phase 3 nothing.
-                    if ((Test-IsPrivileged -Identity $readerSID).Category -in @('BroadGroup', 'Privileged', 'Operator')) {
-                        $readerKinds[$readerSID] = 'DecidedByCategory'
-                        continue
-                    }
-
-                    $readerKind = 'Principal'
-                    try {
-                        $readerObject = @(Get-DomainObject -Identity $readerSID -Properties 'objectClass', 'distinguishedName' @PSBoundParameters)[0]
-                        if (-not $readerObject) {
-                            # A SID the directory does not resolve is not a host, and
-                            # treating what could not be looked up as harmless is exactly
-                            # how a check reports an unchecked state as a clean one.
-                            $readerKind = 'Unresolved'
-                        } elseif (@(@($readerObject.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -gt 0) {
-                            $readerKind = 'Host'
-                        } elseif (@($readerObject.objectClass) -icontains 'group') {
-                            # Direct members only. A nested group is reported rather than
-                            # walked: an unexpanded branch must not pass as a host. A group
-                            # with no members grants nobody anything and stays a host group.
-                            $readerKind = 'Host'
-                            $memberFilter = "(memberOf=$(Escape-LDAPFilterDN -DistinguishedName ([string]$readerObject.distinguishedName)))"
-                            foreach ($groupMember in @(Get-DomainObject -LDAPFilter $memberFilter -Properties 'objectClass' @PSBoundParameters)) {
-                                if (@(@($groupMember.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -eq 0) {
-                                    $readerKind = 'Principal'
-                                    break
-                                }
-                            }
-                        }
-                    } catch {
-                        $readerKind = 'Unresolved'
-                        Write-Log "[Get-ManagedServiceAccountSecurity] Could not classify password reader $readerSID : $_"
-                    }
-                    $readerKinds[$readerSID] = $readerKind
-                }
+                $readerKinds = Get-ManagedAccountReaderKind -SID @($allReaderSIDs.Keys) -ConnectionParams $connectionParams
 
                 # ----- Phase 3: verdict per gMSA -----
                 #
@@ -278,56 +173,14 @@ function Get-ManagedServiceAccountSecurity {
                     $gmsaName = $gmsa.sAMAccountName
                     if (-not $gmsaReaderSIDs.ContainsKey($gmsaName)) { continue }
 
-                    $passwordReaders = @()
-                    $hasBroadGroupAccess = $false
-
-                    foreach ($readerSID in $gmsaReaderSIDs[$gmsaName]) {
-                        $principalName = ConvertFrom-SID -SID $readerSID
-                        if (-not $principalName) { $principalName = $readerSID }
-
-                        # Use central Test-IsPrivileged for consistent classification
-                        $privCheck = Test-IsPrivileged -Identity $readerSID
-                        $category = $privCheck.Category
-
-                        $readerKind = 'Unresolved'
-                        if ($readerKinds.ContainsKey($readerSID)) { $readerKind = $readerKinds[$readerSID] }
-
-                        # BroadGroup = Everyone, Authenticated Users, Domain Users - every
-                        #     account in the domain can take the password (CRITICAL)
-                        # Privileged = Domain Admins, Enterprise Admins, ... (expected,
-                        #     they can reach the password by other means anyway)
-                        # Operator = Account Operators, Server Operators, ... (expected)
-                        # Host = a computer account or a group of them (expected, this is
-                        #     what the attribute exists for)
-                        # anything else = a principal that should not hold the password: a
-                        #     user account, a group holding one, or an unresolvable SID
-                        $isBroadGroup = $category -eq 'BroadGroup'
-                        $isExpected = $false
-                        if (-not $isBroadGroup) {
-                            $isExpected = ($category -in @('Privileged', 'Operator')) -or ($readerKind -eq 'Host')
-                        }
-                        if ($isBroadGroup) { $hasBroadGroupAccess = $true }
-
-                        $passwordReaders += [PSCustomObject]@{
-                            Principal = $principalName
-                            SID = $readerSID
-                            Category = $category
-                            Kind = $readerKind
-                            IsExpected = $isExpected
-                            IsBroadGroup = $isBroadGroup
-                        }
-                    }
-
+                    $passwordReaders = @(Get-ManagedAccountReader -SID $gmsaReaderSIDs[$gmsaName] -ReaderKind $readerKinds)
+                    $hasBroadGroupAccess = @($passwordReaders | Where-Object { $_.IsBroadGroup }).Count -gt 0
                     $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected })
 
                     # Keyed by SID, so a principal the descriptor names without granting
                     # ReadProperty finds no entry and reads as no reader at all.
                     $verdictMap = @{}
-                    foreach ($reader in $passwordReaders) {
-                        $verdict = 'Unexpected'
-                        if ($reader.IsBroadGroup) { $verdict = 'Broad' } elseif ($reader.IsExpected) { $verdict = 'Expected' }
-                        $verdictMap[[string]$reader.SID] = $verdict
-                    }
+                    foreach ($reader in $passwordReaders) { $verdictMap[[string]$reader.SID] = $reader.Verdict }
                     $readerVerdictsByGMSA[$gmsaName] = $verdictMap
 
                     if ($unexpectedReaders.Count -gt 0) {
@@ -834,6 +687,127 @@ function Get-ManagedServiceAccountSecurity {
                         Show-Line "The dMSA objects are not readable by this account - who may use each dMSA was not evaluated" -Class Note
                     }
                 }
+
+                # ----- Who may use each dMSA -----
+                #
+                # msDS-GroupMSAMembership names who may request a dMSA's ticket, and after a
+                # migration that ticket carries the replaced account's group memberships.
+                # The same descriptor as on a gMSA, judged the same way. Only where the scan
+                # can read the dMSAs, which by default takes an administrator.
+                $dmsaAccounts = @(Get-DomainUser -GMSA -ShowGMSADetails @PSBoundParameters |
+                    Where-Object { $_.objectClass -icontains 'msDS-DelegatedManagedServiceAccount' })
+
+                if ($dmsaAccounts.Count -gt 0) {
+                    Show-SubHeader "Checking who may use delegated Managed Service Accounts..." -ObjectType "dMSA"
+
+                    $dmsaDescriptors = Get-ManagedAccountDescriptorMap -ConnectionParams $connectionParams
+                    $dmsaUserSIDs = @{}
+                    $allDMSAUserSIDs = @{}
+                    $dmsaOwners = @{}
+                    $unusedDMSAs = @()
+                    $unparsedDMSAs = @()
+
+                    foreach ($dmsa in $dmsaAccounts) {
+                        $dmsaName = [string]$dmsa.sAMAccountName
+                        $sdBytes = $null
+                        foreach ($lookupKey in @([string]$dmsa.distinguishedName, $dmsaName)) {
+                            if (-not $lookupKey) { continue }
+                            if ($dmsaDescriptors.ContainsKey($lookupKey.ToLowerInvariant())) {
+                                $sdBytes = $dmsaDescriptors[$lookupKey.ToLowerInvariant()]
+                                break
+                            }
+                        }
+                        if (-not $sdBytes) {
+                            # Nobody named, or the attribute was not readable - stated below,
+                            # rather than passed off as the first.
+                            $unusedDMSAs += $dmsaName
+                            continue
+                        }
+                        try {
+                            $descriptor = Get-ManagedAccountDescriptorReader -Descriptor $sdBytes -Name $dmsaName
+                            $dmsaUserSIDs[$dmsaName] = @($descriptor.SIDs)
+                            foreach ($userSID in @($descriptor.SIDs)) { $allDMSAUserSIDs[$userSID] = $true }
+                            if ($descriptor.Owner) { $dmsaOwners[$dmsaName] = $descriptor.Owner }
+                        } catch {
+                            $unparsedDMSAs += $dmsaName
+                            Write-Log "[Get-ManagedServiceAccountSecurity] Failed to parse msDS-GroupMSAMembership for $dmsaName : $_"
+                        }
+                    }
+
+                    $dmsaUserKinds = Get-ManagedAccountReaderKind -SID @($allDMSAUserSIDs.Keys) -ConnectionParams $connectionParams
+                    $usableByOthers = @()
+                    foreach ($dmsa in $dmsaAccounts) {
+                        $dmsaName = [string]$dmsa.sAMAccountName
+                        if (-not $dmsaUserSIDs.ContainsKey($dmsaName)) { continue }
+
+                        $dmsaUsers = @(Get-ManagedAccountReader -SID $dmsaUserSIDs[$dmsaName] -ReaderKind $dmsaUserKinds)
+                        $verdictMap = @{}
+                        foreach ($dmsaUser in $dmsaUsers) { $verdictMap[[string]$dmsaUser.SID] = $dmsaUser.Verdict }
+                        # Read by the transformer of msDS-GroupMSAMembership, as on a gMSA.
+                        $dmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $verdictMap -Force
+
+                        $unexpectedUsers = @($dmsaUsers | Where-Object { -not $_.IsExpected })
+                        if ($unexpectedUsers.Count -gt 0) {
+                            $usableByOthers += [PSCustomObject]@{
+                                Account    = $dmsa
+                                Unexpected = $unexpectedUsers
+                                HasBroad   = (@($unexpectedUsers | Where-Object { $_.IsBroadGroup }).Count -gt 0)
+                            }
+                        }
+                    }
+
+                    if (@($usableByOthers).Count -gt 0) {
+                        $broadCount = @($usableByOthers | Where-Object { $_.HasBroad }).Count
+                        $broadInfo = ''
+                        if ($broadCount -gt 0) { $broadInfo = " ($broadCount with broad group access - CRITICAL)" }
+                        Show-Line "Found $(@($usableByOthers).Count) dMSA(s) that principals beyond administrators and service hosts may use$broadInfo`:" -Class Finding
+
+                        foreach ($entry in $usableByOthers) {
+                            $contextText = 'Non-privileged access'
+                            if ($entry.HasBroad) { $contextText = 'CRITICAL: Broad group access' }
+                            $entry.Account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'dMSA' -Force
+                            $entry.Account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $contextText -Force
+                            Show-Object $entry.Account -Class Finding
+
+                            $userList = @($entry.Unexpected | ForEach-Object {
+                                $prefix = ''
+                                if ($_.IsBroadGroup) { $prefix = '[CRITICAL] ' }
+                                "$prefix$($_.Principal) ($($_.SID))"
+                            }) -join ', '
+                            Show-Line "Non-privileged principals allowed to use it: $userList" -Class Hint
+                        }
+                    }
+
+                    # The owner of the descriptor may rewrite it and name itself.
+                    $ownedDMSAs = @()
+                    foreach ($ownedName in @($dmsaOwners.Keys | Sort-Object)) {
+                        $ownerSID = $dmsaOwners[$ownedName]
+                        if (Test-IsDefaultOwner -SID $ownerSID) { continue }
+                        if ((Test-IsPrivileged -Identity $ownerSID -IncludeOperators).IsPrivileged) { continue }
+                        $ownerName = ConvertFrom-SID -SID $ownerSID
+                        if (-not $ownerName) { $ownerName = $ownerSID }
+                        $ownedDMSAs += "$ownedName ($ownerName)"
+                    }
+                    if (@($ownedDMSAs).Count -gt 0) {
+                        Show-Line "msDS-GroupMSAMembership of a dMSA is owned by a principal that is not privileged: $(@($ownedDMSAs) -join ', ')" -Class Finding -FindingId 'DMSA_MEMBERSHIP_OWNER'
+                    }
+
+                    if (@($unusedDMSAs).Count -gt 0) {
+                        Show-Line "No principal may use $(@($unusedDMSAs).Count) dMSA(s), or msDS-GroupMSAMembership was not readable: $(@($unusedDMSAs) -join ', ')" -Class Note
+                    }
+                    if (@($unparsedDMSAs).Count -gt 0) {
+                        Show-Line "msDS-GroupMSAMembership could not be parsed on $(@($unparsedDMSAs).Count) dMSA(s) - who may use them is unknown: $(@($unparsedDMSAs) -join ', ')" -Class Note
+                    }
+
+                    if (@($usableByOthers).Count -eq 0 -and @($ownedDMSAs).Count -eq 0 -and $dmsaUserSIDs.Count -gt 0) {
+                        $unanalyzedDMSAs = $dmsaAccounts.Count - $dmsaUserSIDs.Count
+                        if ($unanalyzedDMSAs -gt 0) {
+                            Show-Line "dMSA use is restricted to privileged accounts and service hosts ($unanalyzedDMSAs of $($dmsaAccounts.Count) not analyzed)" -Class Note
+                        } else {
+                            Show-Line "Every dMSA can be used only by privileged accounts and service hosts" -Class Secure
+                        }
+                    }
+                }
             }
 
         } catch {
@@ -926,5 +900,265 @@ function Get-DelegatedMSALinkVerdict {
     [PSCustomObject]@{
         Verdict = $verdict
         DMSA    = $dmsa
+    }
+}
+
+<#
+.SYNOPSIS
+    The msDS-GroupMSAMembership descriptors of every managed service account, as raw bytes.
+
+.DESCRIPTION
+    msDS-GroupMSAMembership is a security descriptor, and by the time Get-DomainUser has
+    returned it ConvertFrom-LDAPAttribute has already replaced it with a parsed object
+    carrying Owner and ACEs. Neither of the two guards that used to stand in the check -
+    [byte[]] and ResultPropertyValueCollection - could therefore ever be true: the parse
+    branch was dead code, and every domain was told its gMSA password access was properly
+    restricted, no matter who could actually read the passwords.
+
+    The parsed form cannot carry the verdict either. It renders the access mask as
+    ActiveDirectoryRights names, and the SDDL generic bits have no name in that enum - an
+    ACE written as "(A;;GA;;;<sid>)" comes out as the bare number 268435456, which no rights
+    test can read. So the descriptors are fetched once as raw bytes, the same route the
+    AdminSDHolder check in Get-PrivilegedGroupMembers takes.
+
+    Keyed by both identifiers the query asks for, lowercased. If one of them did not come
+    back, every lookup would miss and the check would report that it could not analyze
+    anything - honest, but useless, and a second key costs nothing.
+
+.PARAMETER ConnectionParams
+    Domain, Server and Credential of the calling check.
+
+.OUTPUTS
+    Hashtable: lowercased DN and sAMAccountName -> byte[] descriptor. Accounts without one
+    are absent.
+#>
+function Get-ManagedAccountDescriptorMap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $descriptors = @{}
+    try {
+        foreach ($rawAccount in @(Get-DomainUser -GMSA -Properties 'distinguishedName', 'sAMAccountName', 'msDS-GroupMSAMembership' -Raw @ConnectionParams)) {
+            $rawSD = $rawAccount.'msDS-GroupMSAMembership'
+            if (-not ($rawSD -is [byte[]]) -or $rawSD.Length -eq 0) { continue }
+
+            foreach ($rawKey in @([string]$rawAccount.distinguishedName, [string]$rawAccount.sAMAccountName)) {
+                if ($rawKey) { $descriptors[$rawKey.ToLowerInvariant()] = $rawSD }
+            }
+        }
+    } catch {
+        Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the managed service account membership descriptors: $_" -Level Warning
+    }
+    return $descriptors
+}
+
+<#
+.SYNOPSIS
+    Who an msDS-GroupMSAMembership descriptor lets use the account, and who owns it.
+
+.DESCRIPTION
+    Using a managed service account means reading msDS-ManagedPassword for a gMSA and
+    requesting the account's ticket for a dMSA, and the descriptor grants both through
+    ReadProperty - Windows writes "(A;;RP;;;<sid>)" for
+    -PrincipalsAllowedToRetrieveManagedPassword. Test-ADRightsMask expands the generic bits,
+    so an ACE granting it through GA or GR counts as well, while an ACE carrying ReadControl
+    alone - which the old code counted as a reader - entitles its holder to nothing.
+
+    GetAccessRules with SecurityIdentifier rather than .Access: .Access asks for the rules as
+    NTAccount, which makes the scanning host resolve every SID and silently drops the ones it
+    cannot - against a domain this host is not joined to that is every domain principal.
+
+    The owner of the descriptor may rewrite its DACL whether or not the DACL grants it
+    anything, so it is returned beside the readers.
+
+.PARAMETER Descriptor
+    The raw descriptor.
+
+.PARAMETER Name
+    The account, for the log.
+
+.OUTPUTS
+    PSCustomObject with SIDs (the principals granted ReadProperty, each once) and Owner (a
+    SID string, or $null). Throws when the bytes are not a security descriptor.
+#>
+function Get-ManagedAccountDescriptorReader {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Descriptor,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Name
+    )
+
+    $sd = New-Object System.DirectoryServices.ActiveDirectorySecurity
+    $sd.SetSecurityDescriptorBinaryForm($Descriptor)
+
+    $grantedSIDs = @()
+    foreach ($ace in $sd.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+        if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if (-not (Test-ADRightsMask -Rights $ace.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty))) { continue }
+
+        $aceSID = [string]$ace.IdentityReference.Value
+        if ($aceSID -and ($grantedSIDs -notcontains $aceSID)) { $grantedSIDs += $aceSID }
+    }
+
+    $owner = $null
+    try {
+        $sdOwner = $sd.GetOwner([System.Security.Principal.SecurityIdentifier])
+        if ($sdOwner) { $owner = [string]$sdOwner.Value }
+    } catch {
+        Write-Log "[Get-ManagedServiceAccountSecurity] Could not read the descriptor owner of $Name : $_"
+    }
+
+    [PSCustomObject]@{
+        SIDs  = $grantedSIDs
+        Owner = $owner
+    }
+}
+
+<#
+.SYNOPSIS
+    What kind of principal each SID a membership descriptor grants is.
+
+.DESCRIPTION
+    What msDS-GroupMSAMembership is for is naming the hosts that run the service, so a
+    computer account - or a group that holds only computer accounts, which is the
+    documented way to grant them - is the intended configuration and not a finding. Calling
+    everything outside Privileged/Operator a non-privileged reader would turn every
+    correctly configured account into a finding.
+
+    For a broad group, a privileged principal or an operator the category decides on its
+    own, so no lookup is made for those - it would also send a query after SIDs that are
+    not directory objects at all, such as S-1-5-11 or an NT SERVICE SID. Test-IsPrivileged
+    caches its answer, so asking it here costs Get-ManagedAccountReader nothing.
+
+    A group is judged by its direct members. A nested group is reported rather than walked:
+    an unexpanded branch must not pass as a host. A group with no members grants nobody
+    anything and stays a host group.
+
+.PARAMETER SID
+    The SIDs to classify.
+
+.PARAMETER ConnectionParams
+    Domain, Server and Credential of the calling check.
+
+.OUTPUTS
+    Hashtable: SID -> 'DecidedByCategory', 'Host', 'Principal' or 'Unresolved'.
+#>
+function Get-ManagedAccountReaderKind {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
+        [string[]]$SID = @(),
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $hostClasses = @('computer', 'msDS-ManagedServiceAccount', 'msDS-GroupManagedServiceAccount')
+    $readerKinds = @{}
+    foreach ($readerSID in @($SID | Where-Object { $_ })) {
+        if ((Test-IsPrivileged -Identity $readerSID).Category -in @('BroadGroup', 'Privileged', 'Operator')) {
+            $readerKinds[$readerSID] = 'DecidedByCategory'
+            continue
+        }
+
+        $readerKind = 'Principal'
+        try {
+            $readerObject = @(Get-DomainObject -Identity $readerSID -Properties 'objectClass', 'distinguishedName' @ConnectionParams)[0]
+            if (-not $readerObject) {
+                # A SID the directory does not resolve is not a host, and treating what
+                # could not be looked up as harmless is exactly how a check reports an
+                # unchecked state as a clean one.
+                $readerKind = 'Unresolved'
+            } elseif (@(@($readerObject.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -gt 0) {
+                $readerKind = 'Host'
+            } elseif (@($readerObject.objectClass) -icontains 'group') {
+                $readerKind = 'Host'
+                $memberFilter = "(memberOf=$(Escape-LDAPFilterDN -DistinguishedName ([string]$readerObject.distinguishedName)))"
+                foreach ($groupMember in @(Get-DomainObject -LDAPFilter $memberFilter -Properties 'objectClass' @ConnectionParams)) {
+                    if (@(@($groupMember.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -eq 0) {
+                        $readerKind = 'Principal'
+                        break
+                    }
+                }
+            }
+        } catch {
+            $readerKind = 'Unresolved'
+            Write-Log "[Get-ManagedServiceAccountSecurity] Could not classify password reader $readerSID : $_"
+        }
+        $readerKinds[$readerSID] = $readerKind
+    }
+    return $readerKinds
+}
+
+<#
+.SYNOPSIS
+    The verdict on each principal a membership descriptor grants.
+
+.DESCRIPTION
+    - Broad:      Everyone, Authenticated Users, Domain Users - every account in the domain
+                  can use the account (CRITICAL)
+    - Expected:   a privileged principal or an operator, which reach the account by other
+                  means anyway, or a host - a computer account or a group of them, which is
+                  what the attribute exists for
+    - Unexpected: anything else - a user account, a group holding one, or a SID that does
+                  not resolve
+
+.PARAMETER SID
+    The SIDs the descriptor grants.
+
+.PARAMETER ReaderKind
+    Get-ManagedAccountReaderKind's answer for them.
+
+.OUTPUTS
+    One PSCustomObject per SID: Principal, SID, Category, Kind, IsExpected, IsBroadGroup,
+    Verdict.
+#>
+function Get-ManagedAccountReader {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
+        [string[]]$SID = @(),
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ReaderKind = @{}
+    )
+
+    foreach ($readerSID in @($SID | Where-Object { $_ })) {
+        $principalName = ConvertFrom-SID -SID $readerSID
+        if (-not $principalName) { $principalName = $readerSID }
+
+        $category = (Test-IsPrivileged -Identity $readerSID).Category
+
+        # $kind, not $readerKind: PowerShell names are case-insensitive, and the
+        # [hashtable] parameter would refuse the string.
+        $kind = 'Unresolved'
+        if ($ReaderKind.ContainsKey($readerSID)) { $kind = $ReaderKind[$readerSID] }
+
+        $isBroadGroup = $category -eq 'BroadGroup'
+        $isExpected = $false
+        if (-not $isBroadGroup) {
+            $isExpected = ($category -in @('Privileged', 'Operator')) -or ($kind -eq 'Host')
+        }
+
+        $verdict = 'Unexpected'
+        if ($isBroadGroup) { $verdict = 'Broad' } elseif ($isExpected) { $verdict = 'Expected' }
+
+        [PSCustomObject]@{
+            Principal    = $principalName
+            SID          = $readerSID
+            Category     = $category
+            Kind         = $kind
+            IsExpected   = $isExpected
+            IsBroadGroup = $isBroadGroup
+            Verdict      = $verdict
+        }
     }
 }

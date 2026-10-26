@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   no migration state at all - as a finding; a link the account does not return, and a
   privileged account replaced by a dMSA, as hints; migrations started or completed as
   notes. The section appears only where the schema has the dMSA class.
+- **`Get-ManagedServiceAccountSecurity` checks who may use each delegated Managed Service
+  Account.** msDS-GroupMSAMembership names who may request a dMSA's ticket, and after a
+  migration that ticket carries the replaced account's group memberships. The check judges
+  the descriptor the way it judges a gMSA's password readers - privileged accounts,
+  operators and the hosts that run the service are expected, anyone else is a finding, a
+  broad group a critical one - and reports an owner of the descriptor who is not
+  privileged. The gMSA analysis moved into helpers both use; its output is unchanged. A
+  domain user cannot read a dMSA, so the section appears only where the scan can.
 
 ### Removed
 

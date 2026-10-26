@@ -16785,6 +16785,72 @@ $acl.Access | Where-Object {
 	        @{ Attribute = 'dmsaLink'; Pattern = '^Privileged predecessor'; Severity = 'Hint' }
 	    )
 	}
+	'DMSA_USABLE_BY_NONPRIVILEGED' = @{
+	    Title = "dMSA Usable by Non-Privileged Principals"
+	    Risk = "Finding"
+	    BaseScore = 60
+	    Description = "msDS-GroupMSAMembership of this delegated Managed Service Account (dMSA, Windows Server 2025) names who may use it, and it names a principal that is neither privileged nor a host that runs the service. A principal named there can request the dMSA's ticket with its own credentials. Once the dMSA has replaced an account, that ticket carries the replaced account's group memberships - so whoever may use the dMSA acts as that account."
+	    Impact = @(
+	        "The listed principals can act as the dMSA"
+	        "After a migration they act with the group memberships of the account the dMSA replaced"
+	        "A broad group in the list hands this to every account in the domain"
+	    )
+	    Attack = @(
+	        "1. Authenticate as a principal named in msDS-GroupMSAMembership"
+	        "2. Request a ticket for the dMSA with that principal's own ticket"
+	        "3. Use it - with the group memberships of the account the dMSA replaced"
+	    )
+	    Remediation = @(
+	        "Name only the hosts that run the service, ideally through a group that holds only their computer accounts"
+	        "Remove user accounts and broad groups from the list"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "List the principals allowed to use the dMSA"
+	            Command = "Get-ADServiceAccount -Identity 'DMSA_NAME' -Properties PrincipalsAllowedToRetrieveManagedPassword | Select-Object -ExpandProperty PrincipalsAllowedToRetrieveManagedPassword"
+	        }
+	        @{
+	            Description = "Allow only the hosts that run the service"
+	            Command = "Set-ADServiceAccount -Identity 'DMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'SERVICE_HOSTS'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+	    )
+	    Tools = @("Rubeus", "SharpSuccessor")
+	    MITRE = "T1078.002"
+	}
+	'DMSA_MEMBERSHIP_OWNER' = @{
+	    Title = "dMSA Usage Descriptor Owned by a Non-Privileged Principal"
+	    Risk = "Finding"
+	    BaseScore = 60
+	    Description = "msDS-GroupMSAMembership is a security descriptor, and who may use this delegated Managed Service Account (dMSA) is the DACL inside it. The owner of a security descriptor may rewrite that DACL whether or not the DACL grants it anything - so this principal can name itself and then request the dMSA's ticket, which after a migration carries the replaced account's group memberships. It does not appear among the principals the descriptor names today."
+	    Impact = @(
+	        "The owner can allow itself to use the dMSA and remove the entry afterwards"
+	        "It holds that right without appearing in the list of principals allowed to use it"
+	        "After a migration this is a path to the replaced account's privileges"
+	    )
+	    Attack = @(
+	        "1. Control the owner of msDS-GroupMSAMembership"
+	        "2. Rewrite the descriptor to name itself"
+	        "3. Request a ticket for the dMSA, then restore the descriptor"
+	    )
+	    Remediation = @(
+	        "Set the owner of msDS-GroupMSAMembership back to Domain Admins or SYSTEM - rewriting the list with Set-ADServiceAccount does that"
+	        "Review who holds WriteOwner on the dMSA object itself"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Rewrite the descriptor with the intended principals, which also resets its owner"
+	            Command = "Set-ADServiceAccount -Identity 'DMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'SERVICE_HOSTS'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+	        @{ Title = "Owner Rights on an Object - MS-ADTS"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/d2435927-0999-4c62-8c6d-13ba31a52e1a" }
+	    )
+	    Tools = @("PowerShell", "Rubeus")
+	}
 	'GMSA_MEMBERSHIP_INFO' = @{
 	    Title = "gMSA Membership Information"
 	    Risk = "Hint"
@@ -20373,6 +20439,11 @@ function Convert-GMSAToRenderValues {
 	if ($sourceObject -and $sourceObject.PSObject.Properties['_gmsaReaderVerdicts']) {
 	    $readerVerdicts = $sourceObject._gmsaReaderVerdicts
 	}
+	$readerCard = 'GMSA_PASSWORD_READABLE'
+	if ($sourceObject -and $sourceObject.PSObject.Properties['objectClass'] -and
+	    @($sourceObject.objectClass) -icontains 'msDS-DelegatedManagedServiceAccount') {
+	    $readerCard = 'DMSA_USABLE_BY_NONPRIVILEGED'
+	}
 	$renderValues = @()
 	foreach ($principal in $gmsaPrincipals) {
 	    $severity = 'Hint'
@@ -20387,7 +20458,7 @@ function Convert-GMSAToRenderValues {
 	        }
 	        if ($verdict -in @('Broad', 'Unexpected')) {
 	            $severity = 'Finding'
-	            $findingId = 'GMSA_PASSWORD_READABLE'
+	            $findingId = $readerCard
 	        } else {
 	            $severity = 'Standard'
 	            $findingId = $null
@@ -20396,7 +20467,7 @@ function Convert-GMSAToRenderValues {
 	        $category = (Test-IsPrivileged -Identity $principalSID).Category
 	        if ($category -eq 'BroadGroup') {
 	            $severity = 'Finding'
-	            $findingId = 'GMSA_PASSWORD_READABLE'
+	            $findingId = $readerCard
 	        } elseif ($category -in @('Privileged', 'Operator')) {
 	            $severity = 'Standard'
 	            $findingId = $null
@@ -22507,6 +22578,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    )
 	    SecureMessage = "No legacy standalone Managed Service Accounts (sMSAs) found. All service accounts use the more secure gMSA technology with automatic password rotation."
 	    PrimaryFindingId = 'STANDALONE_MSA_LEGACY'
+	}
+	'dMSA' = @{
+	    TitleFormat = "dMSA: {Name}{Context}"
+	    Module = "Accounts"
+	    Category = "Accounts"
+	    SectionTitle = "Delegated Managed Service Accounts"
+	    Summary = "Reviews who may use each delegated Managed Service Account (Windows Server 2025)."
+	    WhyItMatters = "msDS-GroupMSAMembership names who may request a dMSA's ticket. Once the dMSA has replaced an account, that ticket carries the replaced account's group memberships, so whoever may use the dMSA acts as that account. The attribute exists to name the hosts that run the service; anyone else named there holds the account."
+	    WhatWeCheck = @(
+	        "msDS-GroupMSAMembership (who may use the dMSA)"
+	        "Principals other than privileged accounts, operators and service hosts"
+	        "The owner of that descriptor, who may rewrite the DACL inside it"
+	        "Read only where the scan can read the dMSAs - by default only administrators, Account Operators and their creator can"
+	    )
+	    SecureMessage = "Every dMSA can be used only by privileged accounts and the hosts that run its service."
+	    PrimaryFindingId = 'DMSA_USABLE_BY_NONPRIVILEGED'
 	}
 	'dMSALink' = @{
 	    TitleFormat = "dMSA Link: {Name}"
@@ -71442,23 +71529,17 @@ function Get-ManagedServiceAccountSecurity {
 	        if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
 	            return
 	        }
+	        $connectionParams = @{}
+	        foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+	            if ($PSBoundParameters.ContainsKey($connectionKey)) { $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey] }
+	        }
 	        Show-SubHeader "Analyzing Managed Service Account security..." -ObjectType "gMSA"
 	        $gmsaAccounts = @(Get-DomainUser -GMSA -ShowGMSADetails @PSBoundParameters |
 	            Where-Object { $_.objectClass -icontains 'msDS-GroupManagedServiceAccount' })
 	        if ($gmsaAccounts.Count -gt 0) {
 	            $nonPrivilegedAccessFindings = @()
-	            $gmsaDescriptors = @{}
+	            $gmsaDescriptors = Get-ManagedAccountDescriptorMap -ConnectionParams $connectionParams
 	            $gmsaDescriptorOwners = @{}
-	            try {
-	                foreach ($rawGMSA in @(Get-DomainUser -GMSA -Properties 'distinguishedName', 'sAMAccountName', 'msDS-GroupMSAMembership' -Raw @PSBoundParameters)) {
-	                    $rawSD = $rawGMSA.'msDS-GroupMSAMembership'
-	                    if (-not ($rawSD -is [byte[]]) -or $rawSD.Length -eq 0) { continue }
-	                    foreach ($rawKey in @([string]$rawGMSA.distinguishedName, [string]$rawGMSA.sAMAccountName)) {
-	                        if ($rawKey) { $gmsaDescriptors[$rawKey.ToLowerInvariant()] = $rawSD }
-	                    }
-	                }
-	            } catch {
-	            }
 	            $gmsaReaderSIDs = @{}
 	            $allReaderSIDs = @{}
 	            $analyzedGMSAs = 0
@@ -71483,95 +71564,27 @@ function Get-ManagedServiceAccountSecurity {
 	                    $undelegatedGMSAs += $gmsaName
 	                    continue
 	                }
-	                $grantedSIDs = @()
 	                try {
-	                    $gmsaSD = New-Object System.DirectoryServices.ActiveDirectorySecurity
-	                    $gmsaSD.SetSecurityDescriptorBinaryForm($sdBytes)
-	                    foreach ($ace in $gmsaSD.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-	                        if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-	                        if (-not (Test-ADRightsMask -Rights $ace.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty))) { continue }
-	                        $aceSID = [string]$ace.IdentityReference.Value
-	                        if ($aceSID -and ($grantedSIDs -notcontains $aceSID)) {
-	                            $grantedSIDs += $aceSID
-	                            $allReaderSIDs[$aceSID] = $true
-	                        }
-	                    }
-	                    try {
-	                        $sdOwner = $gmsaSD.GetOwner([System.Security.Principal.SecurityIdentifier])
-	                        if ($sdOwner) { $gmsaDescriptorOwners[$gmsaName] = [string]$sdOwner.Value }
-	                    } catch {
-	                    }
+	                    $descriptor = Get-ManagedAccountDescriptorReader -Descriptor $sdBytes -Name $gmsaName
+	                    foreach ($aceSID in @($descriptor.SIDs)) { $allReaderSIDs[$aceSID] = $true }
+	                    if ($descriptor.Owner) { $gmsaDescriptorOwners[$gmsaName] = $descriptor.Owner }
 	                    $analyzedGMSAs++
-	                    $gmsaReaderSIDs[$gmsaName] = $grantedSIDs
+	                    $gmsaReaderSIDs[$gmsaName] = @($descriptor.SIDs)
 	                } catch {
 	                    $unparsedGMSAs += $gmsaName
 	                }
 	            }
 	            if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
-	            $hostClasses = @('computer', 'msDS-ManagedServiceAccount', 'msDS-GroupManagedServiceAccount')
-	            $readerKinds = @{}
-	            foreach ($readerSID in @($allReaderSIDs.Keys)) {
-	                if ((Test-IsPrivileged -Identity $readerSID).Category -in @('BroadGroup', 'Privileged', 'Operator')) {
-	                    $readerKinds[$readerSID] = 'DecidedByCategory'
-	                    continue
-	                }
-	                $readerKind = 'Principal'
-	                try {
-	                    $readerObject = @(Get-DomainObject -Identity $readerSID -Properties 'objectClass', 'distinguishedName' @PSBoundParameters)[0]
-	                    if (-not $readerObject) {
-	                        $readerKind = 'Unresolved'
-	                    } elseif (@(@($readerObject.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -gt 0) {
-	                        $readerKind = 'Host'
-	                    } elseif (@($readerObject.objectClass) -icontains 'group') {
-	                        $readerKind = 'Host'
-	                        $memberFilter = "(memberOf=$(Escape-LDAPFilterDN -DistinguishedName ([string]$readerObject.distinguishedName)))"
-	                        foreach ($groupMember in @(Get-DomainObject -LDAPFilter $memberFilter -Properties 'objectClass' @PSBoundParameters)) {
-	                            if (@(@($groupMember.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -eq 0) {
-	                                $readerKind = 'Principal'
-	                                break
-	                            }
-	                        }
-	                    }
-	                } catch {
-	                    $readerKind = 'Unresolved'
-	                }
-	                $readerKinds[$readerSID] = $readerKind
-	            }
+	            $readerKinds = Get-ManagedAccountReaderKind -SID @($allReaderSIDs.Keys) -ConnectionParams $connectionParams
 	            $readerVerdictsByGMSA = @{}
 	            foreach ($gmsa in $gmsaAccounts) {
 	                $gmsaName = $gmsa.sAMAccountName
 	                if (-not $gmsaReaderSIDs.ContainsKey($gmsaName)) { continue }
-	                $passwordReaders = @()
-	                $hasBroadGroupAccess = $false
-	                foreach ($readerSID in $gmsaReaderSIDs[$gmsaName]) {
-	                    $principalName = ConvertFrom-SID -SID $readerSID
-	                    if (-not $principalName) { $principalName = $readerSID }
-	                    $privCheck = Test-IsPrivileged -Identity $readerSID
-	                    $category = $privCheck.Category
-	                    $readerKind = 'Unresolved'
-	                    if ($readerKinds.ContainsKey($readerSID)) { $readerKind = $readerKinds[$readerSID] }
-	                    $isBroadGroup = $category -eq 'BroadGroup'
-	                    $isExpected = $false
-	                    if (-not $isBroadGroup) {
-	                        $isExpected = ($category -in @('Privileged', 'Operator')) -or ($readerKind -eq 'Host')
-	                    }
-	                    if ($isBroadGroup) { $hasBroadGroupAccess = $true }
-	                    $passwordReaders += [PSCustomObject]@{
-	                        Principal = $principalName
-	                        SID = $readerSID
-	                        Category = $category
-	                        Kind = $readerKind
-	                        IsExpected = $isExpected
-	                        IsBroadGroup = $isBroadGroup
-	                    }
-	                }
+	                $passwordReaders = @(Get-ManagedAccountReader -SID $gmsaReaderSIDs[$gmsaName] -ReaderKind $readerKinds)
+	                $hasBroadGroupAccess = @($passwordReaders | Where-Object { $_.IsBroadGroup }).Count -gt 0
 	                $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected })
 	                $verdictMap = @{}
-	                foreach ($reader in $passwordReaders) {
-	                    $verdict = 'Unexpected'
-	                    if ($reader.IsBroadGroup) { $verdict = 'Broad' } elseif ($reader.IsExpected) { $verdict = 'Expected' }
-	                    $verdictMap[[string]$reader.SID] = $verdict
-	                }
+	                foreach ($reader in $passwordReaders) { $verdictMap[[string]$reader.SID] = $reader.Verdict }
 	                $readerVerdictsByGMSA[$gmsaName] = $verdictMap
 	                if ($unexpectedReaders.Count -gt 0) {
 	                    $nonPrivilegedAccessFindings += [PSCustomObject]@{
@@ -71882,6 +71895,103 @@ function Get-ManagedServiceAccountSecurity {
 	                    Show-Line "The dMSA objects are not readable by this account - who may use each dMSA was not evaluated" -Class Note
 	                }
 	            }
+	            $dmsaAccounts = @(Get-DomainUser -GMSA -ShowGMSADetails @PSBoundParameters |
+	                Where-Object { $_.objectClass -icontains 'msDS-DelegatedManagedServiceAccount' })
+	            if ($dmsaAccounts.Count -gt 0) {
+	                Show-SubHeader "Checking who may use delegated Managed Service Accounts..." -ObjectType "dMSA"
+	                $dmsaDescriptors = Get-ManagedAccountDescriptorMap -ConnectionParams $connectionParams
+	                $dmsaUserSIDs = @{}
+	                $allDMSAUserSIDs = @{}
+	                $dmsaOwners = @{}
+	                $unusedDMSAs = @()
+	                $unparsedDMSAs = @()
+	                foreach ($dmsa in $dmsaAccounts) {
+	                    $dmsaName = [string]$dmsa.sAMAccountName
+	                    $sdBytes = $null
+	                    foreach ($lookupKey in @([string]$dmsa.distinguishedName, $dmsaName)) {
+	                        if (-not $lookupKey) { continue }
+	                        if ($dmsaDescriptors.ContainsKey($lookupKey.ToLowerInvariant())) {
+	                            $sdBytes = $dmsaDescriptors[$lookupKey.ToLowerInvariant()]
+	                            break
+	                        }
+	                    }
+	                    if (-not $sdBytes) {
+	                        $unusedDMSAs += $dmsaName
+	                        continue
+	                    }
+	                    try {
+	                        $descriptor = Get-ManagedAccountDescriptorReader -Descriptor $sdBytes -Name $dmsaName
+	                        $dmsaUserSIDs[$dmsaName] = @($descriptor.SIDs)
+	                        foreach ($userSID in @($descriptor.SIDs)) { $allDMSAUserSIDs[$userSID] = $true }
+	                        if ($descriptor.Owner) { $dmsaOwners[$dmsaName] = $descriptor.Owner }
+	                    } catch {
+	                        $unparsedDMSAs += $dmsaName
+	                    }
+	                }
+	                $dmsaUserKinds = Get-ManagedAccountReaderKind -SID @($allDMSAUserSIDs.Keys) -ConnectionParams $connectionParams
+	                $usableByOthers = @()
+	                foreach ($dmsa in $dmsaAccounts) {
+	                    $dmsaName = [string]$dmsa.sAMAccountName
+	                    if (-not $dmsaUserSIDs.ContainsKey($dmsaName)) { continue }
+	                    $dmsaUsers = @(Get-ManagedAccountReader -SID $dmsaUserSIDs[$dmsaName] -ReaderKind $dmsaUserKinds)
+	                    $verdictMap = @{}
+	                    foreach ($dmsaUser in $dmsaUsers) { $verdictMap[[string]$dmsaUser.SID] = $dmsaUser.Verdict }
+	                    $dmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $verdictMap -Force
+	                    $unexpectedUsers = @($dmsaUsers | Where-Object { -not $_.IsExpected })
+	                    if ($unexpectedUsers.Count -gt 0) {
+	                        $usableByOthers += [PSCustomObject]@{
+	                            Account    = $dmsa
+	                            Unexpected = $unexpectedUsers
+	                            HasBroad   = (@($unexpectedUsers | Where-Object { $_.IsBroadGroup }).Count -gt 0)
+	                        }
+	                    }
+	                }
+	                if (@($usableByOthers).Count -gt 0) {
+	                    $broadCount = @($usableByOthers | Where-Object { $_.HasBroad }).Count
+	                    $broadInfo = ''
+	                    if ($broadCount -gt 0) { $broadInfo = " ($broadCount with broad group access - CRITICAL)" }
+	                    Show-Line "Found $(@($usableByOthers).Count) dMSA(s) that principals beyond administrators and service hosts may use$broadInfo`:" -Class Finding
+	                    foreach ($entry in $usableByOthers) {
+	                        $contextText = 'Non-privileged access'
+	                        if ($entry.HasBroad) { $contextText = 'CRITICAL: Broad group access' }
+	                        $entry.Account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'dMSA' -Force
+	                        $entry.Account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $contextText -Force
+	                        Show-Object $entry.Account -Class Finding
+	                        $userList = @($entry.Unexpected | ForEach-Object {
+	                            $prefix = ''
+	                            if ($_.IsBroadGroup) { $prefix = '[CRITICAL] ' }
+	                            "$prefix$($_.Principal) ($($_.SID))"
+	                        }) -join ', '
+	                        Show-Line "Non-privileged principals allowed to use it: $userList" -Class Hint
+	                    }
+	                }
+	                $ownedDMSAs = @()
+	                foreach ($ownedName in @($dmsaOwners.Keys | Sort-Object)) {
+	                    $ownerSID = $dmsaOwners[$ownedName]
+	                    if (Test-IsDefaultOwner -SID $ownerSID) { continue }
+	                    if ((Test-IsPrivileged -Identity $ownerSID -IncludeOperators).IsPrivileged) { continue }
+	                    $ownerName = ConvertFrom-SID -SID $ownerSID
+	                    if (-not $ownerName) { $ownerName = $ownerSID }
+	                    $ownedDMSAs += "$ownedName ($ownerName)"
+	                }
+	                if (@($ownedDMSAs).Count -gt 0) {
+	                    Show-Line "msDS-GroupMSAMembership of a dMSA is owned by a principal that is not privileged: $(@($ownedDMSAs) -join ', ')" -Class Finding -FindingId 'DMSA_MEMBERSHIP_OWNER'
+	                }
+	                if (@($unusedDMSAs).Count -gt 0) {
+	                    Show-Line "No principal may use $(@($unusedDMSAs).Count) dMSA(s), or msDS-GroupMSAMembership was not readable: $(@($unusedDMSAs) -join ', ')" -Class Note
+	                }
+	                if (@($unparsedDMSAs).Count -gt 0) {
+	                    Show-Line "msDS-GroupMSAMembership could not be parsed on $(@($unparsedDMSAs).Count) dMSA(s) - who may use them is unknown: $(@($unparsedDMSAs) -join ', ')" -Class Note
+	                }
+	                if (@($usableByOthers).Count -eq 0 -and @($ownedDMSAs).Count -eq 0 -and $dmsaUserSIDs.Count -gt 0) {
+	                    $unanalyzedDMSAs = $dmsaAccounts.Count - $dmsaUserSIDs.Count
+	                    if ($unanalyzedDMSAs -gt 0) {
+	                        Show-Line "dMSA use is restricted to privileged accounts and service hosts ($unanalyzedDMSAs of $($dmsaAccounts.Count) not analyzed)" -Class Note
+	                    } else {
+	                        Show-Line "Every dMSA can be used only by privileged accounts and service hosts" -Class Secure
+	                    }
+	                }
+	            }
 	        }
 	    } catch {
 	        Show-Line "Error during check - managed service accounts could not be evaluated: $_" -Class Finding
@@ -71931,6 +72041,126 @@ function Get-DelegatedMSALinkVerdict {
 	[PSCustomObject]@{
 	    Verdict = $verdict
 	    DMSA    = $dmsa
+	}
+}
+function Get-ManagedAccountDescriptorMap {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$ConnectionParams = @{}
+	)
+	$descriptors = @{}
+	try {
+	    foreach ($rawAccount in @(Get-DomainUser -GMSA -Properties 'distinguishedName', 'sAMAccountName', 'msDS-GroupMSAMembership' -Raw @ConnectionParams)) {
+	        $rawSD = $rawAccount.'msDS-GroupMSAMembership'
+	        if (-not ($rawSD -is [byte[]]) -or $rawSD.Length -eq 0) { continue }
+	        foreach ($rawKey in @([string]$rawAccount.distinguishedName, [string]$rawAccount.sAMAccountName)) {
+	            if ($rawKey) { $descriptors[$rawKey.ToLowerInvariant()] = $rawSD }
+	        }
+	    }
+	} catch {
+	}
+	return $descriptors
+}
+function Get-ManagedAccountDescriptorReader {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [byte[]]$Descriptor,
+	    [Parameter(Mandatory = $false)]
+	    [string]$Name
+	)
+	$sd = New-Object System.DirectoryServices.ActiveDirectorySecurity
+	$sd.SetSecurityDescriptorBinaryForm($Descriptor)
+	$grantedSIDs = @()
+	foreach ($ace in $sd.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+	    if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+	    if (-not (Test-ADRightsMask -Rights $ace.ActiveDirectoryRights -Has ([System.DirectoryServices.ActiveDirectoryRights]::ReadProperty))) { continue }
+	    $aceSID = [string]$ace.IdentityReference.Value
+	    if ($aceSID -and ($grantedSIDs -notcontains $aceSID)) { $grantedSIDs += $aceSID }
+	}
+	$owner = $null
+	try {
+	    $sdOwner = $sd.GetOwner([System.Security.Principal.SecurityIdentifier])
+	    if ($sdOwner) { $owner = [string]$sdOwner.Value }
+	} catch {
+	}
+	[PSCustomObject]@{
+	    SIDs  = $grantedSIDs
+	    Owner = $owner
+	}
+}
+function Get-ManagedAccountReaderKind {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyCollection()]
+	    [string[]]$SID = @(),
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$ConnectionParams = @{}
+	)
+	$hostClasses = @('computer', 'msDS-ManagedServiceAccount', 'msDS-GroupManagedServiceAccount')
+	$readerKinds = @{}
+	foreach ($readerSID in @($SID | Where-Object { $_ })) {
+	    if ((Test-IsPrivileged -Identity $readerSID).Category -in @('BroadGroup', 'Privileged', 'Operator')) {
+	        $readerKinds[$readerSID] = 'DecidedByCategory'
+	        continue
+	    }
+	    $readerKind = 'Principal'
+	    try {
+	        $readerObject = @(Get-DomainObject -Identity $readerSID -Properties 'objectClass', 'distinguishedName' @ConnectionParams)[0]
+	        if (-not $readerObject) {
+	            $readerKind = 'Unresolved'
+	        } elseif (@(@($readerObject.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -gt 0) {
+	            $readerKind = 'Host'
+	        } elseif (@($readerObject.objectClass) -icontains 'group') {
+	            $readerKind = 'Host'
+	            $memberFilter = "(memberOf=$(Escape-LDAPFilterDN -DistinguishedName ([string]$readerObject.distinguishedName)))"
+	            foreach ($groupMember in @(Get-DomainObject -LDAPFilter $memberFilter -Properties 'objectClass' @ConnectionParams)) {
+	                if (@(@($groupMember.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -eq 0) {
+	                    $readerKind = 'Principal'
+	                    break
+	                }
+	            }
+	        }
+	    } catch {
+	        $readerKind = 'Unresolved'
+	    }
+	    $readerKinds[$readerSID] = $readerKind
+	}
+	return $readerKinds
+}
+function Get-ManagedAccountReader {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyCollection()]
+	    [string[]]$SID = @(),
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$ReaderKind = @{}
+	)
+	foreach ($readerSID in @($SID | Where-Object { $_ })) {
+	    $principalName = ConvertFrom-SID -SID $readerSID
+	    if (-not $principalName) { $principalName = $readerSID }
+	    $category = (Test-IsPrivileged -Identity $readerSID).Category
+	    $kind = 'Unresolved'
+	    if ($ReaderKind.ContainsKey($readerSID)) { $kind = $ReaderKind[$readerSID] }
+	    $isBroadGroup = $category -eq 'BroadGroup'
+	    $isExpected = $false
+	    if (-not $isBroadGroup) {
+	        $isExpected = ($category -in @('Privileged', 'Operator')) -or ($kind -eq 'Host')
+	    }
+	    $verdict = 'Unexpected'
+	    if ($isBroadGroup) { $verdict = 'Broad' } elseif ($isExpected) { $verdict = 'Expected' }
+	    [PSCustomObject]@{
+	        Principal    = $principalName
+	        SID          = $readerSID
+	        Category     = $category
+	        Kind         = $kind
+	        IsExpected   = $isExpected
+	        IsBroadGroup = $isBroadGroup
+	        Verdict      = $verdict
+	    }
 	}
 }
 function Get-SIDHistoryInjection {
@@ -95980,7 +96210,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261026-1226"
+$Script:adPEASVersion = "2.8.0+20261026-1242"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -646,6 +646,14 @@ function Convert-GMSAToRenderValues {
         $readerVerdicts = $sourceObject._gmsaReaderVerdicts
     }
 
+    # A delegated Managed Service Account carries the same descriptor, but nobody retrieves
+    # its password - a principal named there requests the dMSA's ticket. Its card says so.
+    $readerCard = 'GMSA_PASSWORD_READABLE'
+    if ($sourceObject -and $sourceObject.PSObject.Properties['objectClass'] -and
+        @($sourceObject.objectClass) -icontains 'msDS-DelegatedManagedServiceAccount') {
+        $readerCard = 'DMSA_USABLE_BY_NONPRIVILEGED'
+    }
+
     $renderValues = @()
     foreach ($principal in $gmsaPrincipals) {
         $severity = 'Hint'
@@ -666,7 +674,7 @@ function Convert-GMSAToRenderValues {
 
             if ($verdict -in @('Broad', 'Unexpected')) {
                 $severity = 'Finding'
-                $findingId = 'GMSA_PASSWORD_READABLE'
+                $findingId = $readerCard
             } else {
                 $severity = 'Standard'
                 $findingId = $null
@@ -679,7 +687,7 @@ function Convert-GMSAToRenderValues {
             $category = (Test-IsPrivileged -Identity $principalSID).Category
             if ($category -eq 'BroadGroup') {
                 $severity = 'Finding'
-                $findingId = 'GMSA_PASSWORD_READABLE'
+                $findingId = $readerCard
             } elseif ($category -in @('Privileged', 'Operator')) {
                 $severity = 'Standard'
                 $findingId = $null
