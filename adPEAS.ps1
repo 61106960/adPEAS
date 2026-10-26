@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-26 08:31:18
-    Version: 2.8.0+20261026-0831
+    Build: 2026-10-26 12:26:15
+    Version: 2.8.0+20261026-1226
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -43437,8 +43437,9 @@ function Get-DomainUser {
     Users with ENCRYPTED_TEXT_PWD_ALLOWED flag set (security risk).
 
 .PARAMETER GMSA
-    Return only Managed Service Accounts (MSA and gMSA).
-    Includes both standalone MSA (Server 2008 R2+) and Group MSA (Server 2012+).
+    Return only Managed Service Accounts (MSA, gMSA and dMSA).
+    Includes standalone MSA (Server 2008 R2+), Group MSA (Server 2012+) and delegated MSA
+    (Server 2025).
 
 .PARAMETER ShowGMSADetails
     Shows extended MSA/gMSA information (password access, rotation, SPNs).
@@ -43511,7 +43512,7 @@ function Get-DomainUser {
 
 .EXAMPLE
     Get-DomainUser -GMSA
-    Returns all Managed Service Accounts (standalone MSA and gMSA).
+    Returns all Managed Service Accounts (standalone MSA, gMSA and dMSA).
 
 .EXAMPLE
     Get-DomainUser -GMSA -ShowGMSADetails
@@ -43662,11 +43663,17 @@ function Get-DomainUser {
         try {
             # Build base filter depending on what we're searching for
             if ($GMSA) {
-                # Managed Service Accounts (both standalone MSA and gMSA)
+                # Managed Service Accounts (standalone MSA, gMSA and dMSA)
                 # - Standalone MSA: objectClass=msDS-ManagedServiceAccount (Server 2008 R2+)
                 # - Group MSA (gMSA): objectClass=msDS-GroupManagedServiceAccount (Server 2012+)
-                # Note: gMSA inherits from MSA, so we need OR filter to catch both
-                $Filter = "(|(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount))"
+                # - Delegated MSA (dMSA): objectClass=msDS-DelegatedManagedServiceAccount
+                #   (Server 2025). It derives from computer, not from the MSA class, so it
+                #   needs a term of its own - without one no check that asks for managed
+                #   service accounts saw a dMSA, although a completed migration copies the
+                #   SPNs and delegation settings of the account it replaces onto it.
+                #   Measured: on a schema without the class the term matches nothing and
+                #   costs nothing, no error.
+                $Filter = "(|(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)(objectClass=msDS-DelegatedManagedServiceAccount))"
             } else {
                 # Standard users: only user objects, no computers, no gMSAs
                 $Filter = "(&(objectCategory=person)(objectClass=user)(!(objectClass=computer)))"
@@ -153889,9 +153896,11 @@ function Collect-BHUsers {
     $domainName = $Script:LDAPContext.Domain.ToUpper()
     $users = Get-DomainUser @connectionParams
 
-    # Managed service accounts - gMSAs and standalone MSAs - go into the graph as users, the
-    # way SharpHound files them ("Override GMSA/MSA account to treat them as users for the
-    # graph"). They are computer objects whose objectCategory is their own class, so neither
+    # Managed service accounts - gMSAs, standalone MSAs and delegated ones (dMSA, Windows
+    # Server 2025) - go into the graph as users, the way SharpHound files them ("Override
+    # GMSA/MSA account to treat them as users for the graph"). A dMSA's
+    # msDS-GroupMSAMembership names who may use it, as a gMSA's does.
+    # They are computer objects whose objectCategory is their own class, so neither
     # the query above (persons that are not computers) nor Collect-BHComputers'
     # (objectCategory=computer) found them: the graph had no gMSA, and none of the
     # ReadGMSAPassword edges ConvertTo-BHAces builds from msDS-GroupMSAMembership - which
@@ -155429,7 +155438,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261026-0831"
+$Script:adPEASVersion = "2.8.0+20261026-1226"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

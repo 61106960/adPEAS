@@ -77,8 +77,9 @@ function Get-DomainUser {
     Users with ENCRYPTED_TEXT_PWD_ALLOWED flag set (security risk).
 
 .PARAMETER GMSA
-    Return only Managed Service Accounts (MSA and gMSA).
-    Includes both standalone MSA (Server 2008 R2+) and Group MSA (Server 2012+).
+    Return only Managed Service Accounts (MSA, gMSA and dMSA).
+    Includes standalone MSA (Server 2008 R2+), Group MSA (Server 2012+) and delegated MSA
+    (Server 2025).
 
 .PARAMETER ShowGMSADetails
     Shows extended MSA/gMSA information (password access, rotation, SPNs).
@@ -151,7 +152,7 @@ function Get-DomainUser {
 
 .EXAMPLE
     Get-DomainUser -GMSA
-    Returns all Managed Service Accounts (standalone MSA and gMSA).
+    Returns all Managed Service Accounts (standalone MSA, gMSA and dMSA).
 
 .EXAMPLE
     Get-DomainUser -GMSA -ShowGMSADetails
@@ -302,11 +303,17 @@ function Get-DomainUser {
         try {
             # Build base filter depending on what we're searching for
             if ($GMSA) {
-                # Managed Service Accounts (both standalone MSA and gMSA)
+                # Managed Service Accounts (standalone MSA, gMSA and dMSA)
                 # - Standalone MSA: objectClass=msDS-ManagedServiceAccount (Server 2008 R2+)
                 # - Group MSA (gMSA): objectClass=msDS-GroupManagedServiceAccount (Server 2012+)
-                # Note: gMSA inherits from MSA, so we need OR filter to catch both
-                $Filter = "(|(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount))"
+                # - Delegated MSA (dMSA): objectClass=msDS-DelegatedManagedServiceAccount
+                #   (Server 2025). It derives from computer, not from the MSA class, so it
+                #   needs a term of its own - without one no check that asks for managed
+                #   service accounts saw a dMSA, although a completed migration copies the
+                #   SPNs and delegation settings of the account it replaces onto it.
+                #   Measured: on a schema without the class the term matches nothing and
+                #   costs nothing, no error.
+                $Filter = "(|(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)(objectClass=msDS-DelegatedManagedServiceAccount))"
             } else {
                 # Standard users: only user objects, no computers, no gMSAs
                 $Filter = "(&(objectCategory=person)(objectClass=user)(!(objectClass=computer)))"

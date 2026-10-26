@@ -30769,7 +30769,7 @@ function Get-DomainUser {
     process {
         try {
             if ($GMSA) {
-                $Filter = "(|(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount))"
+                $Filter = "(|(objectClass=msDS-ManagedServiceAccount)(objectClass=msDS-GroupManagedServiceAccount)(objectClass=msDS-DelegatedManagedServiceAccount))"
             } else {
                 $Filter = "(&(objectCategory=person)(objectClass=user)(!(objectClass=computer)))"
             }
@@ -99082,7 +99082,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261026-0831"
+$Script:adPEASVersion = "2.8.0+20261026-1226"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

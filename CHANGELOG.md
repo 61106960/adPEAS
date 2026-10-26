@@ -41,6 +41,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`Get-DomainUser -GMSA` finds delegated Managed Service Accounts (Windows Server 2025).**
+  A dMSA derives from computer, not from the MSA class, and carries an objectCategory of
+  its own, so neither the managed service account query nor the computer query found one.
+  Every check that asks for managed service accounts - constrained, unconstrained and
+  resource-based delegation, AS-REP roasting, the RODC password replication check and the
+  BloodHound collector - was blind to dMSAs, although a completed migration copies the
+  SPNs and delegation settings of the account it replaces onto the dMSA. Measured: on a
+  schema without the class the added term matches nothing, costs nothing and raises no
+  error.
 - **The OU permission headline counts only the OUs where the reported accounts hold
   rights.** It counted every OU with any finding, including those where only an Exchange
   service group holds rights - a group the check hides without `-IncludePrivileged` and

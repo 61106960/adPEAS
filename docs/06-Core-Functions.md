@@ -111,7 +111,7 @@ Get-DomainUser
 | `-AccountNeverExpires` | Switch | Users where accountExpires is 0 or never set |
 | `-DESOnly` | Switch | Users with USE_DES_KEY_ONLY flag set (weak encryption) |
 | `-ReversibleEncryption` | Switch | Users with ENCRYPTED_TEXT_PWD_ALLOWED flag set (security risk) |
-| `-GMSA` | Switch | Return only Managed Service Accounts (MSA and gMSA) |
+| `-GMSA` | Switch | Return only Managed Service Accounts (MSA, gMSA and dMSA) |
 | `-ShowGMSADetails` | Switch | Shows extended MSA/gMSA information (password access, rotation, SPNs). Use with -GMSA |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
 | `-ResolveGroups` | Switch | Adds `memberOfNested`: the primary group and every group reached through nesting, each with the group it was reached through, and the universal groups of other domains of the forest from the Global Catalog. One more query per account, two on the Global Catalog |
