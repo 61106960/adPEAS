@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **The OU permission check knows delegated Managed Service Accounts (Windows Server 2025).**
+  A dMSA receives the group memberships and keys of the account it is paired with, and its
+  creator owns it - so whoever may create one turns write access to any account into that
+  account's privileges and keys. The check printed such a delegation as a bare GUID and
+  rated it Medium, like a user or a group (measured). It now names the class, rates it
+  High like a computer, and the finding opens a card of its own. The CreateChild card says
+  that "All Objects" includes the class wherever a domain controller runs Windows Server
+  2025.
+
 ### Removed
 
 - **`Set-DomainUser -PasswordCantChange` and `-ClearPasswordCantChange`.** Both wrote the

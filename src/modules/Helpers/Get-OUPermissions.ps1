@@ -1468,9 +1468,15 @@ function Get-OUPermissions {
 
                         # Severity: Creating computers is more critical (can be used for RBCD attacks)
                         # "All Objects" includes Computer, so also High severity
+                        # A delegated Managed Service Account is a computer subclass, and its
+                        # creator owns it: paired with an account the creator can write to, it
+                        # receives that account's group memberships and keys from a Windows
+                        # Server 2025 KDC. It was Medium, like a user or a group.
                         $Severity = if ($IsPrivileged) {
                             "Info"
-                        } elseif ($objectType -eq $SchemaClassGUIDs['computer'] -or $IsAllProperties) {
+                        } elseif ($objectType -eq $SchemaClassGUIDs['computer'] -or
+                                  $objectType -eq $SchemaClassGUIDs['msDS-DelegatedManagedServiceAccount'] -or
+                                  $IsAllProperties) {
                             "High"  # Computer creation enables RBCD attacks
                         } else {
                             "Medium"

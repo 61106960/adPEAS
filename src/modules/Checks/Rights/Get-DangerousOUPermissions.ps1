@@ -13,7 +13,7 @@
     - Key Credential Write - Add a key to msDS-KeyCredentialLink (Shadow Credentials)
     - Script Path Modification - Change logon scripts (code execution)
     - Delegation Rights - Configure constrained/unconstrained delegation
-    - Object Creation - Create new users/computers
+    - Object Creation - Create new users/computers, or delegated Managed Service Accounts
     - GPO Linking - Link malicious GPOs
     Focuses on non-privileged accounts having these rights (privileged accounts are expected to have high permissions and generate lower severity findings).
 

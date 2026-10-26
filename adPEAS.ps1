@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-26 07:31:59
-    Version: 2.8.0+20261026-0731
+    Build: 2026-10-26 08:04:50
+    Version: 2.8.0+20261026-0804
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -678,6 +678,10 @@ $Script:SchemaClassGUIDs = @{
     # Service accounts
     'msDS-GroupManagedServiceAccount' = [GUID]'7b8b558a-93a5-4af7-adca-c017e67f1057'
     'msDS-ManagedServiceAccount'     = [GUID]'ce206244-5827-4a86-ba1c-1c0c386c1b64'
+    # Delegated Managed Service Account, Windows Server 2025 schema (measured). A dMSA
+    # receives the group memberships and keys of the account it is paired with, and
+    # without the entry a delegation for this class printed as a bare GUID.
+    'msDS-DelegatedManagedServiceAccount' = [GUID]'0feb936f-47b3-49f2-9386-1dedc2c23765'
 
     # Certificate Services
     'pKICertificateTemplate'         = [GUID]'e5209ca2-3bba-11d2-90cc-00c04fd91ab1'
@@ -13100,10 +13104,11 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
         Title = "CreateChild Rights on OU"
         Risk = "Finding"
         BaseScore = 50
-        Description = "A principal can create new child objects in this OU. This is particularly dangerous for computer object creation, as created computer accounts can be used for Resource-Based Constrained Delegation attacks."
+        Description = "A principal can create new child objects in this OU. This is particularly dangerous for computer object creation, as created computer accounts can be used for Resource-Based Constrained Delegation attacks. Where a domain controller runs Windows Server 2025, the right to create All Objects includes delegated Managed Service Accounts, which receive the group memberships and keys of the account they are paired with."
         Impact = @(
             "Can create new objects (users, computers, groups) in the OU"
             "Computer object creation enables RBCD attacks"
+            "With a Windows Server 2025 domain controller, All Objects includes delegated Managed Service Accounts: paired with an account the creator can write to, a dMSA receives that account's group memberships and keys"
             "Created objects may inherit dangerous permissions"
             "Can be used to establish persistence"
         )
@@ -13152,7 +13157,57 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
             # 35, so without the exclusion it won every time and
             # COMPUTER_CONTAINER_CREATE_PERMISSIONS was unreachable - its own triggers sat
             # on an attribute no module writes.
-            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; ExcludePattern = 'in the computer container'; Severity = 'Finding' }
+            # The delegated Managed Service Account class has a card of its own as well,
+            # OU_PERM_CREATE_DMSA: this one speaks of computers and RBCD.
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild'; ExcludePattern = 'in the computer container|msDS-DelegatedManagedServiceAccount'; Severity = 'Finding' }
+        )
+    }
+
+    'OU_PERM_CREATE_DMSA' = @{
+        Title = "CreateChild for Delegated Managed Service Accounts"
+        Risk = "Finding"
+        BaseScore = 60
+        Description = "A principal can create delegated Managed Service Accounts (dMSA) in this OU or container, and the creator owns each one it creates. A dMSA names the account it replaces in msDS-ManagedAccountPrecededByLink; once that account names the dMSA back in msDS-SupersededManagedAccountLink, a Windows Server 2025 KDC issues the dMSA tickets carrying the account's group memberships and hands over the account's keys. Whoever may create a dMSA therefore turns write access to any account into that account's privileges and keys, without resetting its password. On its own, a created dMSA is an account under the creator's control, like a created computer account."
+        Impact = @(
+            "The creator owns the dMSA and decides who may use it (msDS-GroupMSAMembership)"
+            "Paired with an account the creator can write to, the dMSA acts with that account's group memberships - Domain Admins and domain controllers included"
+            "The dMSA's key package holds the keys of the account it is paired with - a credential dump without DCSync"
+            "On its own: an account under the creator's control, usable like a created computer account"
+            "Relevant only while at least one domain controller runs Windows Server 2025"
+        )
+        Attack = @(
+            "1. Create a dMSA in the OU; the creator becomes its owner"
+            "2. As the owner, allow yourself to use it (msDS-GroupMSAMembership)"
+            "3. Pair it with an account you can write to: msDS-ManagedAccountPrecededByLink on the dMSA, msDS-SupersededManagedAccountLink on the account, msDS-DelegatedMSAState 2"
+            "4. Request a ticket for the dMSA from a Windows Server 2025 KDC: it carries the account's group memberships, and its key package holds the account's keys"
+        )
+        Remediation = @(
+            "Remove the right to create this class - and every class - from principals that are not Tier 0 administrators"
+            "If a dMSA delegation is needed, grant it on a dedicated OU to a dedicated group"
+            "Audit the creation of dMSAs (event 5137) and changes to msDS-ManagedAccountPrecededByLink and msDS-SupersededManagedAccountLink (event 5136)"
+            "If the finding names an inherited source the entry is not on this OU - remove it where it is defined, or break inheritance here with SetAccessRuleProtection, which also cuts every other permission this OU inherits"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List who may create dMSAs on an OU - the dMSA class (0feb936f-47b3-49f2-9386-1dedc2c23765) or every class"
+                Command = "(Get-Acl 'AD:\OU=TARGET_OU,DC=domain,DC=com').Access | Where-Object { `$_.AccessControlType -eq 'Allow' -and `$_.ActiveDirectoryRights -match 'CreateChild|GenericAll' -and `$_.ObjectType -in @([guid]'0feb936f-47b3-49f2-9386-1dedc2c23765', [guid]::Empty) } | Format-Table IdentityReference, ActiveDirectoryRights, ObjectType, IsInherited -AutoSize"
+            }
+            @{
+                Description = "Show which domain controllers run Windows Server 2025 (build 26100) - only those issue dMSA tickets"
+                Command = "Get-ADDomainController -Filter * | Select-Object HostName, OperatingSystem, OperatingSystemVersion"
+            }
+            @{
+                Description = "List every account linked to a dMSA, with both sides of the link and the migration state"
+                Command = "Get-ADObject -LDAPFilter '(|(msDS-ManagedAccountPrecededByLinkBL=*)(msDS-SupersededManagedAccountLink=*))' -Properties 'msDS-ManagedAccountPrecededByLinkBL', 'msDS-SupersededManagedAccountLink', 'msDS-SupersededServiceAccountState', userAccountControl | Select-Object Name, 'msDS-ManagedAccountPrecededByLinkBL', 'msDS-SupersededManagedAccountLink', 'msDS-SupersededServiceAccountState', userAccountControl"
+            }
+        )
+        References = @(
+            @{ Title = "Delegated Managed Service Accounts overview - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/delegated-managed-service-accounts/delegated-managed-service-accounts-overview" }
+        )
+        Tools = @("SharpSuccessor", "Rubeus", "bloodyAD", "NetExec")
+        MITRE = "T1098"
+        Triggers = @(
+            @{ Attribute = 'dangerousRights'; Pattern = 'CreateChild \(msDS-DelegatedManagedServiceAccount\)'; Severity = 'Finding' }
         )
     }
 
@@ -90272,9 +90327,15 @@ function Get-OUPermissions {
 
                         # Severity: Creating computers is more critical (can be used for RBCD attacks)
                         # "All Objects" includes Computer, so also High severity
+                        # A delegated Managed Service Account is a computer subclass, and its
+                        # creator owns it: paired with an account the creator can write to, it
+                        # receives that account's group memberships and keys from a Windows
+                        # Server 2025 KDC. It was Medium, like a user or a group.
                         $Severity = if ($IsPrivileged) {
                             "Info"
-                        } elseif ($objectType -eq $SchemaClassGUIDs['computer'] -or $IsAllProperties) {
+                        } elseif ($objectType -eq $SchemaClassGUIDs['computer'] -or
+                                  $objectType -eq $SchemaClassGUIDs['msDS-DelegatedManagedServiceAccount'] -or
+                                  $IsAllProperties) {
                             "High"  # Computer creation enables RBCD attacks
                         } else {
                             "Medium"
@@ -119564,7 +119625,7 @@ function Get-CriticalObjectACLs {
     - Key Credential Write - Add a key to msDS-KeyCredentialLink (Shadow Credentials)
     - Script Path Modification - Change logon scripts (code execution)
     - Delegation Rights - Configure constrained/unconstrained delegation
-    - Object Creation - Create new users/computers
+    - Object Creation - Create new users/computers, or delegated Managed Service Accounts
     - GPO Linking - Link malicious GPOs
     Focuses on non-privileged accounts having these rights (privileged accounts are expected to have high permissions and generate lower severity findings).
 
@@ -154984,7 +155045,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261026-0731"
+$Script:adPEASVersion = "2.8.0+20261026-0804"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

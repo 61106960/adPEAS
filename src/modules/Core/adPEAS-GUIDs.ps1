@@ -315,6 +315,10 @@ $Script:SchemaClassGUIDs = @{
     # Service accounts
     'msDS-GroupManagedServiceAccount' = [GUID]'7b8b558a-93a5-4af7-adca-c017e67f1057'
     'msDS-ManagedServiceAccount'     = [GUID]'ce206244-5827-4a86-ba1c-1c0c386c1b64'
+    # Delegated Managed Service Account, Windows Server 2025 schema (measured). A dMSA
+    # receives the group memberships and keys of the account it is paired with, and
+    # without the entry a delegation for this class printed as a bare GUID.
+    'msDS-DelegatedManagedServiceAccount' = [GUID]'0feb936f-47b3-49f2-9386-1dedc2c23765'
 
     # Certificate Services
     'pKICertificateTemplate'         = [GUID]'e5209ca2-3bba-11d2-90cc-00c04fd91ab1'
