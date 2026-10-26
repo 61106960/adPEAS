@@ -72945,7 +72945,6 @@ function Get-DangerousOUPermissions {
 	        }
 	        $allFindings = @()
 	        $ouCount = 0
-	        $ouWithFindingDNs = @()
 	        $unreadOUs = @()
 	        $neutralisedByDeny = 0
 	        $totalOUs = @($OUs).Count
@@ -72979,7 +72978,6 @@ function Get-DangerousOUPermissions {
 	                -not (Test-IsDefaultObjectCreation -Finding $_)
 	            }
 	            if ($dangerousFindings) {
-	                $ouWithFindingDNs += $ouDN
 	                foreach ($finding in $dangerousFindings) {
 	                    $isExchangeService = $false
 	                    $exchangeCheck = Test-IsExchangeServiceGroup -Identity $finding.SID
@@ -73054,7 +73052,9 @@ function Get-DangerousOUPermissions {
 	        }
 	        if (@($nonExchangeFindings).Count -gt 0) {
 	            $countText = if ($IncludePrivileged) { "$(@($nonExchangeFindings).Count) account(s)" } else { "$(@($nonExchangeFindings).Count) non-privileged account(s)" }
-	            Show-Line "Found $countText with dangerous OU permissions in $(Format-OUContainerCount -DistinguishedName $ouWithFindingDNs)" -Class Finding
+	            $findingOUDNs = @($nonExchangeFindings | ForEach-Object { $_.Group } |
+	                ForEach-Object { [string]$_.DistinguishedName } | Select-Object -Unique)
+	            Show-Line "Found $countText with dangerous OU permissions in $(Format-OUContainerCount -DistinguishedName $findingOUDNs)" -Class Finding
 	            foreach ($principalGroup in $nonExchangeFindings) {
 	                $sid = $principalGroup.Name
 	                $principal = $principalGroup.Group[0].Principal
@@ -95648,7 +95648,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261025-2015"
+$Script:adPEASVersion = "2.8.0+20261026-0731"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

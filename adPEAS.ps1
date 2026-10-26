@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-25 20:15:57
-    Version: 2.8.0+20261025-2015
+    Build: 2026-10-26 07:31:59
+    Version: 2.8.0+20261026-0731
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -119703,7 +119703,6 @@ function Get-DangerousOUPermissions {
 
             $allFindings = @()
             $ouCount = 0
-            $ouWithFindingDNs = @()
             $unreadOUs = @()
             # Delegations an explicit Deny ACE cancels. Get-OUPermissions drops them
             # now rather than reporting access nobody has, and the total is named in
@@ -119781,8 +119780,6 @@ function Get-DangerousOUPermissions {
                 }
 
                 if ($dangerousFindings) {
-                    $ouWithFindingDNs += $ouDN
-
                     foreach ($finding in $dangerousFindings) {
                         # Check if this is an Exchange service group
                         # Exchange groups have by-design permissions that cannot be removed
@@ -119887,7 +119884,15 @@ function Get-DangerousOUPermissions {
             # Display non-Exchange findings as Finding (red)
             if (@($nonExchangeFindings).Count -gt 0) {
                 $countText = if ($IncludePrivileged) { "$(@($nonExchangeFindings).Count) account(s)" } else { "$(@($nonExchangeFindings).Count) non-privileged account(s)" }
-                Show-Line "Found $countText with dangerous OU permissions in $(Format-OUContainerCount -DistinguishedName $ouWithFindingDNs)" -Class Finding
+
+                # The places the accounts below hold their rights, and no others. This used
+                # to count every OU with any finding, so one where only an Exchange service
+                # group holds rights - hidden without -IncludePrivileged, and on a line of its
+                # own with it - was counted for accounts that hold nothing there: a single
+                # delegation on one OU read "in 5 OU(s) and 8 container(s)" (measured).
+                $findingOUDNs = @($nonExchangeFindings | ForEach-Object { $_.Group } |
+                    ForEach-Object { [string]$_.DistinguishedName } | Select-Object -Unique)
+                Show-Line "Found $countText with dangerous OU permissions in $(Format-OUContainerCount -DistinguishedName $findingOUDNs)" -Class Finding
 
                 foreach ($principalGroup in $nonExchangeFindings) {
                     $sid = $principalGroup.Name
@@ -154979,7 +154984,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261025-2015"
+$Script:adPEASVersion = "2.8.0+20261026-0731"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

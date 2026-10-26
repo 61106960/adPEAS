@@ -20,6 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The OU permission headline counts only the OUs where the reported accounts hold
+  rights.** It counted every OU with any finding, including those where only an Exchange
+  service group holds rights - a group the check hides without `-IncludePrivileged` and
+  lists on a line of its own with it. Exchange setup writes its ACEs high in the tree, so
+  in a domain with Exchange one delegation on one OU read "in 5 OU(s) and 8 container(s)"
+  (measured).
 - **The risk score no longer lists modifiers for a locked-out account or an expired
   password.** The report script multiplied a card by 0.3 for `LOCKOUT` and by 0.7 for
   `PASSWORD_EXPIRED` in `userAccountControl`. The DC never stores either bit there - both
