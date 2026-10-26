@@ -748,6 +748,23 @@ $Script:PrimaryAttributes = @{
         'accountsRead', 'protectedByAdminSDHolder', 'accountsNotRead'
     )
 
+    # Authentication policy silos and policies (Get-AuthenticationPolicySilos). The verdict
+    # rows first, then what the KDC reads, then who can change it. The remaining attributes -
+    # the enforcement flags behind the status, the back links behind the enrollment rows -
+    # stay on the card.
+    AuthNPolicySilo = @(
+        'name', 'siloStatus', 'msDS-AuthNPolicySiloMembers', 'siloMembersNotAssigned', 'siloAssignedNotMembers',
+        'siloExemptAccount', 'msDS-UserAuthNPolicy', 'msDS-ComputerAuthNPolicy', 'msDS-ServiceAuthNPolicy',
+        'siloWritableBy'
+    )
+    AuthNPolicy = @(
+        'name', 'policyStatus', 'msDS-AssignedAuthNPolicyBL', 'policyExemptAccount',
+        'msDS-UserTGTLifetime', 'msDS-UserAllowedToAuthenticateFrom', 'msDS-UserAllowedToAuthenticateTo',
+        'msDS-ServiceTGTLifetime', 'msDS-ServiceAllowedToAuthenticateFrom', 'msDS-ServiceAllowedToAuthenticateTo',
+        'msDS-ComputerTGTLifetime', 'msDS-ComputerAllowedToAuthenticateTo',
+        'broadConditions', 'policyWritableBy'
+    )
+
     # An account a delegated Managed Service Account names as its predecessor
     # (Get-ManagedServiceAccountSecurity). The back link names the dMSA; the verdict below it
     # says what the pairing is. The forward link and the migration state stay on the card,

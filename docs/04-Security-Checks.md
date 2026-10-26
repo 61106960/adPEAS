@@ -912,6 +912,28 @@ Get-ProtectedUsersStatus
 
 ---
 
+### Get-AuthenticationPolicySilos
+
+**Purpose**: Checks whether authentication policy silos and authentication policies restrict anybody, and who can change them.
+
+**What it checks**:
+- Enforcement of each silo, and of each policy assigned directly to accounts - in audit mode the KDC logs and refuses nothing; for a silo member the silo's flag decides
+- Silos without a policy, or without an enrolled account
+- Incomplete enrollment: an account listed as a member without the silo assigned, or assigned without being listed - the KDC applies a silo only with both (MS-KILE 3.3.5.4)
+- The built-in Administrator in a silo or under a policy - Windows always exempts it
+- Sign-on and service conditions (`AllowedToAuthenticateFrom/To`, shown as SDDL) that admit a broad group such as Domain Computers
+- Write access to silos and policies for principals outside Tier 0
+- TGT lifetimes, shown in minutes
+
+**Security Impact**: Silos keep Tier 0 accounts off ordinary machines. A silo that restricts nobody looks like that protection without providing it, and whoever can write to a silo or a policy decides which restrictions apply - including none. Silos and policies live in the configuration partition and are readable by every domain user.
+
+**Usage**:
+```powershell
+Get-AuthenticationPolicySilos
+```
+
+---
+
 ### Get-RODCPasswordReplication
 
 **Purpose**: Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of.

@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Get-AuthenticationPolicySilos`, a check of authentication policy silos and
+  authentication policies.** adPEAS did not read either, so an account a silo confines
+  looked the same as an unprotected one, and a silo that restricts nobody went unnoticed.
+  The check reports a silo or directly assigned policy in audit mode, a silo without a
+  policy or without an enrolled account, incomplete enrollment - the KDC applies a silo only
+  to an account that is assigned to it and listed among its members (MS-KILE 3.3.5.4),
+  and Windows accepts either half alone (measured) - the built-in Administrator, which
+  Windows always exempts, sign-on and service conditions that admit a broad group such as
+  Domain Computers, and write access to silos and policies outside Tier 0. Lifetimes are
+  shown in minutes and conditions as SDDL. Everything lives in the configuration partition
+  and is readable by a domain user (measured).
+
 - **The OU permission check knows delegated Managed Service Accounts (Windows Server 2025).**
   A dMSA receives the group memberships and keys of the account it is paired with, and its
   creator owns it - so whoever may create one turns write access to any account into that

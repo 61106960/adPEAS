@@ -1163,6 +1163,41 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'STANDALONE_MSA_LEGACY'
     }
 
+    'AuthNPolicySilo' = @{
+        TitleFormat = "Authentication Policy Silo: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Authentication Policy Silos"
+        Summary = "Reviews authentication policy silos and authentication policies - whether they restrict anybody, and who can change them."
+        WhyItMatters = "A silo restricts where its members may sign on and how long their tickets live, which is how Tier 0 accounts are kept off ordinary machines. It protects only where the KDC applies it: in audit mode, without a policy, for an account that is a member without being assigned or the other way round, or for the built-in Administrator it restricts nothing - and whoever can write to a silo or a policy can turn the protection off."
+        WhatWeCheck = @(
+            "Enforcement of each silo (msDS-AuthNPolicySiloEnforced) and of each directly assigned policy (msDS-AuthNPolicyEnforced)"
+            "Silos without a policy or without an enrolled account"
+            "Members that are not assigned to the silo, and assigned accounts that are not members (msDS-AuthNPolicySiloMembers against msDS-AssignedAuthNPolicySilo)"
+            "The built-in Administrator in a silo or under a policy - Windows always exempts it"
+            "Sign-on and service conditions that admit a broad group"
+            "Write access to silos and policies for principals outside Tier 0"
+        )
+        SecureMessage = "Every silo is enforced with its members enrolled, and only Tier 0 can change silos and policies."
+        PrimaryFindingId = 'AUTHN_SILO_NOT_EFFECTIVE'
+    }
+
+    'AuthNPolicy' = @{
+        TitleFormat = "Authentication Policy: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Authentication Policies"
+        Summary = "Reviews authentication policies - their enforcement, conditions, lifetimes and who can change them."
+        WhyItMatters = "An authentication policy holds the restrictions a silo or a direct assignment applies: the devices an account may sign on from, who may authenticate to a service running as it, and the lifetime of its tickets. A condition that admits every domain computer restricts nothing, and write access to the policy rewrites the restrictions of every account it covers."
+        WhatWeCheck = @(
+            "Enforcement of directly assigned policies (for silo members the silo's flag decides)"
+            "TGT lifetimes, in minutes"
+            "AllowedToAuthenticateFrom and AllowedToAuthenticateTo conditions, as SDDL, and those that admit a broad group"
+            "Write access for principals outside Tier 0"
+        )
+        PrimaryFindingId = 'AUTHN_POLICY_NOT_EFFECTIVE'
+    }
+
     'dMSA' = @{
         TitleFormat = "dMSA: {Name}{Context}"
         Module = "Accounts"

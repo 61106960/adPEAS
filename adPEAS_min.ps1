@@ -226,6 +226,22 @@ $Script:PropertyGUIDs = @{
     'msFVE-RecoveryPassword'         = [GUID]'43061ac1-c8ad-4ccc-b785-2bfac20fc60a'
     'msDS-KeyCredentialLink'         = [GUID]'5b47d60f-6090-40b2-9f37-2a4de88f3063'
     'altSecurityIdentities'          = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
+    'msDS-AuthNPolicySiloMembers'           = [GUID]'164d1e05-48a6-4886-a8e9-77a2006e3c77'
+    'msDS-AuthNPolicySiloEnforced'          = [GUID]'f2f51102-6be0-493d-8726-1546cdbc8771'
+    'msDS-UserAuthNPolicy'                  = [GUID]'cd26b9f3-d415-442a-8f78-7c61523ee95b'
+    'msDS-ComputerAuthNPolicy'              = [GUID]'afb863c9-bea3-440f-a9f3-6153cc668929'
+    'msDS-ServiceAuthNPolicy'               = [GUID]'2a6a6d95-28ce-49ee-bb24-6d1fc01e3111'
+    'msDS-AuthNPolicyEnforced'              = [GUID]'7a560cc2-ec45-44ba-b2d7-21236ad59fd5'
+    'msDS-UserAllowedToAuthenticateFrom'    = [GUID]'2c4c9600-b0e1-447d-8dda-74902257bdb5'
+    'msDS-UserAllowedToAuthenticateTo'      = [GUID]'de0caa7f-724e-4286-b179-192671efc664'
+    'msDS-ServiceAllowedToAuthenticateFrom' = [GUID]'97da709a-3716-4966-b1d1-838ba53c3d89'
+    'msDS-ServiceAllowedToAuthenticateTo'   = [GUID]'f2973131-9b4d-4820-b4de-0474ef3b849f'
+    'msDS-ComputerAllowedToAuthenticateTo'  = [GUID]'105babe9-077e-4793-b974-ef0410b62573'
+    'msDS-UserTGTLifetime'                  = [GUID]'8521c983-f599-420f-b9ab-b1222bdf95c1'
+    'msDS-ServiceTGTLifetime'               = [GUID]'5dfe3c20-ca29-407d-9bab-8421e55eb75c'
+    'msDS-ComputerTGTLifetime'              = [GUID]'2e937524-dfb9-4cac-a436-a5b7da64fd66'
+    'msDS-AssignedAuthNPolicySilo'          = [GUID]'b23fc141-0df5-4aea-b33d-6cf493077b3f'
+    'msDS-AssignedAuthNPolicy'              = [GUID]'b87a0ad8-54f7-49c1-84a0-e64d12853588'
 }
 $Script:PropertySetGUIDs = @{
     'User-Account-Restrictions'      = [GUID]'4c164200-20c0-11d0-a768-00aa006e0529'
@@ -3998,6 +4014,18 @@ $Script:PrimaryAttributes = @{
     )
     PrivilegedAccountsRead = @(
         'accountsRead', 'protectedByAdminSDHolder', 'accountsNotRead'
+    )
+    AuthNPolicySilo = @(
+        'name', 'siloStatus', 'msDS-AuthNPolicySiloMembers', 'siloMembersNotAssigned', 'siloAssignedNotMembers',
+        'siloExemptAccount', 'msDS-UserAuthNPolicy', 'msDS-ComputerAuthNPolicy', 'msDS-ServiceAuthNPolicy',
+        'siloWritableBy'
+    )
+    AuthNPolicy = @(
+        'name', 'policyStatus', 'msDS-AssignedAuthNPolicyBL', 'policyExemptAccount',
+        'msDS-UserTGTLifetime', 'msDS-UserAllowedToAuthenticateFrom', 'msDS-UserAllowedToAuthenticateTo',
+        'msDS-ServiceTGTLifetime', 'msDS-ServiceAllowedToAuthenticateFrom', 'msDS-ServiceAllowedToAuthenticateTo',
+        'msDS-ComputerTGTLifetime', 'msDS-ComputerAllowedToAuthenticateTo',
+        'broadConditions', 'policyWritableBy'
     )
     dMSALink = @(
         'sAMAccountName', 'distinguishedName', 'objectSid', 'memberOf',
@@ -16693,6 +16721,170 @@ $acl.Access | Where-Object {
             @{ Attribute = 'gmsaMembershipOwner'; Severity = 'Finding' }
         )
     }
+    'AUTHN_SILO_NOT_EFFECTIVE' = @{
+        Title = "Authentication Policy Silo Restricts Nobody"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "This authentication policy silo exists but the KDC restricts none of its accounts. Either the silo is in audit mode (msDS-AuthNPolicySiloEnforced is not set) - the KDC then logs what it would have refused and refuses nothing, and for a silo member the silo's flag decides, not the policy's - or it carries no authentication policy, or no account is both assigned to it and listed among its members. The accounts it is meant to protect can sign on anywhere, with ordinary ticket lifetimes."
+        Impact = @(
+            "The accounts the silo is meant to confine can sign on from any machine - a Tier 0 credential lands wherever an administrator logs on"
+            "Their tickets keep the domain's lifetime instead of the silo's"
+            "The silo looks like protection in every console that lists it"
+        )
+        Remediation = @(
+            "Review the audit events (Microsoft-Windows-Authentication/AuthenticationPolicyFailures-DomainController, events 305 and 306), then enforce the silo: Set-ADAuthenticationPolicySilo -Identity 'SILO' -Enforce `$true"
+            "Give the silo a user authentication policy, and enroll its accounts - see the enrollment card"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List every silo with its enforcement, policies and members"
+                Command = "Get-ADAuthenticationPolicySilo -Filter * -Properties * | Select-Object Name, Enforce, UserAuthenticationPolicy, ComputerAuthenticationPolicy, ServiceAuthenticationPolicy, Members"
+            }
+            @{
+                Description = "Enforce a silo"
+                Command = "Set-ADAuthenticationPolicySilo -Identity 'SILO_NAME' -Enforce `$true"
+            }
+        )
+        References = @(
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+            @{ Title = "Determining Authentication Policy Settings - MS-KILE 3.3.5.5"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/80f6b0ad-18a4-4dad-ae7f-a2b5da0c7e49" }
+        )
+        Triggers = @(
+            @{ Attribute = 'siloStatus'; Pattern = '^(Audit only|No authentication policy|No account enrolled)'; Severity = 'Hint' }
+        )
+    }
+    'AUTHN_SILO_INCOMPLETE_ENROLLMENT' = @{
+        Title = "Account Not Enrolled in Its Authentication Policy Silo"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "The KDC applies a silo only to an account that is both assigned to it (msDS-AssignedAuthNPolicySilo on the account) and listed among its members (msDS-AuthNPolicySiloMembers on the silo) - MS-KILE 3.3.5.4. The accounts named here have only one half: listed as members without the assignment, or assigned without being listed. Windows accepts either half on its own without a warning (measured), and the silo then does nothing for the account."
+        Impact = @(
+            "The account is not restricted by the silo, although it appears in it"
+            "A policy assigned directly to the account applies instead, if there is one"
+        )
+        Remediation = @(
+            "Complete the enrollment: Grant-ADAuthenticationPolicySiloAccess for the membership, Set-ADAccountAuthenticationPolicySilo for the assignment"
+            "Or remove the half that is left over, if the account does not belong in the silo"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Enroll an account in a silo - both halves"
+                Command = "Grant-ADAuthenticationPolicySiloAccess -Identity 'SILO_NAME' -Account 'ACCOUNT'; Set-ADAccountAuthenticationPolicySilo -Identity 'ACCOUNT' -AuthenticationPolicySilo 'SILO_NAME'"
+            }
+            @{
+                Description = "Compare membership and assignment of a silo"
+                Command = "Get-ADObject -Filter `"Name -eq 'SILO_NAME'`" -SearchBase `"CN=AuthN Silos,CN=AuthN Policy Configuration,CN=Services,`$((Get-ADRootDSE).configurationNamingContext)`" -Properties 'msDS-AuthNPolicySiloMembers', 'msDS-AssignedAuthNPolicySiloBL' | Select-Object 'msDS-AuthNPolicySiloMembers', 'msDS-AssignedAuthNPolicySiloBL'"
+            }
+        )
+        References = @(
+            @{ Title = "Determining Authentication Policy Silo Membership - MS-KILE 3.3.5.4"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/089c5fed-a29d-472d-8388-8ed04d8010bf" }
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+        )
+        Triggers = @(
+            @{ Attribute = 'siloMembersNotAssigned'; Severity = 'Hint' }
+            @{ Attribute = 'siloAssignedNotMembers'; Severity = 'Hint' }
+        )
+    }
+    'AUTHN_POLICY_EXEMPT_ADMINISTRATOR' = @{
+        Title = "Built-in Administrator Under an Authentication Policy"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "The built-in Administrator of the domain (RID 500) is in an authentication policy silo or has a policy assigned. Windows always exempts this account from authentication policies, assigned or not, so none of the restrictions apply to it - it can sign on from any machine with ordinary ticket lifetimes while the configuration suggests otherwise."
+        Impact = @(
+            "The most privileged account of the domain is not restricted by the silo or policy it appears in"
+        )
+        Remediation = @(
+            "Protect the built-in Administrator by other means: a long random password kept offline, the account disabled where possible, 'Deny log on' user rights on non-Tier 0 machines, and monitoring of its logons"
+            "Remove it from the silo or policy so the configuration does not suggest a protection it does not have"
+        )
+        References = @(
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+        )
+        Triggers = @(
+            @{ Attribute = 'siloExemptAccount'; Severity = 'Hint' }
+            @{ Attribute = 'policyExemptAccount'; Severity = 'Hint' }
+        )
+    }
+    'AUTHN_POLICY_NOT_EFFECTIVE' = @{
+        Title = "Authentication Policy in Audit Mode"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "This authentication policy is assigned directly to accounts but is not enforced (msDS-AuthNPolicyEnforced is not set). The KDC logs what it would have refused and refuses nothing, so its device restrictions and ticket lifetimes do not apply to the accounts it is assigned to. For accounts enrolled in a silo the silo's own flag decides instead."
+        Impact = @(
+            "The assigned accounts can sign on from any machine and keep ordinary ticket lifetimes"
+        )
+        Remediation = @(
+            "Review the audit events (events 305 and 306 in AuthenticationPolicyFailures-DomainController), then enforce the policy: Set-ADAuthenticationPolicy -Identity 'POLICY' -Enforce `$true"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the policies with their enforcement and the accounts assigned directly"
+                Command = "Get-ADAuthenticationPolicy -Filter * -Properties * | Select-Object Name, Enforce, UserTGTLifetimeMins, @{ Name = 'AssignedAccounts'; Expression = { `$_.'msDS-AssignedAuthNPolicyBL' } }"
+            }
+        )
+        References = @(
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+        )
+        Triggers = @(
+            @{ Attribute = 'policyStatus'; Pattern = '^Audit only'; Severity = 'Hint' }
+        )
+    }
+    'AUTHN_POLICY_BROAD_CONDITION' = @{
+        Title = "Authentication Policy Condition Admits a Broad Group"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A sign-on or service condition of this authentication policy admits a group that holds most of the domain - Domain Computers as the devices an account may sign on from is every domain-joined machine, Domain Users or Authenticated Users as the principals that may authenticate to a service is everybody. The condition is there, and it restricts nothing."
+        Impact = @(
+            "The accounts the policy covers can sign on from any domain-joined machine, or be authenticated to by anybody"
+        )
+        Remediation = @(
+            "Name the devices the accounts may sign on from - a silo claim (@USER.ad://ext/AuthenticationSilo == `"SILO`") or a group holding only the Tier 0 machines"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Restrict sign-on to the devices of a silo"
+                Command = "Set-ADAuthenticationPolicy -Identity 'POLICY_NAME' -UserAllowedToAuthenticateFrom 'O:SYG:SYD:(XA;OICI;CR;;;WD;(@USER.ad://ext/AuthenticationSilo == `"SILO_NAME`"))'"
+            }
+        )
+        References = @(
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+        )
+        Triggers = @(
+            @{ Attribute = 'broadConditions'; Severity = 'Hint' }
+        )
+    }
+    'AUTHN_POLICY_OBJECT_WRITABLE' = @{
+        Title = "Authentication Policy Silo or Policy Writable Outside Tier 0"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A principal outside Tier 0 can change this authentication policy silo or authentication policy. On a silo it can switch enforcement to audit, add or remove members, or swap the policies; on a policy it can widen the conditions or lift the enforcement. Either way it decides which restrictions the Tier 0 accounts in it are under - including none."
+        Impact = @(
+            "The protection of every account in the silo or under the policy can be switched off"
+            "An account can be added to a silo so that it passes conditions that require silo membership"
+        )
+        Attack = @(
+            "1. Use the write access to set msDS-AuthNPolicySiloEnforced (or msDS-AuthNPolicyEnforced) to FALSE, or to widen a condition"
+            "2. Wait for a Tier 0 account to sign on from a machine the attacker controls"
+            "3. Take its credentials there"
+        )
+        Remediation = @(
+            "Remove the write access - silos and policies should be writable by Enterprise Admins and Domain Admins of the forest root only"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may write to a silo"
+                Command = "(Get-Acl `"AD:CN=SILO_NAME,CN=AuthN Silos,CN=AuthN Policy Configuration,CN=Services,`$((Get-ADRootDSE).configurationNamingContext)`").Access | Where-Object { `$_.ActiveDirectoryRights -match 'Write|GenericAll' } | Format-Table IdentityReference, ActiveDirectoryRights, ObjectType, IsInherited -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+        )
+        MITRE = "T1484"
+        Triggers = @(
+            @{ Attribute = 'siloWritableBy'; Severity = 'Finding' }
+            @{ Attribute = 'policyWritableBy'; Severity = 'Finding' }
+        )
+    }
     'DMSA_LINK_IRREGULAR' = @{
         Title = "Account Paired with a dMSA Outside a Regular Migration"
         Risk = "Finding"
@@ -22598,6 +22790,39 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "No legacy standalone Managed Service Accounts (sMSAs) found. All service accounts use the more secure gMSA technology with automatic password rotation."
         PrimaryFindingId = 'STANDALONE_MSA_LEGACY'
+    }
+    'AuthNPolicySilo' = @{
+        TitleFormat = "Authentication Policy Silo: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Authentication Policy Silos"
+        Summary = "Reviews authentication policy silos and authentication policies - whether they restrict anybody, and who can change them."
+        WhyItMatters = "A silo restricts where its members may sign on and how long their tickets live, which is how Tier 0 accounts are kept off ordinary machines. It protects only where the KDC applies it: in audit mode, without a policy, for an account that is a member without being assigned or the other way round, or for the built-in Administrator it restricts nothing - and whoever can write to a silo or a policy can turn the protection off."
+        WhatWeCheck = @(
+            "Enforcement of each silo (msDS-AuthNPolicySiloEnforced) and of each directly assigned policy (msDS-AuthNPolicyEnforced)"
+            "Silos without a policy or without an enrolled account"
+            "Members that are not assigned to the silo, and assigned accounts that are not members (msDS-AuthNPolicySiloMembers against msDS-AssignedAuthNPolicySilo)"
+            "The built-in Administrator in a silo or under a policy - Windows always exempts it"
+            "Sign-on and service conditions that admit a broad group"
+            "Write access to silos and policies for principals outside Tier 0"
+        )
+        SecureMessage = "Every silo is enforced with its members enrolled, and only Tier 0 can change silos and policies."
+        PrimaryFindingId = 'AUTHN_SILO_NOT_EFFECTIVE'
+    }
+    'AuthNPolicy' = @{
+        TitleFormat = "Authentication Policy: {Name}"
+        Module = "Accounts"
+        Category = "Accounts"
+        SectionTitle = "Authentication Policies"
+        Summary = "Reviews authentication policies - their enforcement, conditions, lifetimes and who can change them."
+        WhyItMatters = "An authentication policy holds the restrictions a silo or a direct assignment applies: the devices an account may sign on from, who may authenticate to a service running as it, and the lifetime of its tickets. A condition that admits every domain computer restricts nothing, and write access to the policy rewrites the restrictions of every account it covers."
+        WhatWeCheck = @(
+            "Enforcement of directly assigned policies (for silo members the silo's flag decides)"
+            "TGT lifetimes, in minutes"
+            "AllowedToAuthenticateFrom and AllowedToAuthenticateTo conditions, as SDDL, and those that admit a broad group"
+            "Write access for principals outside Tier 0"
+        )
+        PrimaryFindingId = 'AUTHN_POLICY_NOT_EFFECTIVE'
     }
     'dMSA' = @{
         TitleFormat = "dMSA: {Name}{Context}"
@@ -73574,6 +73799,324 @@ function Get-ProtectedUsersStatus {
         Write-Log "[Get-ProtectedUsersStatus] Check completed"
     }
 }
+function Get-AuthenticationPolicySilos {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    begin {
+        Write-Log "[Get-AuthenticationPolicySilos] Starting check"
+    }
+    process {
+        try {
+            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+                return
+            }
+            $connectionParams = @{}
+            foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($connectionKey)) { $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey] }
+            }
+            Show-SubHeader "Analyzing authentication policy silos and authentication policies..." -ObjectType "AuthNPolicySilo"
+            $configNC = [string]$Script:LDAPContext.ConfigurationNamingContext
+            if (-not $configNC) {
+                Show-Line "The configuration naming context is not known - authentication policy silos were not checked" -Class Note
+                return
+            }
+            $authNBase = "CN=AuthN Policy Configuration,CN=Services,$configNC"
+            $silos = @()
+            $policies = @()
+            try {
+                $silos = @(Get-DomainObject -LDAPFilter '(objectClass=msDS-AuthNPolicySilo)' -SearchBase $authNBase @connectionParams)
+                $policies = @(Get-DomainObject -LDAPFilter '(objectClass=msDS-AuthNPolicy)' -SearchBase $authNBase @connectionParams)
+            } catch {
+                Write-Log "[Get-AuthenticationPolicySilos] The authentication policy configuration could not be read: $_" -Level Warning
+                Show-Line "The authentication policy configuration could not be read - not checked" -Class Note
+                return
+            }
+            if ($silos.Count -eq 0 -and $policies.Count -eq 0) {
+                Show-Line "No authentication policy silo and no authentication policy is configured"
+                return
+            }
+            $builtinAdminDN = $null
+            if ($Script:LDAPContext.DomainSID) {
+                try {
+                    $builtinAdmin = @(Get-DomainObject -Identity "$($Script:LDAPContext.DomainSID)-500" -Properties 'distinguishedName' @connectionParams)[0]
+                    if ($builtinAdmin) { $builtinAdminDN = [string]$builtinAdmin.distinguishedName }
+                } catch {
+                    Write-Log "[Get-AuthenticationPolicySilos] The built-in Administrator could not be looked up: $_"
+                }
+            }
+            $siloAttributes = @('msDS-AuthNPolicySiloMembers', 'msDS-AuthNPolicySiloEnforced', 'msDS-UserAuthNPolicy',
+                                'msDS-ComputerAuthNPolicy', 'msDS-ServiceAuthNPolicy')
+            $policyAttributes = @('msDS-AuthNPolicyEnforced', 'msDS-UserAllowedToAuthenticateFrom', 'msDS-UserAllowedToAuthenticateTo',
+                                  'msDS-ServiceAllowedToAuthenticateFrom', 'msDS-ServiceAllowedToAuthenticateTo',
+                                  'msDS-ComputerAllowedToAuthenticateTo', 'msDS-UserTGTLifetime', 'msDS-ServiceTGTLifetime',
+                                  'msDS-ComputerTGTLifetime')
+            $siloClasses = @()
+            foreach ($silo in $silos) {
+                $members  = @(@($silo.'msDS-AuthNPolicySiloMembers') | Where-Object { $_ } | ForEach-Object { [string]$_ })
+                $assigned = @(@($silo.'msDS-AssignedAuthNPolicySiloBL') | Where-Object { $_ } | ForEach-Object { [string]$_ })
+                $enrolled           = @($members | Where-Object { $assigned -contains $_ })
+                $membersNotAssigned = @($members | Where-Object { $assigned -notcontains $_ })
+                $assignedNotMembers = @($assigned | Where-Object { $members -notcontains $_ })
+                $siloPolicies = @(@($silo.'msDS-UserAuthNPolicy', $silo.'msDS-ComputerAuthNPolicy', $silo.'msDS-ServiceAuthNPolicy') | Where-Object { $_ })
+                $enforced = ([string]@($silo.'msDS-AuthNPolicySiloEnforced')[0]) -eq 'TRUE'
+                $status = 'Enforced'
+                if (-not $enforced) {
+                    $status = 'Audit only - the KDC restricts no member'
+                } elseif ($siloPolicies.Count -eq 0) {
+                    $status = 'No authentication policy - the KDC restricts no member'
+                } elseif ($enrolled.Count -eq 0) {
+                    $status = 'No account enrolled - the KDC restricts nobody'
+                }
+                $silo | Add-Member -NotePropertyName 'siloStatus' -NotePropertyValue $status -Force
+                if ($membersNotAssigned.Count -gt 0) {
+                    $silo | Add-Member -NotePropertyName 'siloMembersNotAssigned' -NotePropertyValue @($membersNotAssigned | ForEach-Object { Get-AuthNObjectName -DistinguishedName $_ }) -Force
+                }
+                if ($assignedNotMembers.Count -gt 0) {
+                    $silo | Add-Member -NotePropertyName 'siloAssignedNotMembers' -NotePropertyValue @($assignedNotMembers | ForEach-Object { Get-AuthNObjectName -DistinguishedName $_ }) -Force
+                }
+                if ($builtinAdminDN -and (@($members + $assigned) -contains $builtinAdminDN)) {
+                    $silo | Add-Member -NotePropertyName 'siloExemptAccount' -NotePropertyValue "$(Get-AuthNObjectName -DistinguishedName $builtinAdminDN) (built-in Administrator, always exempt)" -Force
+                }
+                foreach ($policyAttribute in @('msDS-UserAuthNPolicy', 'msDS-ComputerAuthNPolicy', 'msDS-ServiceAuthNPolicy')) {
+                    $policyDN = [string]@($silo.$policyAttribute)[0]
+                    if ($policyDN) { $silo.$policyAttribute = Get-AuthNObjectName -DistinguishedName $policyDN }
+                }
+                $writers = @(Get-AuthNObjectWriter -DistinguishedName ([string]$silo.distinguishedName) -Attribute $siloAttributes -ConnectionParams $connectionParams)
+                if ($writers.Count -gt 0) {
+                    $silo | Add-Member -NotePropertyName 'siloWritableBy' -NotePropertyValue $writers -Force
+                }
+                $siloClass = 'Standard'
+                if ($writers.Count -gt 0) {
+                    $siloClass = 'Finding'
+                } elseif ($status -ne 'Enforced' -or $membersNotAssigned.Count -gt 0 -or $assignedNotMembers.Count -gt 0 -or $silo.PSObject.Properties['siloExemptAccount']) {
+                    $siloClass = 'Hint'
+                }
+                $silo | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AuthNPolicySilo' -Force
+                $siloClasses += $siloClass
+            }
+            $policyClasses = @()
+            $conditionsSet = $false
+            foreach ($policy in $policies) {
+                $assignedAccounts = @(@($policy.'msDS-AssignedAuthNPolicyBL') | Where-Object { $_ } | ForEach-Object { [string]$_ })
+                $usingSilos = @(@($policy.'msDS-UserAuthNPolicyBL') + @($policy.'msDS-ComputerAuthNPolicyBL') + @($policy.'msDS-ServiceAuthNPolicyBL') | Where-Object { $_ })
+                $enforced = ([string]@($policy.'msDS-AuthNPolicyEnforced')[0]) -eq 'TRUE'
+                $status = 'Enforced'
+                if ($assignedAccounts.Count -gt 0 -and -not $enforced) {
+                    $status = 'Audit only - the KDC restricts no assigned account'
+                } elseif ($assignedAccounts.Count -eq 0 -and $usingSilos.Count -eq 0) {
+                    $status = 'Unused - no silo and no account refers to it'
+                } elseif ($assignedAccounts.Count -eq 0) {
+                    $status = 'Used through silos - their enforcement decides'
+                }
+                $policy | Add-Member -NotePropertyName 'policyStatus' -NotePropertyValue $status -Force
+                if ($builtinAdminDN -and ($assignedAccounts -contains $builtinAdminDN)) {
+                    $policy | Add-Member -NotePropertyName 'policyExemptAccount' -NotePropertyValue "$(Get-AuthNObjectName -DistinguishedName $builtinAdminDN) (built-in Administrator, always exempt)" -Force
+                }
+                foreach ($lifetimeAttribute in @('msDS-UserTGTLifetime', 'msDS-ServiceTGTLifetime', 'msDS-ComputerTGTLifetime')) {
+                    $minutes = ConvertFrom-AuthNTGTLifetime -Value @($policy.$lifetimeAttribute)[0]
+                    if ($minutes) { $policy.$lifetimeAttribute = $minutes }
+                }
+                $broadConditions = @()
+                foreach ($conditionAttribute in @('msDS-UserAllowedToAuthenticateFrom', 'msDS-UserAllowedToAuthenticateTo',
+                                                  'msDS-ServiceAllowedToAuthenticateFrom', 'msDS-ServiceAllowedToAuthenticateTo',
+                                                  'msDS-ComputerAllowedToAuthenticateTo')) {
+                    $sddl = ConvertTo-AuthNConditionText -Value $policy.$conditionAttribute
+                    if (-not $sddl) { continue }
+                    $conditionsSet = $true
+                    $policy.$conditionAttribute = $sddl
+                    $broadNames = @(Get-AuthNBroadCondition -Sddl $sddl)
+                    if ($broadNames.Count -gt 0) {
+                        $broadConditions += "$conditionAttribute admits $($broadNames -join ', ')"
+                    }
+                }
+                if ($broadConditions.Count -gt 0) {
+                    $policy | Add-Member -NotePropertyName 'broadConditions' -NotePropertyValue $broadConditions -Force
+                }
+                $writers = @(Get-AuthNObjectWriter -DistinguishedName ([string]$policy.distinguishedName) -Attribute $policyAttributes -ConnectionParams $connectionParams)
+                if ($writers.Count -gt 0) {
+                    $policy | Add-Member -NotePropertyName 'policyWritableBy' -NotePropertyValue $writers -Force
+                }
+                $policyClass = 'Standard'
+                if ($writers.Count -gt 0) {
+                    $policyClass = 'Finding'
+                } elseif ($status -like 'Audit only*' -or $broadConditions.Count -gt 0 -or $policy.PSObject.Properties['policyExemptAccount']) {
+                    $policyClass = 'Hint'
+                }
+                $policy | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'AuthNPolicy' -Force
+                $policyClasses += $policyClass
+            }
+            if ($silos.Count -gt 0) {
+                Show-Line "Found $($silos.Count) authentication policy silo(s):" -Class (Get-AuthNHeadlineClass -Class $siloClasses)
+                for ($i = 0; $i -lt $silos.Count; $i++) { Show-Object $silos[$i] -Class $siloClasses[$i] }
+            } else {
+                Show-Line "No authentication policy silo is configured"
+            }
+            if ($policies.Count -gt 0) {
+                Show-Line "Found $($policies.Count) authentication policy(ies):" -Class (Get-AuthNHeadlineClass -Class $policyClasses)
+                for ($i = 0; $i -lt $policies.Count; $i++) { Show-Object $policies[$i] -Class $policyClasses[$i] }
+            }
+            if ($conditionsSet) {
+                Show-Line "Sign-on and service conditions need DC support for claims and Kerberos armoring - not checked" -Class Note
+            }
+            if (@(@($siloClasses) + @($policyClasses) | Where-Object { $_ -ne 'Standard' }).Count -eq 0) {
+                Show-Line "Every silo is enforced with its members enrolled, and only Tier 0 can change silos and policies" -Class Secure
+            }
+        } catch {
+            Write-Log "[Get-AuthenticationPolicySilos] Error: $_" -Level Error
+            Show-Line "Error during check - authentication policy silos could not be evaluated: $_" -Class Finding
+        }
+    }
+    end {
+        Write-Log "[Get-AuthenticationPolicySilos] Check completed"
+    }
+}
+function Get-AuthNObjectName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$DistinguishedName
+    )
+    if ($DistinguishedName -match '^[A-Za-z]+=((?:\\.|[^,])+)') { return $Matches[1] }
+    return $DistinguishedName
+}
+function Get-AuthNHeadlineClass {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
+        [string[]]$Class = @()
+    )
+    if ($Class -contains 'Finding') { return 'Finding' }
+    if ($Class -contains 'Hint') { return 'Hint' }
+    return 'Note'
+}
+function ConvertFrom-AuthNTGTLifetime {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+    $ticks = [long]0
+    if ($null -eq $Value -or -not [long]::TryParse([string]$Value, [ref]$ticks) -or $ticks -le 0) { return $null }
+    return "$([long]($ticks / 600000000)) minutes"
+}
+function ConvertTo-AuthNConditionText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Value
+    )
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) {
+        if ($Value) { return $Value }
+        return $null
+    }
+    if (-not ($Value -is [byte[]]) -or $Value.Length -eq 0) { return $null }
+    try {
+        return (New-Object System.Security.AccessControl.RawSecurityDescriptor($Value, 0)).GetSddlForm([System.Security.AccessControl.AccessControlSections]::All)
+    } catch {
+        Write-Log "[Get-AuthenticationPolicySilos] A condition could not be read: $_"
+        return $null
+    }
+}
+function Get-AuthNBroadCondition {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Sddl
+    )
+    $aliases = @{ 'WD' = 'S-1-1-0'; 'AU' = 'S-1-5-11'; 'BU' = 'S-1-5-32-545'; 'IU' = 'S-1-5-4' }
+    $broadSIDs = @()
+    $aces = @([regex]::Matches($Sddl, '\((?<type>[A-Z]+);[^;]*;[^;]*;[^;]*;[^;]*;(?<sid>[^;)]+)(?:;(?<cond>\(.*?\)))?\)(?=\(|$)'))
+    if (@($aces | Where-Object { $_.Groups['type'].Value -in @('D', 'XD', 'OD') }).Count -gt 0) { return }
+    foreach ($ace in $aces) {
+        if ($ace.Groups['type'].Value -notin @('A', 'XA')) { continue }
+        $trustee = [string]$ace.Groups['sid'].Value
+        if ($aliases.ContainsKey($trustee)) { $trustee = $aliases[$trustee] }
+        if (-not (Test-IsBroadTrustee -SID $trustee)) { continue }
+        $condition = [string]$ace.Groups['cond'].Value
+        if (-not $condition) {
+            $broadSIDs += $trustee
+            continue
+        }
+        $expression = $condition.Trim()
+        while ($expression.StartsWith('(') -and $expression.EndsWith(')')) {
+            $expression = $expression.Substring(1, $expression.Length - 2).Trim()
+        }
+        if ($expression -notmatch '^(?:Device_)?Member_of(?:_any)?\s*\{(?<sids>[^}]*)\}$') { continue }
+        $named = @([regex]::Matches($Matches['sids'], 'SID\((?<s>[^)]+)\)') | ForEach-Object {
+            $s = [string]$_.Groups['s'].Value
+            if ($aliases.ContainsKey($s)) { $aliases[$s] } else { $s }
+        })
+        if ($named.Count -eq 0) { continue }
+        if (@($named | Where-Object { -not (Test-IsBroadTrustee -SID $_) }).Count -gt 0) { continue }
+        $broadSIDs += $named
+    }
+    foreach ($broadSID in @($broadSIDs | Select-Object -Unique)) {
+        $broadName = ConvertFrom-SID -SID $broadSID
+        if ($broadName) { $broadName } else { $broadSID }
+    }
+}
+function Get-AuthNObjectWriter {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistinguishedName,
+        [Parameter(Mandatory = $false)]
+        [string[]]$Attribute = @(),
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+    $aclResult = $null
+    try {
+        $aclResult = Get-ObjectACL -DistinguishedName $DistinguishedName -DangerousOnly -AllowOnly @ConnectionParams
+    } catch {
+        Write-Log "[Get-AuthenticationPolicySilos] The ACL of $DistinguishedName could not be read: $_"
+    }
+    if (-not $aclResult) { return }
+    $attributeByGuid = @{}
+    foreach ($name in $Attribute) {
+        if ($Script:PropertyGUIDs.ContainsKey($name)) { $attributeByGuid[$Script:PropertyGUIDs[$name].ToString().ToLowerInvariant()] = $name }
+    }
+    $rightsBySID = [ordered]@{}
+    $nameBySID = @{}
+    if ($aclResult.OwnerSID) {
+        $rightsBySID[[string]$aclResult.OwnerSID] = @('Owner')
+        $nameBySID[[string]$aclResult.OwnerSID] = $(if ($aclResult.Owner) { [string]$aclResult.Owner } else { [string]$aclResult.OwnerSID })
+    }
+    foreach ($ace in @($aclResult.ACEs)) {
+        if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+        $granted = @()
+        $objectType = ([string]$ace.ObjectType).ToLowerInvariant()
+        if (-not $objectType -or $objectType -eq '00000000-0000-0000-0000-000000000000') {
+            $granted += @($ace.RightsRaw | Where-Object { $_ -in @('GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'WriteProperty') })
+        } elseif ($attributeByGuid.ContainsKey($objectType) -and @($ace.RightsRaw) -contains 'WriteProperty') {
+            $granted += "WriteProperty ($($attributeByGuid[$objectType]))"
+        }
+        if ($granted.Count -eq 0) { continue }
+        $sid = [string]$ace.TrusteeSID
+        if (-not $rightsBySID.Contains($sid)) {
+            $rightsBySID[$sid] = @()
+            $nameBySID[$sid] = $(if ($ace.Trustee) { [string]$ace.Trustee } else { $sid })
+        }
+        $rightsBySID[$sid] = @($rightsBySID[$sid]) + $granted
+    }
+    foreach ($sid in @($rightsBySID.Keys)) {
+        if ((Test-IsPrivileged -Identity $sid).Category -eq 'Privileged') { continue }
+        "$($nameBySID[$sid]) ($(@($rightsBySID[$sid] | Select-Object -Unique) -join ', '))"
+    }
+}
 function Get-RODCPasswordReplication {
     [CmdletBinding()]
     param(
@@ -99330,7 +99873,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261026-1259"
+$Script:adPEASVersion = "2.8.0+20261026-1428"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -99809,6 +100352,7 @@ try {
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-SIDHistoryInjection' -Title 'SID History Injection' -Check { Get-SIDHistoryInjection }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-ManagedServiceAccountSecurity' -Title 'Managed Service Account Security' -Check { Get-ManagedServiceAccountSecurity }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-ProtectedUsersStatus' -Title 'Protected Users Status' -Check { Get-ProtectedUsersStatus }
+            Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AuthenticationPolicySilos' -Title 'Authentication Policy Silos' -Check { Get-AuthenticationPolicySilos }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-RODCPasswordReplication' -Title 'RODC Password Replication Policy' -Check { Get-RODCPasswordReplication }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-InactiveAdminAccounts' -Title 'Inactive Admin Accounts' -Check { Get-InactiveAdminAccounts }
             Invoke-CheckWithContext -Category 'Accounts' -CheckName 'Get-AdminPasswordNeverExpires' -Title 'Admin Password Never Expires' -Check { Get-AdminPasswordNeverExpires }

@@ -13265,6 +13265,176 @@ $acl.Access | Where-Object {
         )
     }
 
+    'AUTHN_SILO_NOT_EFFECTIVE' = @{
+        Title = "Authentication Policy Silo Restricts Nobody"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "This authentication policy silo exists but the KDC restricts none of its accounts. Either the silo is in audit mode (msDS-AuthNPolicySiloEnforced is not set) - the KDC then logs what it would have refused and refuses nothing, and for a silo member the silo's flag decides, not the policy's - or it carries no authentication policy, or no account is both assigned to it and listed among its members. The accounts it is meant to protect can sign on anywhere, with ordinary ticket lifetimes."
+        Impact = @(
+            "The accounts the silo is meant to confine can sign on from any machine - a Tier 0 credential lands wherever an administrator logs on"
+            "Their tickets keep the domain's lifetime instead of the silo's"
+            "The silo looks like protection in every console that lists it"
+        )
+        Remediation = @(
+            "Review the audit events (Microsoft-Windows-Authentication/AuthenticationPolicyFailures-DomainController, events 305 and 306), then enforce the silo: Set-ADAuthenticationPolicySilo -Identity 'SILO' -Enforce `$true"
+            "Give the silo a user authentication policy, and enroll its accounts - see the enrollment card"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List every silo with its enforcement, policies and members"
+                Command = "Get-ADAuthenticationPolicySilo -Filter * -Properties * | Select-Object Name, Enforce, UserAuthenticationPolicy, ComputerAuthenticationPolicy, ServiceAuthenticationPolicy, Members"
+            }
+            @{
+                Description = "Enforce a silo"
+                Command = "Set-ADAuthenticationPolicySilo -Identity 'SILO_NAME' -Enforce `$true"
+            }
+        )
+        References = @(
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+            @{ Title = "Determining Authentication Policy Settings - MS-KILE 3.3.5.5"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/80f6b0ad-18a4-4dad-ae7f-a2b5da0c7e49" }
+        )
+        Triggers = @(
+            @{ Attribute = 'siloStatus'; Pattern = '^(Audit only|No authentication policy|No account enrolled)'; Severity = 'Hint' }
+        )
+    }
+
+    'AUTHN_SILO_INCOMPLETE_ENROLLMENT' = @{
+        Title = "Account Not Enrolled in Its Authentication Policy Silo"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "The KDC applies a silo only to an account that is both assigned to it (msDS-AssignedAuthNPolicySilo on the account) and listed among its members (msDS-AuthNPolicySiloMembers on the silo) - MS-KILE 3.3.5.4. The accounts named here have only one half: listed as members without the assignment, or assigned without being listed. Windows accepts either half on its own without a warning (measured), and the silo then does nothing for the account."
+        Impact = @(
+            "The account is not restricted by the silo, although it appears in it"
+            "A policy assigned directly to the account applies instead, if there is one"
+        )
+        Remediation = @(
+            "Complete the enrollment: Grant-ADAuthenticationPolicySiloAccess for the membership, Set-ADAccountAuthenticationPolicySilo for the assignment"
+            "Or remove the half that is left over, if the account does not belong in the silo"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Enroll an account in a silo - both halves"
+                Command = "Grant-ADAuthenticationPolicySiloAccess -Identity 'SILO_NAME' -Account 'ACCOUNT'; Set-ADAccountAuthenticationPolicySilo -Identity 'ACCOUNT' -AuthenticationPolicySilo 'SILO_NAME'"
+            }
+            @{
+                Description = "Compare membership and assignment of a silo"
+                Command = "Get-ADObject -Filter `"Name -eq 'SILO_NAME'`" -SearchBase `"CN=AuthN Silos,CN=AuthN Policy Configuration,CN=Services,`$((Get-ADRootDSE).configurationNamingContext)`" -Properties 'msDS-AuthNPolicySiloMembers', 'msDS-AssignedAuthNPolicySiloBL' | Select-Object 'msDS-AuthNPolicySiloMembers', 'msDS-AssignedAuthNPolicySiloBL'"
+            }
+        )
+        References = @(
+            @{ Title = "Determining Authentication Policy Silo Membership - MS-KILE 3.3.5.4"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/089c5fed-a29d-472d-8388-8ed04d8010bf" }
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+        )
+        Triggers = @(
+            @{ Attribute = 'siloMembersNotAssigned'; Severity = 'Hint' }
+            @{ Attribute = 'siloAssignedNotMembers'; Severity = 'Hint' }
+        )
+    }
+
+    'AUTHN_POLICY_EXEMPT_ADMINISTRATOR' = @{
+        Title = "Built-in Administrator Under an Authentication Policy"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "The built-in Administrator of the domain (RID 500) is in an authentication policy silo or has a policy assigned. Windows always exempts this account from authentication policies, assigned or not, so none of the restrictions apply to it - it can sign on from any machine with ordinary ticket lifetimes while the configuration suggests otherwise."
+        Impact = @(
+            "The most privileged account of the domain is not restricted by the silo or policy it appears in"
+        )
+        Remediation = @(
+            "Protect the built-in Administrator by other means: a long random password kept offline, the account disabled where possible, 'Deny log on' user rights on non-Tier 0 machines, and monitoring of its logons"
+            "Remove it from the silo or policy so the configuration does not suggest a protection it does not have"
+        )
+        References = @(
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+        )
+        Triggers = @(
+            @{ Attribute = 'siloExemptAccount'; Severity = 'Hint' }
+            @{ Attribute = 'policyExemptAccount'; Severity = 'Hint' }
+        )
+    }
+
+    'AUTHN_POLICY_NOT_EFFECTIVE' = @{
+        Title = "Authentication Policy in Audit Mode"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "This authentication policy is assigned directly to accounts but is not enforced (msDS-AuthNPolicyEnforced is not set). The KDC logs what it would have refused and refuses nothing, so its device restrictions and ticket lifetimes do not apply to the accounts it is assigned to. For accounts enrolled in a silo the silo's own flag decides instead."
+        Impact = @(
+            "The assigned accounts can sign on from any machine and keep ordinary ticket lifetimes"
+        )
+        Remediation = @(
+            "Review the audit events (events 305 and 306 in AuthenticationPolicyFailures-DomainController), then enforce the policy: Set-ADAuthenticationPolicy -Identity 'POLICY' -Enforce `$true"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the policies with their enforcement and the accounts assigned directly"
+                Command = "Get-ADAuthenticationPolicy -Filter * -Properties * | Select-Object Name, Enforce, UserTGTLifetimeMins, @{ Name = 'AssignedAccounts'; Expression = { `$_.'msDS-AssignedAuthNPolicyBL' } }"
+            }
+        )
+        References = @(
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+        )
+        Triggers = @(
+            @{ Attribute = 'policyStatus'; Pattern = '^Audit only'; Severity = 'Hint' }
+        )
+    }
+
+    'AUTHN_POLICY_BROAD_CONDITION' = @{
+        Title = "Authentication Policy Condition Admits a Broad Group"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A sign-on or service condition of this authentication policy admits a group that holds most of the domain - Domain Computers as the devices an account may sign on from is every domain-joined machine, Domain Users or Authenticated Users as the principals that may authenticate to a service is everybody. The condition is there, and it restricts nothing."
+        Impact = @(
+            "The accounts the policy covers can sign on from any domain-joined machine, or be authenticated to by anybody"
+        )
+        Remediation = @(
+            "Name the devices the accounts may sign on from - a silo claim (@USER.ad://ext/AuthenticationSilo == `"SILO`") or a group holding only the Tier 0 machines"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Restrict sign-on to the devices of a silo"
+                Command = "Set-ADAuthenticationPolicy -Identity 'POLICY_NAME' -UserAllowedToAuthenticateFrom 'O:SYG:SYD:(XA;OICI;CR;;;WD;(@USER.ad://ext/AuthenticationSilo == `"SILO_NAME`"))'"
+            }
+        )
+        References = @(
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+        )
+        Triggers = @(
+            @{ Attribute = 'broadConditions'; Severity = 'Hint' }
+        )
+    }
+
+    'AUTHN_POLICY_OBJECT_WRITABLE' = @{
+        Title = "Authentication Policy Silo or Policy Writable Outside Tier 0"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "A principal outside Tier 0 can change this authentication policy silo or authentication policy. On a silo it can switch enforcement to audit, add or remove members, or swap the policies; on a policy it can widen the conditions or lift the enforcement. Either way it decides which restrictions the Tier 0 accounts in it are under - including none."
+        Impact = @(
+            "The protection of every account in the silo or under the policy can be switched off"
+            "An account can be added to a silo so that it passes conditions that require silo membership"
+        )
+        Attack = @(
+            "1. Use the write access to set msDS-AuthNPolicySiloEnforced (or msDS-AuthNPolicyEnforced) to FALSE, or to widen a condition"
+            "2. Wait for a Tier 0 account to sign on from a machine the attacker controls"
+            "3. Take its credentials there"
+        )
+        Remediation = @(
+            "Remove the write access - silos and policies should be writable by Enterprise Admins and Domain Admins of the forest root only"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show who may write to a silo"
+                Command = "(Get-Acl `"AD:CN=SILO_NAME,CN=AuthN Silos,CN=AuthN Policy Configuration,CN=Services,`$((Get-ADRootDSE).configurationNamingContext)`").Access | Where-Object { `$_.ActiveDirectoryRights -match 'Write|GenericAll' } | Format-Table IdentityReference, ActiveDirectoryRights, ObjectType, IsInherited -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+        )
+        MITRE = "T1484"
+        Triggers = @(
+            @{ Attribute = 'siloWritableBy'; Severity = 'Finding' }
+            @{ Attribute = 'policyWritableBy'; Severity = 'Finding' }
+        )
+    }
+
     'DMSA_LINK_IRREGULAR' = @{
         Title = "Account Paired with a dMSA Outside a Regular Migration"
         Risk = "Finding"

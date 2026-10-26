@@ -236,6 +236,26 @@ $Script:PropertyGUIDs = @{
     # attacker holds onto the account, which is why the ACE needs to be named rather than
     # shown as a bare GUID.
     'altSecurityIdentities'          = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
+
+    # Authentication policy silos and authentication policies (Windows Server 2012 R2
+    # schema, measured). Write access to any of these changes who a silo restricts and how,
+    # so Get-AuthenticationPolicySilos names the attribute an ACE grants.
+    'msDS-AuthNPolicySiloMembers'           = [GUID]'164d1e05-48a6-4886-a8e9-77a2006e3c77'
+    'msDS-AuthNPolicySiloEnforced'          = [GUID]'f2f51102-6be0-493d-8726-1546cdbc8771'
+    'msDS-UserAuthNPolicy'                  = [GUID]'cd26b9f3-d415-442a-8f78-7c61523ee95b'
+    'msDS-ComputerAuthNPolicy'              = [GUID]'afb863c9-bea3-440f-a9f3-6153cc668929'
+    'msDS-ServiceAuthNPolicy'               = [GUID]'2a6a6d95-28ce-49ee-bb24-6d1fc01e3111'
+    'msDS-AuthNPolicyEnforced'              = [GUID]'7a560cc2-ec45-44ba-b2d7-21236ad59fd5'
+    'msDS-UserAllowedToAuthenticateFrom'    = [GUID]'2c4c9600-b0e1-447d-8dda-74902257bdb5'
+    'msDS-UserAllowedToAuthenticateTo'      = [GUID]'de0caa7f-724e-4286-b179-192671efc664'
+    'msDS-ServiceAllowedToAuthenticateFrom' = [GUID]'97da709a-3716-4966-b1d1-838ba53c3d89'
+    'msDS-ServiceAllowedToAuthenticateTo'   = [GUID]'f2973131-9b4d-4820-b4de-0474ef3b849f'
+    'msDS-ComputerAllowedToAuthenticateTo'  = [GUID]'105babe9-077e-4793-b974-ef0410b62573'
+    'msDS-UserTGTLifetime'                  = [GUID]'8521c983-f599-420f-b9ab-b1222bdf95c1'
+    'msDS-ServiceTGTLifetime'               = [GUID]'5dfe3c20-ca29-407d-9bab-8421e55eb75c'
+    'msDS-ComputerTGTLifetime'              = [GUID]'2e937524-dfb9-4cac-a436-a5b7da64fd66'
+    'msDS-AssignedAuthNPolicySilo'          = [GUID]'b23fc141-0df5-4aea-b33d-6cf493077b3f'
+    'msDS-AssignedAuthNPolicy'              = [GUID]'b87a0ad8-54f7-49c1-84a0-e64d12853588'
 }
 
 # ============================================================================
