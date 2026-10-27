@@ -104,6 +104,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`Get-PasswordInDescription` shows the attribute it names.** The check reads comment,
+  adminDescription, the link and path attributes, extensionAttribute1-15 and
+  msDS-cloudExtensionAttribute1-20, but the card's triggers covered description and info
+  alone - and a row reaches the console only when a trigger colours it. So the line
+  "Probable credential found in extensionAttribute5" stood over an object that did not show
+  extensionAttribute5, and the reader had to look the value up elsewhere (measured). Every
+  attribute the check reads now carries the card's triggers, the link and path attributes
+  the assignment tier only, as in the check.
 - **The Reanimate-Tombstones card describes the right as Microsoft does.** It said the
   right brings a deleted object back "bypassing the Active Directory Recycle Bin". It is
   the right every restore of a deleted object is checked against, a restore from the

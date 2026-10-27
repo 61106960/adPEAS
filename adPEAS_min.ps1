@@ -11110,10 +11110,12 @@ Get-ADObject -SearchBase $schema `
         Tools = @("PowerView", "ADRecon", "LDAP queries")
         MITRE = "T1552.001"
         Triggers = @(
-            @{ Attribute = 'description'; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
-            @{ Attribute = 'info';        Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
-            @{ Attribute = 'description'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
-            @{ Attribute = 'info';        Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+            foreach ($attribute in @($Script:CredentialTextBaseAttributes) + @($Script:CredentialTextExchangeAttributes) + @($Script:CredentialTextCloudAttributes)) {
+                @{ Attribute = $attribute; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+                if ($Script:CredentialTextUrlAttributes -notcontains $attribute) {
+                    @{ Attribute = $attribute; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+                }
+            }
         )
     }
     'DELETED_OBJECT_CREDENTIAL' = @{
@@ -100551,7 +100553,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261027-2019"
+$Script:adPEASVersion = "2.8.0+20261027-2021"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-27 20:19:05
-    Version: 2.8.0+20261027-2019
+    Build: 2026-10-27 20:21:35
+    Version: 2.8.0+20261027-2021
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -9038,8 +9038,11 @@ $Script:CredentialNoMentionPattern = $Script:CredentialAssignmentPattern +
 
 # The free-text attributes a human types into, which is where a password ends up - read by
 # Get-PasswordInDescription and Get-DeletedObjectAccess (Get-CredentialTextMatch) and
-# triggered by DELETED_OBJECT_CREDENTIAL. Defined here, in the file that builds the
-# triggers, because it loads before the helpers.
+# triggered by CREDENTIAL_IN_DESCRIPTION and DELETED_OBJECT_CREDENTIAL. Defined here, in the
+# file that builds the triggers, because it loads before the helpers. A row reaches the
+# console only when it is a primary attribute or a trigger colours it, and the triggers
+# covered description and info alone: the check said "Probable credential found in
+# extensionAttribute5" over an object that did not show extensionAttribute5 (measured).
 #
 # description, info, comment, adminDescription, wWWHomePage and url are in every schema,
 # the other two sets are not: extensionAttribute1-15 arrive with the Exchange schema
@@ -15992,11 +15995,16 @@ Get-ADObject -SearchBase $schema `
         # both and coloured every mention red - the hint objects of that check carried a
         # red row, and a description saying "passwords" anywhere in the report did too.
         # The hint triggers exclude the assignment, so at most one of the two matches.
+        # Every attribute the check reads, not description and info alone - see the lists
+        # at the top of this file. The link and path attributes take the assignment only,
+        # as the check does.
         Triggers = @(
-            @{ Attribute = 'description'; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
-            @{ Attribute = 'info';        Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
-            @{ Attribute = 'description'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
-            @{ Attribute = 'info';        Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+            foreach ($attribute in @($Script:CredentialTextBaseAttributes) + @($Script:CredentialTextExchangeAttributes) + @($Script:CredentialTextCloudAttributes)) {
+                @{ Attribute = $attribute; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+                if ($Script:CredentialTextUrlAttributes -notcontains $attribute) {
+                    @{ Attribute = $attribute; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+                }
+            }
         )
     }
 
@@ -144437,7 +144445,7 @@ function Get-PasswordInDescription {
             #
             # And more than two attributes: the free-text fields a human types into, which is
             # where a password ends up. The lists live beside the credential triggers
-            # (adPEAS-FindingDefinitions.ps1).
+            # (adPEAS-FindingDefinitions.ps1), which colour each of them.
             #
             # Three queries rather than one: description, info, comment, adminDescription,
             # wWWHomePage and url are in every schema, the other two sets are not.
@@ -157654,7 +157662,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261027-2019"
+$Script:adPEASVersion = "2.8.0+20261027-2021"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

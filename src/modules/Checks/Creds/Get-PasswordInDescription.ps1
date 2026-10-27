@@ -93,7 +93,7 @@ function Get-PasswordInDescription {
             #
             # And more than two attributes: the free-text fields a human types into, which is
             # where a password ends up. The lists live beside the credential triggers
-            # (adPEAS-FindingDefinitions.ps1).
+            # (adPEAS-FindingDefinitions.ps1), which colour each of them.
             #
             # Three queries rather than one: description, info, comment, adminDescription,
             # wWWHomePage and url are in every schema, the other two sets are not.
