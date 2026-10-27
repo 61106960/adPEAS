@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-27 13:37:54
-    Version: 2.8.0+20261027-1337
+    Build: 2026-10-27 17:45:46
+    Version: 2.8.0+20261027-1745
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -41083,6 +41083,14 @@ function ConvertFrom-LDAPAttribute {
     where only the total number of matches is needed.
     Returns an integer instead of an array of PSCustomObjects.
 
+.PARAMETER IncludeDeleted
+    Switch to send the show-deleted control (LDAP_SERVER_SHOW_DELETED_OID,
+    1.2.840.113556.1.4.417) with the search, so deleted objects and the Deleted Objects
+    container are returned as well. Without it the directory answers as if they did not
+    exist - a base search on the container returns noSuchObject.
+    What comes back is still subject to access checks: the account needs List Contents on
+    the Deleted Objects container, and read access on each deleted object.
+
 .EXAMPLE
     Invoke-LDAPSearch -Filter "(&(objectClass=user)(adminCount=1))"
     Searches all users with adminCount=1
@@ -41136,6 +41144,9 @@ function Invoke-LDAPSearch {
 
         [Parameter(Mandatory=$false)]
         [switch]$CountOnly,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeDeleted,
 
         [Parameter(Mandatory=$false)]
         [System.DirectoryServices.Protocols.LdapConnection]$LdapConnection
@@ -41227,6 +41238,11 @@ function Invoke-LDAPSearch {
                     [System.DirectoryServices.Protocols.SearchOption]::DomainScope
                 )
                 $SearchRequest.Controls.Add($DomainScopeControl) | Out-Null
+            }
+
+            if ($IncludeDeleted) {
+                $SearchRequest.Controls.Add((New-Object System.DirectoryServices.Protocols.ShowDeletedControl)) | Out-Null
+                Write-Log "[Invoke-LDAPSearch] Added ShowDeletedControl - deleted objects are returned"
             }
 
             # Add SecurityDescriptor control if nTSecurityDescriptor is requested
@@ -41570,6 +41586,11 @@ function Get-DomainObject {
     Switch to return raw LDAP values without conversions (passed through to Invoke-LDAPSearch).
     Use this for performance when programmatically processing results.
 
+.PARAMETER IncludeDeleted
+    Switch to return deleted objects as well (passed through to Invoke-LDAPSearch, which
+    sends the show-deleted control). Search below the Deleted Objects container with
+    -SearchBase to get the deleted objects alone.
+
 .PARAMETER IsEnabled
     LDAP-optimized filter: Return only enabled accounts (ACCOUNTDISABLE flag NOT set).
     Uses bitwise LDAP filter for server-side filtering (fast).
@@ -41710,6 +41731,9 @@ function Get-DomainObject {
 
         [Parameter(Mandatory=$false)]
         [switch]$Raw,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeDeleted,
 
         [Parameter(Mandatory=$false)]
         [int]$ResultLimit = 0,
@@ -42068,6 +42092,10 @@ function Get-DomainObject {
 
             if ($Raw) {
                 $SearchParams['Raw'] = $true
+            }
+
+            if ($IncludeDeleted) {
+                $SearchParams['IncludeDeleted'] = $true
             }
 
             if ($ResultLimit -gt 0) {
@@ -156947,7 +156975,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261027-1337"
+$Script:adPEASVersion = "2.8.0+20261027-1745"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

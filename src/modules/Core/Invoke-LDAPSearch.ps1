@@ -50,6 +50,14 @@
     where only the total number of matches is needed.
     Returns an integer instead of an array of PSCustomObjects.
 
+.PARAMETER IncludeDeleted
+    Switch to send the show-deleted control (LDAP_SERVER_SHOW_DELETED_OID,
+    1.2.840.113556.1.4.417) with the search, so deleted objects and the Deleted Objects
+    container are returned as well. Without it the directory answers as if they did not
+    exist - a base search on the container returns noSuchObject.
+    What comes back is still subject to access checks: the account needs List Contents on
+    the Deleted Objects container, and read access on each deleted object.
+
 .EXAMPLE
     Invoke-LDAPSearch -Filter "(&(objectClass=user)(adminCount=1))"
     Searches all users with adminCount=1
@@ -103,6 +111,9 @@ function Invoke-LDAPSearch {
 
         [Parameter(Mandatory=$false)]
         [switch]$CountOnly,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeDeleted,
 
         [Parameter(Mandatory=$false)]
         [System.DirectoryServices.Protocols.LdapConnection]$LdapConnection
@@ -194,6 +205,11 @@ function Invoke-LDAPSearch {
                     [System.DirectoryServices.Protocols.SearchOption]::DomainScope
                 )
                 $SearchRequest.Controls.Add($DomainScopeControl) | Out-Null
+            }
+
+            if ($IncludeDeleted) {
+                $SearchRequest.Controls.Add((New-Object System.DirectoryServices.Protocols.ShowDeletedControl)) | Out-Null
+                Write-Log "[Invoke-LDAPSearch] Added ShowDeletedControl - deleted objects are returned"
             }
 
             # Add SecurityDescriptor control if nTSecurityDescriptor is requested

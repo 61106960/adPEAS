@@ -561,6 +561,7 @@ Get-DomainObject
     [-ReversibleEncryption]
     [-ShowOwner]
     [-Raw]
+    [-IncludeDeleted]
     [-ResultLimit <Int>]
     [-Domain <String>]
     [-Server <String>]
@@ -596,6 +597,7 @@ Get-DomainObject
 | `-ReversibleEncryption` | Switch | Return only accounts with ENCRYPTED_TEXT_PWD_ALLOWED flag set |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
 | `-Raw` | Switch | Return raw LDAP values without conversions |
+| `-IncludeDeleted` | Switch | Send the show-deleted control, so deleted objects and the Deleted Objects container are returned as well - as far as the account may list and read them |
 | `-ResultLimit` | Int | Limit the number of results returned. Default: 0 (unlimited) |
 | `-Domain` | String | Target domain (FQDN) |
 | `-Server` | String | Specific Domain Controller to query |
@@ -630,6 +632,9 @@ Get-DomainObject -TrustedForDelegation
 
 # Get accounts needing preauth (AS-REP Roastable)
 Get-DomainObject -PreauthNotRequired
+
+# Get the deleted objects this account may read
+Get-DomainObject -SearchBase "CN=Deleted Objects,DC=contoso,DC=com" -Scope OneLevel -IncludeDeleted
 ```
 
 ---

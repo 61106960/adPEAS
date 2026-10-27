@@ -29207,6 +29207,8 @@ function Invoke-LDAPSearch {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$CountOnly,
 	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludeDeleted,
+	    [Parameter(Mandatory=$false)]
 	    [System.DirectoryServices.Protocols.LdapConnection]$LdapConnection
 	)
 	begin {
@@ -29251,6 +29253,9 @@ function Invoke-LDAPSearch {
 	                [System.DirectoryServices.Protocols.SearchOption]::DomainScope
 	            )
 	            $SearchRequest.Controls.Add($DomainScopeControl) | Out-Null
+	        }
+	        if ($IncludeDeleted) {
+	            $SearchRequest.Controls.Add((New-Object System.DirectoryServices.Protocols.ShowDeletedControl)) | Out-Null
 	        }
 	        $AllRequestedProps = @()
 	        if ($Properties) { $AllRequestedProps += $Properties }
@@ -29468,6 +29473,8 @@ function Get-DomainObject {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$Raw,
 	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludeDeleted,
+	    [Parameter(Mandatory=$false)]
 	    [int]$ResultLimit = 0,
 	    [Parameter(Mandatory=$false)]
 	    [switch]$IsEnabled,
@@ -29666,6 +29673,9 @@ function Get-DomainObject {
 	        }
 	        if ($Raw) {
 	            $SearchParams['Raw'] = $true
+	        }
+	        if ($IncludeDeleted) {
+	            $SearchParams['IncludeDeleted'] = $true
 	        }
 	        if ($ResultLimit -gt 0) {
 	            $SearchParams['SizeLimit'] = $ResultLimit
@@ -97007,7 +97017,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261027-1337"
+$Script:adPEASVersion = "2.8.0+20261027-1745"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

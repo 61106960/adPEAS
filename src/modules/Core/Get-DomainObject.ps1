@@ -48,6 +48,11 @@ function Get-DomainObject {
     Switch to return raw LDAP values without conversions (passed through to Invoke-LDAPSearch).
     Use this for performance when programmatically processing results.
 
+.PARAMETER IncludeDeleted
+    Switch to return deleted objects as well (passed through to Invoke-LDAPSearch, which
+    sends the show-deleted control). Search below the Deleted Objects container with
+    -SearchBase to get the deleted objects alone.
+
 .PARAMETER IsEnabled
     LDAP-optimized filter: Return only enabled accounts (ACCOUNTDISABLE flag NOT set).
     Uses bitwise LDAP filter for server-side filtering (fast).
@@ -188,6 +193,9 @@ function Get-DomainObject {
 
         [Parameter(Mandatory=$false)]
         [switch]$Raw,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeDeleted,
 
         [Parameter(Mandatory=$false)]
         [int]$ResultLimit = 0,
@@ -546,6 +554,10 @@ function Get-DomainObject {
 
             if ($Raw) {
                 $SearchParams['Raw'] = $true
+            }
+
+            if ($IncludeDeleted) {
+                $SearchParams['IncludeDeleted'] = $true
             }
 
             if ($ResultLimit -gt 0) {

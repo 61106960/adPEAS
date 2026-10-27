@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Get-DomainObject` and `Invoke-LDAPSearch` can return deleted objects.** `-IncludeDeleted`
+  sends the show-deleted control (1.2.840.113556.1.4.417). Without it the directory answers
+  as if deleted objects and the Deleted Objects container did not exist - a base search on
+  the container returns noSuchObject. What comes back is still subject to access checks:
+  List Contents on the container, and read access on each deleted object.
 - **`Get-AuthenticationPolicySilos`, a check of authentication policy silos and
   authentication policies.** adPEAS did not read either, so an account a silo confines
   looked the same as an unprotected one, and a silo that restricts nobody went unnoticed.
