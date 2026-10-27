@@ -2714,12 +2714,13 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
     }
 
     'CRITICAL_OBJECT_CONTROL' = @{
-        Title = "Control Over the Schema, the Partitions Container, a Role Object or a Site"
+        Title = "Control Over the Schema, the Configuration, the Partitions, a Role Object or a Site"
         Risk = "Finding"
         BaseScore = 60
-        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from. On a site it may write gPLink: a GPO linked there applies to every computer in the site, domain controllers included."
+        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the head of the configuration partition what the PKI containers, the sites and the partitions container below it inherit; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from. On a site it may write gPLink: a GPO linked there applies to every computer in the site, domain controllers included. Reanimate-Tombstones on the configuration head is the right a restore of an object deleted from the configuration is checked against - certificate templates and certification authorities among them - and by default only Enterprise Admins hold it."
         Impact = @(
             "Schema control is forest-wide persistence: an ACE added to a default security descriptor lands on every object created from then on"
+            "An inheritable ACE on the configuration head reaches the certificate templates and the certification authorities below it"
             "A role taken over moves an operation of the forest or the domain to a server of the attacker's choosing"
             "An exhausted RID pool stops the domain from creating any new account, group or computer"
         )

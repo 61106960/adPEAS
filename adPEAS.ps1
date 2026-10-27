@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-10-27 17:49:37
-    Version: 2.8.0+20261027-1749
+    Build: 2026-10-27 17:52:22
+    Version: 2.8.0+20261027-1752
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -11606,12 +11606,13 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
     }
 
     'CRITICAL_OBJECT_CONTROL' = @{
-        Title = "Control Over the Schema, the Partitions Container, a Role Object or a Site"
+        Title = "Control Over the Schema, the Configuration, the Partitions, a Role Object or a Site"
         Risk = "Finding"
         BaseScore = 60
-        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from. On a site it may write gPLink: a GPO linked there applies to every computer in the site, domain controllers included."
+        Description = "A principal outside Tier-0 controls one of the objects the forest and the domain run on: it owns the object, holds full control, write or DACL rights on it, holds the transfer right of the role the object carries, or - on the RID Manager - may write the RID pool. Through the schema it can change the default security descriptor every new object of a class receives; through the head of the configuration partition what the PKI containers, the sites and the partitions container below it inherit; through the partitions container the naming contexts of the forest; through the RID Manager and the infrastructure object it can take the role, and on the RID Manager exhaust the pool every new security identifier of the domain is cut from. On a site it may write gPLink: a GPO linked there applies to every computer in the site, domain controllers included. Reanimate-Tombstones on the configuration head is the right a restore of an object deleted from the configuration is checked against - certificate templates and certification authorities among them - and by default only Enterprise Admins hold it."
         Impact = @(
             "Schema control is forest-wide persistence: an ACE added to a default security descriptor lands on every object created from then on"
+            "An inheritable ACE on the configuration head reaches the certificate templates and the certification authorities below it"
             "A role taken over moves an operation of the forest or the domain to a server of the attacker's choosing"
             "An exhausted RID pool stops the domain from creating any new account, group or computer"
         )
@@ -30113,16 +30114,17 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Rights"
         Category = "Rights"
         SectionTitle = "Schema, Partitions and Role Object ACLs"
-        Summary = "Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager, the infrastructure object or a site."
-        WhyItMatters = "These four objects carry the schema, the naming contexts of the forest and two of the operations master roles. Control over the schema changes the default security descriptor of every new object; control over a role object moves the role or, for the RID Manager, exhausts the identifiers the domain is built from."
+        Summary = "Finds principals outside Tier-0 that control the schema, the configuration partition, the partitions container, the RID Manager, the infrastructure object or a site."
+        WhyItMatters = "These objects carry the schema, the configuration and the naming contexts of the forest and two of the operations master roles. Control over the schema changes the default security descriptor of every new object; control over the configuration head reaches the PKI containers, the sites and the partitions below it; control over a role object moves the role or, for the RID Manager, exhausts the identifiers the domain is built from."
         WhatWeCheck = @(
-            "Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each of the four objects"
+            "Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each of the five objects"
             "The role transfer right of each object, and all extended rights"
+            "Reanimate-Tombstones on the configuration head, the right a restore of an object deleted from the configuration is checked against"
             "WriteProperty on rIDAvailablePool of the RID Manager"
             "WriteProperty on gPLink of every site, where a linked GPO reaches every computer of the site, domain controllers included"
             "Only principals outside Tier-0 - an operator group counts"
         )
-        SecureMessage = "No principal outside Tier-0 controls the schema, the partitions container, the RID Manager, the infrastructure object or a site."
+        SecureMessage = "No principal outside Tier-0 controls the schema, the configuration partition, the partitions container, the RID Manager, the infrastructure object or a site."
         PrimaryFindingId = 'CRITICAL_OBJECT_CONTROL'
     }
 
@@ -121332,15 +121334,19 @@ function Get-DangerousACLs {
 function Get-CriticalObjectACLs {
     <#
     .SYNOPSIS
-    Detects non-privileged control over the schema, the partitions container, the RID
-    and infrastructure role objects and the sites.
+    Detects non-privileged control over the schema, the configuration partition, the
+    partitions container, the RID and infrastructure role objects and the sites.
 
     .DESCRIPTION
-    Four objects the forest and the domain run on, each with a role of its own:
+    Five objects the forest and the domain run on, four of them with a role of their own:
 
     - the schema naming context head (Schema Master): who controls it can add or change
       classes and attributes, among them the default security descriptor every new object
       of a class receives
+    - the configuration naming context head: its inheritable ACEs reach the PKI
+      containers, the sites and the partitions container, and Reanimate-Tombstones on it
+      restores objects deleted from the configuration - reported like a role's transfer
+      right
     - CN=Partitions in the configuration naming context (Domain Naming Master): the
       cross-references that define the naming contexts of the forest
     - CN=RID Manager$ under CN=System (RID Master): the pool every security identifier of
@@ -121354,7 +121360,8 @@ function Get-CriticalObjectACLs {
     For each, a trustee that is not Tier-0 is reported when it owns the object, holds
     GenericAll, GenericWrite, WriteDacl, WriteOwner or an unrestricted WriteProperty on it,
     holds the role's transfer right (Change-Schema-Master, Change-Domain-Master,
-    Change-Rid-Master, Change-Infrastructure-Master) or all extended rights, or - on the
+    Change-Rid-Master, Change-Infrastructure-Master), Reanimate-Tombstones on the
+    configuration head, or all extended rights, or - on the
     RID Manager - may write rIDAvailablePool, or on a site gPLink. Operators count as not Tier-0 here: an
     Account Operator with WriteDacl on the schema is an escalation, not a delegation.
 
@@ -121400,7 +121407,7 @@ function Get-CriticalObjectACLs {
                 return
             }
 
-            Show-SubHeader "Analyzing the ACLs of the schema, the partitions container, the role objects and the sites..." -ObjectType "CriticalObjectACL"
+            Show-SubHeader "Analyzing the ACLs of the schema, the configuration, the partitions, the role objects and the sites..." -ObjectType "CriticalObjectACL"
 
             $targets = @()
             if ($Script:LDAPContext.SchemaNamingContext) {
@@ -121408,6 +121415,15 @@ function Get-CriticalObjectACLs {
                                Meaning = 'may change the schema - classes, attributes and the default security descriptor of every new object' }
             }
             if ($Script:LDAPContext.ConfigurationNamingContext) {
+                # The head of the configuration partition. Its ACEs are inherited by the PKI
+                # containers, the sites and the partitions container below it, so a write
+                # right on it reaches all of them. Reanimate-Tombstones is the right a restore
+                # of an object deleted from this partition is checked against (Microsoft,
+                # Restoring Deleted Objects), and by default only Enterprise Admins and SYSTEM
+                # hold it here, through full control (measured). Not on the schema head:
+                # schema objects cannot be deleted, so there is nothing to restore.
+                $targets += @{ DN = [string]$Script:LDAPContext.ConfigurationNamingContext; Label = 'Configuration partition'; Role = 'Reanimate-Tombstones'
+                               Meaning = 'may change what the PKI, the sites and the partitions inherit, or restore objects deleted from the configuration' }
                 $targets += @{ DN = "CN=Partitions,$($Script:LDAPContext.ConfigurationNamingContext)"; Label = 'Partitions container'; Role = 'Change-Domain-Master'
                                Meaning = 'may change the cross-references that define the naming contexts of the forest' }
             }
@@ -121511,13 +121527,13 @@ function Get-CriticalObjectACLs {
             }
 
             if ($findings.Count -gt 0) {
-                Show-Line "Found $($findings.Count) non-Tier-0 principal(s) with control over the schema, the partitions container, a role object or a site" -Class Finding
+                Show-Line "Found $($findings.Count) non-Tier-0 principal(s) with control over an object the forest or the domain runs on" -Class Finding
                 foreach ($finding in $findings) {
                     $finding | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CriticalObjectACL' -Force
                     Show-Object $finding -Class Finding
                 }
             } elseif ($unread.Count -eq 0 -and -not $sitesUnread) {
-                Show-Line "No principal outside Tier-0 controls the schema, the partitions, the RID Manager, the infrastructure object or a site" -Class Secure
+                Show-Line "No principal outside Tier-0 controls the schema, the configuration, the partitions, a role object or a site" -Class Secure
             }
 
         } catch {
@@ -156975,7 +156991,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.8.0+20261027-1749"
+$Script:adPEASVersion = "2.8.0+20261027-1752"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

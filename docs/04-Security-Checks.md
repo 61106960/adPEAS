@@ -473,12 +473,13 @@ Get-DangerousACLs -IncludePrivileged
 
 ### Get-CriticalObjectACLs
 
-**Purpose**: Finds principals outside Tier-0 that control the schema, the partitions container, the RID Manager, the infrastructure object or a site.
+**Purpose**: Finds principals outside Tier-0 that control the schema, the configuration partition, the partitions container, the RID Manager, the infrastructure object or a site.
 
 **What it checks**:
-- The schema naming context head, `CN=Partitions` in the configuration naming context, `CN=RID Manager$,CN=System` and `CN=Infrastructure`
+- The schema naming context head, the configuration naming context head, `CN=Partitions` in the configuration naming context, `CN=RID Manager$,CN=System` and `CN=Infrastructure`
 - Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner and unrestricted WriteProperty on each
 - The role transfer right of each object (Change-Schema-Master, Change-Domain-Master, Change-Rid-Master, Change-Infrastructure-Master) and all extended rights
+- Reanimate-Tombstones on the configuration head - the right a restore of an object deleted from the configuration is checked against, certificate templates among them. By default only Enterprise Admins hold it there. Not on the schema head: schema objects cannot be deleted
 - WriteProperty on `rIDAvailablePool` of the RID Manager
 - WriteProperty on `gPLink` of every site - a GPO linked there reaches every computer of the site, domain controllers included
 - Operator groups count as outside Tier-0

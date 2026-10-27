@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Get-CriticalObjectACLs` reads the head of the configuration partition.** Its
+  inheritable ACEs reach the PKI containers, the sites and the partitions container below
+  it, and Reanimate-Tombstones on it is the right a restore of an object deleted from the
+  configuration - certificate templates and certification authorities among them - is
+  checked against. adPEAS read neither; Reanimate-Tombstones was checked on the domain
+  object alone. The check now reports an owner, full control, a write or DACL right, all
+  extended rights or Reanimate-Tombstones there outside Tier 0. By default only Enterprise
+  Admins and SYSTEM hold them, through full control (measured). The schema head is left
+  as it was: schema objects cannot be deleted, so there is nothing to restore.
 - **`Get-DomainObject` and `Invoke-LDAPSearch` can return deleted objects.** `-IncludeDeleted`
   sends the show-deleted control (1.2.840.113556.1.4.417). Without it the directory answers
   as if deleted objects and the Deleted Objects container did not exist - a base search on
