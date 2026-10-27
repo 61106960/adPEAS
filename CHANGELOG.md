@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`Get-DeletedObjectAccess`, a check of the Deleted Objects container.** With the AD
+  Recycle Bin enabled, a deleted object keeps every attribute for its deleted object
+  lifetime - 180 days by default - and no check that reads live objects saw it. Of the
+  deleted objects the scanning account may read, the check reports those that hold a
+  credential in a free-text attribute, with the patterns of `Get-PasswordInDescription`
+  (now shared as `Get-CredentialTextMatch`), or a value in a Unix password attribute, on a
+  card of their own: such an object cannot be edited, only recycled. It says whether the
+  account reads deleted objects as a member of Administrators or through a delegation on
+  the container - by default only SYSTEM and Administrators may list it, and a domain user
+  sees nothing of it (measured). Where the container's ACL is readable, it names the
+  principals outside Tier 0 that may list it, a broad group as a finding. Exchange setup
+  grants Exchange Servers and Exchange Trusted Subsystem the right (measured); they are
+  hidden like Tier 0 unless `-IncludePrivileged`.
 - **`Get-CriticalObjectACLs` reads the head of the configuration partition.** Its
   inheritable ACEs reach the PKI containers, the sites and the partitions container below
   it, and Reanimate-Tombstones on it is the right a restore of an object deleted from the

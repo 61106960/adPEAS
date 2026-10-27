@@ -682,6 +682,16 @@ $Script:PrimaryAttributes = @{
         'Trustee', 'TrusteeSID', 'criticalObject', 'criticalObjectRights'
     )
 
+    # Where it was and when it was deleted (whenChanged) before what it holds.
+    DeletedObject = @(
+        'sAMAccountName', 'name', 'distinguishedName', 'lastKnownParent', 'whenChanged',
+        'objectSid', 'description', 'info'
+    )
+
+    DeletedObjectsReader = @(
+        'Trustee', 'TrusteeSID', 'deletedObjectsRights'
+    )
+
     ExchangeServersGroup = @(
         'sAMAccountName', 'distinguishedName', 'objectSid',
         'member', 'memberOf', 'description'

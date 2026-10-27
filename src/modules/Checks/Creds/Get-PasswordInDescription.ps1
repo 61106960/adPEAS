@@ -77,103 +77,6 @@ function Get-PasswordInDescription {
                 return
             }
 
-            # One token for every language variant of the word, used by all three pattern
-            # lists below so they cannot drift apart. It replaces a bare 'passw\S*', which
-            # was documented as covering Norwegian "passord" and Esperanto "pasvorto" but
-            # cannot: neither word contains "passw". Two consequences, both silent - a
-            # Norwegian description holding a real password was never matched, and the
-            # Norwegian exclusion terms further down (lengde, utloep, maa, boer) could
-            # never fire either, because they were anchored to the same impossible prefix.
-            #   sw\S*   password, passwd, passwort, passwuert   (EN/DE/LU)
-            #   sord    passord                                 (NO)
-            #   vorto   pasvorto                                (EO)
-            $pwToken = 'pas(?:sw\S*|sord|vorto)'
-
-            # A value that is no value: a row of asterisks or an angle-bracket placeholder.
-            # Part of every assignment pattern rather than a test on the whole attribute,
-            # which is what it used to be - a masked value anywhere in an attribute skipped
-            # the attribute, and "pwd: Sommer2024, old: password=****" was not reported.
-            $realValue = '(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}'
-
-            # Tier 1: High-confidence patterns (password assignment with value)
-            $tier1Patterns = @(
-                @{ Pattern = $pwToken + '\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password-variant assignment (quoted)" }
-                @{ Pattern = $pwToken + '\s*[=:]\s*(?!["''])' + $realValue; Description = "Password-variant assignment (unquoted)" }
-                @{ Pattern = 'pwd\s*[=:]\s*' + $realValue; Description = "Pwd assignment" }
-                @{ Pattern = 'pw\s*[=:]\s*' + $realValue; Description = "PW assignment" }
-                @{ Pattern = '\bpass\s*[=:]\s*' + $realValue; Description = "Pass assignment" }
-                @{ Pattern = 'kennwort\s*[=:]\s*' + $realValue; Description = "Kennwort assignment (German)" }
-                @{ Pattern = '\bparol[ae]?\s*[=:]\s*' + $realValue; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
-                # The userinfo part of a URL, RFC 3986: scheme://user:password@host. Written
-                # into a homepage or url attribute, or into a description, it is the
-                # credential itself. A user name alone (user@host) or an empty password
-                # (user:@host) does not match, and neither does a port (host:8080/).
-                @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'; Description = "Credentials embedded in a URL" }
-            )
-
-            # Tier 2: Lower-confidence patterns (generic credential mentions)
-            $tier2Patterns = @(
-                @{ Pattern = $pwToken; Description = "Password-variant mention (EN/DE/NO/LU/EO)" }
-                @{ Pattern = '\bparol[ae]?\b'; Description = "Parola/parole/parol mention (RO/LV/IT)" }
-                @{ Pattern = '\bcred(ential)?s?\b'; Description = "Credential mention" }
-                @{ Pattern = '\b(secret|token)\s*[=:]\s*\S{5,}'; Description = "Secret/token assignment" }
-            )
-
-            # Exclusion patterns (skip if line matches these - password policy text, help, etc.)
-            # Conservative approach: better to show a false positive than to hide a real password
-            # Only exact terms - no wildcards for foreign words we haven't verified in real AD data
-            $exclusionPatterns = @(
-                # Policy/guideline text (EN/DE/IT/RO)
-                # Every concatenation is parenthesized on purpose: in PowerShell the comma
-                # binds tighter than +, so "$pwToken + 'a', $pwToken + 'b'" parses as
-                # "$pwToken + @('a', ...)" and collapses the whole list into one glued
-                # string. The exclusions then match nothing at all.
-                ($pwToken + '\s*(policy|policies|requirement|guideline|richtlinie|anforderung)'),
-                '\bparol[ae]?\s*(policy|politica|cerinta)',
-                # Modal verbs: "password must/should..." (EN/DE/NO/IT/RO)
-                # Norwegian letters are written as regex \u escapes to keep this file pure ASCII:
-                # \u00E5 = a with ring, \u00F8 = o with stroke
-                ($pwToken + '\s+(must|should|cannot|shall|muss|soll|darf|kann|m\u00E5|b\u00F8r|deve|trebuie)\s+'),
-                # Technical terms: length, complexity, expiry (EN/DE/NO/IT)
-                ($pwToken + '\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utl\u00F8p|lunghezza|scadenza)'),
-                # Reset/change/recover (EN/IT/RO)
-                ($pwToken + '\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)'),
-                '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
-                # Relative: "minimum/maximum password"
-                ('(minimum|maximum)\s+' + $pwToken),
-                # Imperative: "set/change/update your password" (EN)
-                ('(set|change|update|reset)\s+(your|the|a)\s+' + $pwToken),
-                # Prompts
-                ('Enter\s+(your\s+)?' + $pwToken),
-                ($pwToken + '\s+prompt'),
-                # Replication: "Members in this group can have their passwords replicated to
-                # all read-only domain controllers in the domain" is the description the
-                # Allowed and Denied RODC Password Replication Groups ship with - a hint in
-                # every domain, measured.
-                ($pwToken + '\s+replicat')
-            )
-
-            # A second, much narrower list. The two kinds of exclusion above and below are
-            # not the same thing. The ones above describe the *sentence* - it reads like
-            # policy or help text - and that is a reason to distrust a bare mention, never a
-            # reason to ignore an assignment standing next to it. The ones here describe the
-            # *value*: the syntax is an assignment, but what was assigned is a row of
-            # asterisks or an angle-bracket placeholder. The assignment patterns already
-            # pass over such a value; this list keeps the mention beside it from becoming a
-            # hint, since "Password: ********" says only that a password exists.
-            $placeholderPatterns = @(
-                ($pwToken + '\s*[=:]\s*\*+(?:\s|$)'),
-                ($pwToken + '\s*[=:]\s*<[^>]+>'),
-                'pwd\s*[=:]\s*\*+(?:\s|$)',
-                'pwd\s*[=:]\s*<[^>]+>',
-                '\bpass\s*[=:]\s*\*+(?:\s|$)',
-                '\bpass\s*[=:]\s*<[^>]+>',
-                'kennwort\s*[=:]\s*\*+(?:\s|$)',
-                'kennwort\s*[=:]\s*<[^>]+>',
-                '://[^\s/:@]+:\*+@',
-                '://[^\s/:@]+:<[^>]+>@'
-            )
-
             $findingCount = 0
             $hintCount = 0
             $unreadableCount = 0
@@ -188,8 +91,9 @@ function Get-PasswordInDescription {
             # claims the directory is clean. Get-UnixPasswordAccounts makes the same
             # argument in its own comment, one file over.
             #
-            # And more than two attributes. These are the free-text fields a human types
-            # into, which is where a password ends up.
+            # And more than two attributes: the free-text fields a human types into, which is
+            # where a password ends up. The lists live beside the credential triggers
+            # (adPEAS-FindingDefinitions.ps1).
             #
             # Three queries rather than one: description, info, comment, adminDescription,
             # wWWHomePage and url are in every schema, the other two sets are not.
@@ -199,18 +103,9 @@ function Get-PasswordInDescription {
             # define does not skip that one clause, the whole search fails with an
             # undefined-attribute error, so each optional set runs on its own and a failure
             # there costs that set alone.
-            $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url',
-                                 'scriptPath', 'homeDirectory', 'profilePath')
-            $exchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
-            $cloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
-
-            # A link or a path, not a sentence. Only an assignment or credentials in the URL
-            # itself count there: a homepage pointing at the password reset portal mentions
-            # the word and holds nothing, and so does a home share named after a team -
-            # as tier 2 mentions they were a hint on every account that carries them. A UNC
-            # path carries no credentials of its own; the path attributes are read for what
-            # is typed into them beside it - an assignment, or a URL with credentials.
-            $urlAttributes = @('wWWHomePage', 'url', 'scriptPath', 'homeDirectory', 'profilePath')
+            $baseAttributes     = $Script:CredentialTextBaseAttributes
+            $exchangeAttributes = $Script:CredentialTextExchangeAttributes
+            $cloudAttributes    = $Script:CredentialTextCloudAttributes
 
             # Merged by distinguishedName: an object can come back from several queries, and
             # reporting it twice would be two findings for one account.
@@ -282,92 +177,11 @@ function Get-PasswordInDescription {
                         if ($kindLabels.ContainsKey($schemaClass)) { $objectType = $kindLabels[$schemaClass] }
                     }
 
-                    # Look at every attribute before reporting, and keep the strongest hit.
-                    # Reporting on the first hit meant description was allowed to decide the
-                    # severity for the whole account: a bare mention there ("password reset
-                    # by helpdesk") broke the loop as a Hint, and an actual assignment in
-                    # info was never examined. The account was filed one tier too low and
-                    # the credential the check exists to find went unreported.
-                    $bestTier = 0
-                    $bestAttrName = $null
-
-                    foreach ($attr in $attributesToCheck) {
-                        $attrValue = [string]$attr.Value
-
-                        # Tier 1 is decided before the prose exclusions are consulted.
-                        #
-                        # The exclusions used to run first and skipped the whole attribute
-                        # on a hit, which is the opposite of what this check is for. Policy
-                        # wording and a real credential live in the same description all the
-                        # time - "Passwort muss geaendert werden. Passwort = Winter2024!",
-                        # "Password complexity required; password: Herbst2024" - and every
-                        # one of those was dropped without a word, because the modal verb or
-                        # the word "complexity" matched an exclusion. Three of five
-                        # realistic strings carrying an actual assignment were lost that way.
-                        #
-                        # An exclusion says "this reads like policy text", which is a reason
-                        # to distrust a bare mention, never a reason to ignore an assignment
-                        # with a value next to it. So it only downgrades tier 2 now.
-                        $isTier1 = $false
-                        foreach ($t1 in $tier1Patterns) {
-                            if ($attrValue -imatch $t1.Pattern) {
-                                $isTier1 = $true
-                                Write-Log "[Get-PasswordInDescription] TIER1 match on $accountName ($($attr.Name)): $($t1.Description)"
-                                break
-                            }
-                        }
-
-                        if ($isTier1) {
-                            # Nothing outranks a tier 1 hit, so stop looking.
-                            $bestTier = 1
-                            $bestAttrName = $attr.Name
-                            break
-                        }
-
-                        # A link mentions what it links to; that is not a credential.
-                        if ($urlAttributes -contains $attr.Name) { continue }
-
-                        # A masked or bracketed value is not a credential, and the mention
-                        # beside it only says that a password exists - after tier 1, so that
-                        # a masked value no longer hides a real assignment next to it.
-                        $isPlaceholder = $false
-                        foreach ($phPattern in $placeholderPatterns) {
-                            if ($attrValue -imatch $phPattern) {
-                                $isPlaceholder = $true
-                                Write-Log "[Get-PasswordInDescription] Placeholder value on $accountName ($($attr.Name)): '$phPattern'"
-                                break
-                            }
-                        }
-                        if ($isPlaceholder) { continue }
-
-                        # No assignment here, so policy wording is what it looks like.
-                        $excluded = $false
-                        foreach ($exPattern in $exclusionPatterns) {
-                            if ($attrValue -match $exPattern) {
-                                $excluded = $true
-                                Write-Log "[Get-PasswordInDescription] Excluded $accountName ($($attr.Name)): matches exclusion '$exPattern'"
-                                break
-                            }
-                        }
-                        if ($excluded) { continue }
-
-                        # Check Tier 2 patterns (Hint)
-                        $isTier2 = $false
-                        foreach ($t2 in $tier2Patterns) {
-                            if ($attrValue -imatch $t2.Pattern) {
-                                $isTier2 = $true
-                                Write-Log "[Get-PasswordInDescription] TIER2 match on $accountName ($($attr.Name)): $($t2.Description)"
-                                break
-                            }
-                        }
-
-                        # Remember the first tier 2 hit, but keep reading: a later attribute
-                        # may still hold an assignment.
-                        if ($isTier2 -and $bestTier -eq 0) {
-                            $bestTier = 2
-                            $bestAttrName = $attr.Name
-                        }
-                    }
+                    # The pattern logic is shared with Get-DeletedObjectAccess, which reads
+                    # the same attributes on deleted objects (Get-CredentialTextMatch).
+                    $credentialMatch = Get-CredentialTextMatch -Attributes $attributesToCheck -Label $accountName
+                    $bestTier = $credentialMatch.Tier
+                    $bestAttrName = $credentialMatch.Attribute
 
                     if ($bestTier -gt 0) {
                         # Phase 2: the full object, for the row itself. Get-DomainObject

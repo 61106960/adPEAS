@@ -22,6 +22,7 @@ The following checks filter high-privileged accounts by default:
 | **Get-ADCSVulnerabilities** | Domain Admins, Enterprise Admins with certificate enrollment | `-IncludePrivileged` |
 | **Get-AddComputerRights** | Domain Admins, Account Operators with computer creation rights | `-IncludePrivileged` |
 | **Get-BitLockerRecoveryKeyAccess** | Privileged principals with a delegated read of the recovery passwords - Domain Admins read them by default | `-IncludePrivileged` |
+| **Get-DeletedObjectAccess** | Tier-0 principals and the Exchange service groups that may list the Deleted Objects container - Administrators may by default, Exchange setup grants it | `-IncludePrivileged` |
 
 ### How Filtering Works
 
@@ -380,6 +381,30 @@ Get-CredentialExposure -Path "\\server\share"
 **Usage**:
 ```powershell
 Get-PasswordInDescription
+```
+
+---
+
+### Get-DeletedObjectAccess
+
+**Purpose**: Tests which deleted objects the current user can read, whether they still hold credentials, and who else may list them.
+
+**What it checks**:
+- Every deleted object the current user can list in the Deleted Objects container of the domain, found by its well-known GUID and read with the show-deleted control (`1.2.840.113556.1.4.417`)
+- Whether the current user reads them as a member of Administrators, or through a delegation on the container - the latter is a *Hint*
+- The free-text attributes `Get-PasswordInDescription` reads, with the same patterns (shared through `Get-CredentialTextMatch`), and the Unix password attributes `Get-UnixPasswordAccounts` reads
+- The principals outside Tier 0 that may list the container: an ACE that applies to it and grants List Contents, generic read or full control, and its owner
+
+**Security Impact**: With the AD Recycle Bin enabled, a deleted object keeps every attribute in the Deleted Objects container until its deleted object lifetime ends - 180 days by default. A password typed into the description of a service account outlives the account, and no check that reads live objects sees it any more. By default only SYSTEM and Administrators may list the container (measured: a domain user sees its DN and nothing else); Microsoft documents granting List Contents and Read Property on it to let a team view deleted objects. A deleted object keeps its security descriptor, so whoever may list the container reads of each object what its own ACL allows. A broad group holding the right is a *Finding*, any other principal a *Hint*.
+
+**Not covered**: The container's ACL is readable by administrators only by default; run as an ordinary user, the check says so. Restoring a deleted object takes Reanimate-Tombstones on the naming context head - reported by `Get-DangerousACLs` for the domain and `Get-CriticalObjectACLs` for the configuration partition. Whether the Recycle Bin is enabled, and the lifetimes, are reported by `Get-DomainInformation`.
+
+**Usage**:
+```powershell
+Get-DeletedObjectAccess
+
+# Also list Tier 0 and the Exchange service groups
+Get-DeletedObjectAccess -IncludePrivileged
 ```
 
 ---

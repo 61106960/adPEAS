@@ -1629,6 +1629,41 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
     }
 
+    'DeletedObject' = @{
+        TitleFormat = "Deleted Object: {Name}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "Readable Deleted Objects"
+        Summary = "Finds the deleted objects the current user can read, and the credentials they still hold."
+        WhyItMatters = "With the AD Recycle Bin enabled, a deleted object keeps every attribute in the Deleted Objects container until its lifetime ends - 180 days by default. A password typed into the description of a service account outlives the account, and no check that reads live objects sees it any more. Reading deleted objects takes the show-deleted control and List Contents on the container, which by default only SYSTEM and Administrators hold; an ordinary account that can read them holds a delegation."
+        WhatWeCheck = @(
+            "Every deleted object the current user can list in the Deleted Objects container of the domain"
+            "The free-text attributes Get-PasswordInDescription reads - description, info, comment, adminDescription, the link and path attributes, extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - with the same patterns"
+            "userPassword, unixUserPassword, msSFU30Password, sambaNTPassword and sambaLMPassword"
+            "Whether the current user reads them as a member of Administrators or through a delegation"
+        )
+        FilteringNote = "Only what the current user may read is examined: a domain user sees no deleted object by default, and the line says so rather than calling the container empty. With the Recycle Bin enabled, recycled objects - deleted before it was enabled, or past their deleted object lifetime - are not returned; without it, tombstones are. Neither keeps the attributes examined here."
+        SecureMessage = "None of the deleted objects the current user can read holds a credential in a free-text or password attribute."
+        PrimaryFindingId = 'DELETED_OBJECT_CREDENTIAL'
+    }
+
+    'DeletedObjectsReader' = @{
+        TitleFormat = "May List Deleted Objects: {Trustee}"
+        Module = "Creds"
+        Category = "Credentials"
+        SectionTitle = "Who May List Deleted Objects"
+        Summary = "Finds the principals outside Tier 0 that may list the Deleted Objects container."
+        WhyItMatters = "A deleted object keeps its security descriptor, so whoever may list the container reads of each deleted object what its own ACL allows - for most objects everything an authenticated user could read while it was alive, and with the Recycle Bin that is every attribute it had. Microsoft documents granting List Contents and Read Property on the container to let a team view deleted objects; the question is who was given it."
+        WhatWeCheck = @(
+            "List Contents, generic read and full control on CN=Deleted Objects of the domain, as far as the ACE applies to the container itself"
+            "The owner of the container, who may grant itself the rest"
+            "Whether the holder is Tier 0, an Exchange service group or a broad group"
+        )
+        FilteringNote = "The container's ACL is readable by administrators only by default; run as an ordinary user, the check says it could not be read. Tier 0 holds the right by default and Exchange setup grants it to Exchange Servers and Exchange Trusted Subsystem - both are hidden unless -IncludePrivileged. Restoring a deleted object is a different right, Reanimate-Tombstones on the naming context head, reported by the Dangerous ACLs and the Critical Object ACLs checks."
+        SecureMessage = "Only Tier 0, and the Exchange service groups where Exchange is installed, may list the Deleted Objects container."
+        PrimaryFindingId = 'DELETED_OBJECTS_READ_DELEGATED'
+    }
+
     # ============================================================================
     # RIGHTS/ACLS
     # ============================================================================

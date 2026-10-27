@@ -191,7 +191,7 @@ Compare-adPEASReport -Baseline ".\scan_q1.json" -Current ".\scan_q2.json" -Outpu
 | Module | Description |
 |--------|-------------|
 | `Domain` | Domain configuration, trusts, password policy, LDAP signing, SMB signing |
-| `Creds` | Kerberoast, ASREPRoast, LAPS & BitLocker recovery key access, credential exposure in SYSVOL |
+| `Creds` | Kerberoast, ASREPRoast, LAPS & BitLocker recovery key access, credential exposure in SYSVOL, credentials kept by deleted objects |
 | `Rights` | ACLs, DCSync, password reset rights, dangerous OU permissions |
 | `Delegation` | Unconstrained, constrained, resource-based constrained delegation |
 | `ADCS` | Certificate templates and CAs: ESC1-ESC5, ESC8, ESC9, ESC13, ESC14, ESC15 (ESC10 via the GPO check). The escalation paths that need administrative access to the CA host are out of scope - see [Security Checks](docs/04-Security-Checks.md) |

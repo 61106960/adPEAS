@@ -201,6 +201,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSGPOConfig.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-LAPSSchemaPresence.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-UnixPasswordFormat.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-CredentialTextMatch.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrivilegedAccountFilter.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-PrincipalContainer.ps1"
     . "$Script:ScriptPath\modules\Helpers\Resolve-GroupNesting.ps1"
@@ -288,6 +289,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Creds\Get-BitLockerRecoveryKeyAccess.ps1"
     . "$Script:ScriptPath\modules\Checks\Creds\Get-CredentialRoaming.ps1"
     . "$Script:ScriptPath\modules\Checks\Creds\Get-PasswordInDescription.ps1"
+    . "$Script:ScriptPath\modules\Checks\Creds\Get-DeletedObjectAccess.ps1"
 
     # Reporting Modules
     . "$Script:ScriptPath\modules\Reporting\Export-HTMLReport.ps1"
@@ -391,12 +393,12 @@ function Invoke-adPEAS {
     By default, these expected privileged accounts are hidden from output.
     When enabled, privileged accounts are shown in yellow (Hint) instead of red (Finding).
 
-    Affects thirteen checks - the list named five of them, and how much a default run
+    Affects fourteen checks - the list named five of them, and how much a default run
     hides is part of what this switch means:
       Get-DangerousACLs, Get-DangerousOUPermissions, Get-PasswordResetRights,
       Get-AddComputerRights, Get-LAPSPermissions, Get-GPOPermissions,
       Get-PrivilegedGroupMembers, Get-ADCSVulnerabilities, Get-WeakCertificateMapping,
-      Get-CredentialRoaming, Get-BitLockerRecoveryKeyAccess.
+      Get-CredentialRoaming, Get-BitLockerRecoveryKeyAccess, Get-DeletedObjectAccess.
 
     Two of them read it as something else, which is worth knowing before setting it:
     Get-GPOUserRightsAssignment and Get-GPOPointAndPrint take it as -IncludeDefaults,
@@ -1104,6 +1106,7 @@ try {
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialRoaming' -Title 'Credential Roaming' -Check { Get-CredentialRoaming -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }
+            Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-DeletedObjectAccess' -Title 'Deleted Object Access' -Check { Get-DeletedObjectAccess -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-KerberoastableAccounts' -Title 'Kerberoastable Accounts' -Check { Get-KerberoastableAccounts -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-ASREPRoastableAccounts' -Title 'ASREProastable Accounts' -Check { Get-ASREPRoastableAccounts -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-UnixPasswordAccounts' -Title 'Unix Password Accounts' -Check { Get-UnixPasswordAccounts }

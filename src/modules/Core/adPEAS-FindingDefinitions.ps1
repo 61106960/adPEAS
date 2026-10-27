@@ -134,6 +134,29 @@ $Script:CredentialNoMentionPattern = $Script:CredentialAssignmentPattern +
     '|(?:pas(?:sw\S*|sord|vorto)|pwd|pw|\bpass|kennwort|\bparol[ae]?)\s*[=:]\s*(?:\*+(?:\s|$)|<[^>]+>)' +
     '|://[^\s/:@]+:(?:\*+|<[^>]+>)@'
 
+# The free-text attributes a human types into, which is where a password ends up - read by
+# Get-PasswordInDescription and Get-DeletedObjectAccess (Get-CredentialTextMatch) and
+# triggered by DELETED_OBJECT_CREDENTIAL. Defined here, in the file that builds the
+# triggers, because it loads before the helpers.
+#
+# description, info, comment, adminDescription, wWWHomePage and url are in every schema,
+# the other two sets are not: extensionAttribute1-15 arrive with the Exchange schema
+# extension, which most but not all domains have; msDS-cloudExtensionAttribute1-20 with the
+# Windows Server 2012 schema. Kept apart for a caller that filters on them - a filter that
+# names an attribute the schema does not define fails as a whole.
+$Script:CredentialTextBaseAttributes = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url',
+                                         'scriptPath', 'homeDirectory', 'profilePath')
+$Script:CredentialTextExchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
+$Script:CredentialTextCloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
+
+# A link or a path, not a sentence. Only an assignment or credentials in the URL
+# itself count there: a homepage pointing at the password reset portal mentions
+# the word and holds nothing, and so does a home share named after a team -
+# as tier 2 mentions they were a hint on every account that carries them. A UNC
+# path carries no credentials of its own; the path attributes are read for what
+# is typed into them beside it - an assignment, or a URL with credentials.
+$Script:CredentialTextUrlAttributes = @('wWWHomePage', 'url', 'scriptPath', 'homeDirectory', 'profilePath')
+
 # Central Finding Definitions
 # Structure: FindingID => @{ Title, Risk, BaseScore, Description, Impact, Attack, Remediation, References, Tools, MITRE }
 #
@@ -7072,6 +7095,137 @@ Get-ADObject -SearchBase $schema `
             @{ Attribute = 'info';        Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
             @{ Attribute = 'description'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
             @{ Attribute = 'info';        Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+        )
+    }
+
+    'DELETED_OBJECT_CREDENTIAL' = @{
+        Title = "Credential Kept by a Deleted Object"
+        Risk = "Finding"
+        BaseScore = 45
+        Description = "A deleted object in the Deleted Objects container holds what appears to be a password - in a free-text attribute such as description or info, or in a Unix password attribute. With the AD Recycle Bin enabled, a deleted object keeps every attribute until its deleted object lifetime ends, 180 days by default: the value outlived the account it was written for, and no tool that reads live objects sees it any more. Everyone who may list the Deleted Objects container reads it - Administrators by default, and whoever was delegated the right - and the password may still be in use, on the restored account or wherever it was reused."
+        Impact = @(
+            "The password stays readable for everyone who may list deleted objects, for as long as the object is kept"
+            "Service account and administrator passwords are often reused, on other accounts and outside the directory"
+            "Restoring the object brings the account back with this password, its SID and its group memberships"
+        )
+        Attack = @(
+            "1. List the Deleted Objects container with the show-deleted control (Get-ADObject -IncludeDeletedObjects)"
+            "2. Read the free-text and password attributes of the deleted accounts"
+            "3. Try the password on the accounts it may have been reused for, or on the account itself once it is restored"
+        )
+        Remediation = @(
+            "Change the password wherever it is still in use - it was readable while it was in the attribute, before the deletion and after it"
+            "Recycle the deleted object, which removes its attributes for good: deleting a deleted object again does that, and it can no longer be restored afterwards"
+            "Keep credentials out of directory attributes; a deleted object keeps them as long as a live one"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the deleted objects with their description and info"
+                Command = 'Get-ADObject -LDAPFilter "(isDeleted=TRUE)" -IncludeDeletedObjects -Properties description,info,lastKnownParent | Select-Object Name,description,info,lastKnownParent'
+            }
+            @{
+                Description = "Recycle one deleted object - its attributes are removed and it can no longer be restored"
+                Command = 'Get-ADObject -Identity "<objectGUID>" -IncludeDeletedObjects | Remove-ADObject'
+            }
+        )
+        References = @(
+            @{ Title = "Restoring Deleted Objects - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/ad/restoring-deleted-objects" }
+            @{ Title = "Additional Active Directory Recycle Bin Tasks - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd392260(v=ws.10)" }
+            @{ Title = "Remove-ADObject, recycling objects in the Recycle Bin - Microsoft"; Url = "https://learn.microsoft.com/en-us/powershell/module/activedirectory/remove-adobject" }
+            @{ Title = "Credential Hunting - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1552/" }
+        )
+        Tools = @("PowerShell AD module", "ldp.exe", "LDAP queries")
+        MITRE = "T1552"
+        # The triggers of CREDENTIAL_IN_DESCRIPTION, on a deleted object only. The ties with
+        # those - same attribute, same score - go to these, which are the more specific: a
+        # Custom predicate and a Pattern.
+        Triggers = @(
+            foreach ($attribute in @($Script:CredentialTextBaseAttributes) + @($Script:CredentialTextExchangeAttributes) + @($Script:CredentialTextCloudAttributes)) {
+                @{ Attribute = $attribute; Custom = 'is_deleted_object'; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+                if ($Script:CredentialTextUrlAttributes -notcontains $attribute) {
+                    @{ Attribute = $attribute; Custom = 'is_deleted_object'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+                }
+            }
+        )
+    }
+
+    'DELETED_OBJECTS_READ_DELEGATED' = @{
+        Title = "Deleted Objects Readable Outside Tier 0"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "A principal outside Tier 0 may list the Deleted Objects container of the domain - or the account running the scan can, without being a member of Administrators. By default only SYSTEM and Administrators may. A deleted object keeps its security descriptor, so the holder reads of each deleted object what its own ACL allows, and with the AD Recycle Bin enabled that is every attribute the object had, for as long as it is kept. Microsoft documents this delegation for a team that views deleted objects, and it can be intended; the question is whether this principal is that team, and what the deleted objects hold."
+        Impact = @(
+            "The holder reads deleted accounts, groups and organizational units that administrators consider gone"
+            "A credential typed into a free-text attribute of a deleted account stays readable until the object is recycled"
+            "Together with Reanimate-Tombstones on the domain and write access to a deleted object, the holder can restore it with its SID and its group memberships"
+        )
+        Attack = @(
+            "1. As the delegated principal, search the Deleted Objects container with the show-deleted control"
+            "2. Read the deleted objects - descriptions, info, extension attributes, Unix password attributes"
+            "3. Use what they hold, or pick a deleted account worth restoring"
+        )
+        Remediation = @(
+            "Confirm the principal is the team the delegation was meant for; remove its ACE from CN=Deleted Objects otherwise"
+            "Grant the right to a dedicated group rather than to an account"
+            "Recycle deleted objects that hold credentials, and change those passwords"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner and the ACL of the Deleted Objects container"
+                Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM"'
+            }
+            @{
+                Description = "Remove every ACE of one principal from the container"
+                Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM" /R "DOMAIN\principal"'
+            }
+        )
+        References = @(
+            @{ Title = "Additional Active Directory Recycle Bin Tasks - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd392260(v=ws.10)" }
+            @{ Title = "Restoring Deleted Objects - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/ad/restoring-deleted-objects" }
+        )
+        Tools = @("PowerShell AD module", "ldp.exe", "dsacls")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'deletedObjectsRights'; Pattern = '.'; ExcludePattern = 'granted to a broad group| - Tier 0$| - set by Exchange setup$'; Severity = 'Hint' }
+        )
+    }
+
+    'DELETED_OBJECTS_READ_BROAD' = @{
+        Title = "Deleted Objects Readable by a Broad Group"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "A broad group - Authenticated Users, Domain Users, Everyone or the like - may list the Deleted Objects container of the domain, so every member reads the deleted objects. By default only SYSTEM and Administrators may. A deleted object keeps its security descriptor and, with the AD Recycle Bin enabled, every attribute it had: descriptions written for a live account, extension attributes, Unix password attributes, for as long as it is kept. This is not a delegation to a team, it is the content of the Recycle Bin handed to the domain."
+        Impact = @(
+            "Every account in the domain reads deleted accounts, groups and organizational units"
+            "A credential in a free-text attribute of a deleted account is readable by every member until the object is recycled"
+            "Deleted accounts worth restoring are visible to anyone looking for a way back in"
+        )
+        Attack = @(
+            "1. As any domain user, search the Deleted Objects container with the show-deleted control"
+            "2. Read the attributes of the deleted objects"
+            "3. Use what they hold"
+        )
+        Remediation = @(
+            "Remove the broad group's ACE from CN=Deleted Objects; grant the right to the team that needs it, if any"
+            "Recycle deleted objects that hold credentials, and change those passwords"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner and the ACL of the Deleted Objects container"
+                Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM"'
+            }
+            @{
+                Description = "Remove every ACE of the group from the container"
+                Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM" /R "NT AUTHORITY\Authenticated Users"'
+            }
+        )
+        References = @(
+            @{ Title = "Additional Active Directory Recycle Bin Tasks - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd392260(v=ws.10)" }
+        )
+        Tools = @("PowerShell AD module", "ldp.exe", "dsacls")
+        MITRE = "T1087.002"
+        Triggers = @(
+            @{ Attribute = 'deletedObjectsRights'; Pattern = 'granted to a broad group'; Severity = 'Finding' }
         )
     }
 
@@ -17301,6 +17455,13 @@ function Test-CustomTrigger {
             # Fallback: check common broad group SID patterns
             $privResult = Test-IsPrivileged -Identity $sid
             return ($privResult.Category -eq 'BroadGroup')
+        }
+
+        'is_deleted_object' {
+            # A deleted object, as Get-DeletedObjectAccess reports it: isDeleted is TRUE. Its
+            # description is no longer readable by every authenticated user and cannot be
+            # edited, so the card for a live object's description says the wrong thing.
+            return ($SourceObject -and ([string]$SourceObject.isDeleted -match '^(?i:true)$'))
         }
 
         'is_not_default_owner' {

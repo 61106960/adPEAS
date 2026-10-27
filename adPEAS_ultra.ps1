@@ -3953,6 +3953,13 @@ $Script:PrimaryAttributes = @{
 	CriticalObjectACL = @(
 	    'Trustee', 'TrusteeSID', 'criticalObject', 'criticalObjectRights'
 	)
+	DeletedObject = @(
+	    'sAMAccountName', 'name', 'distinguishedName', 'lastKnownParent', 'whenChanged',
+	    'objectSid', 'description', 'info'
+	)
+	DeletedObjectsReader = @(
+	    'Trustee', 'TrusteeSID', 'deletedObjectsRights'
+	)
 	ExchangeServersGroup = @(
 	    'sAMAccountName', 'distinguishedName', 'objectSid',
 	    'member', 'memberOf', 'description'
@@ -4692,6 +4699,11 @@ $Script:CredentialMentionPattern = 'pas(?:sw\S*|sord|vorto)|\bparol[ae]?\b|\bcre
 $Script:CredentialNoMentionPattern = $Script:CredentialAssignmentPattern +
 	'|(?:pas(?:sw\S*|sord|vorto)|pwd|pw|\bpass|kennwort|\bparol[ae]?)\s*[=:]\s*(?:\*+(?:\s|$)|<[^>]+>)' +
 	'|://[^\s/:@]+:(?:\*+|<[^>]+>)@'
+$Script:CredentialTextBaseAttributes = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url',
+	                                     'scriptPath', 'homeDirectory', 'profilePath')
+$Script:CredentialTextExchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
+$Script:CredentialTextCloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
+$Script:CredentialTextUrlAttributes = @('wWWHomePage', 'url', 'scriptPath', 'homeDirectory', 'profilePath')
 $Script:FindingDefinitions = @{
 	'KERBEROASTABLE_SPN' = @{
 	    Title = "Kerberoastable Service Account"
@@ -11082,6 +11094,131 @@ Get-ADObject -SearchBase $schema `
 	        @{ Attribute = 'info';        Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
 	        @{ Attribute = 'description'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
 	        @{ Attribute = 'info';        Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+	    )
+	}
+	'DELETED_OBJECT_CREDENTIAL' = @{
+	    Title = "Credential Kept by a Deleted Object"
+	    Risk = "Finding"
+	    BaseScore = 45
+	    Description = "A deleted object in the Deleted Objects container holds what appears to be a password - in a free-text attribute such as description or info, or in a Unix password attribute. With the AD Recycle Bin enabled, a deleted object keeps every attribute until its deleted object lifetime ends, 180 days by default: the value outlived the account it was written for, and no tool that reads live objects sees it any more. Everyone who may list the Deleted Objects container reads it - Administrators by default, and whoever was delegated the right - and the password may still be in use, on the restored account or wherever it was reused."
+	    Impact = @(
+	        "The password stays readable for everyone who may list deleted objects, for as long as the object is kept"
+	        "Service account and administrator passwords are often reused, on other accounts and outside the directory"
+	        "Restoring the object brings the account back with this password, its SID and its group memberships"
+	    )
+	    Attack = @(
+	        "1. List the Deleted Objects container with the show-deleted control (Get-ADObject -IncludeDeletedObjects)"
+	        "2. Read the free-text and password attributes of the deleted accounts"
+	        "3. Try the password on the accounts it may have been reused for, or on the account itself once it is restored"
+	    )
+	    Remediation = @(
+	        "Change the password wherever it is still in use - it was readable while it was in the attribute, before the deletion and after it"
+	        "Recycle the deleted object, which removes its attributes for good: deleting a deleted object again does that, and it can no longer be restored afterwards"
+	        "Keep credentials out of directory attributes; a deleted object keeps them as long as a live one"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "List the deleted objects with their description and info"
+	            Command = 'Get-ADObject -LDAPFilter "(isDeleted=TRUE)" -IncludeDeletedObjects -Properties description,info,lastKnownParent | Select-Object Name,description,info,lastKnownParent'
+	        }
+	        @{
+	            Description = "Recycle one deleted object - its attributes are removed and it can no longer be restored"
+	            Command = 'Get-ADObject -Identity "<objectGUID>" -IncludeDeletedObjects | Remove-ADObject'
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Restoring Deleted Objects - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/ad/restoring-deleted-objects" }
+	        @{ Title = "Additional Active Directory Recycle Bin Tasks - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd392260(v=ws.10)" }
+	        @{ Title = "Remove-ADObject, recycling objects in the Recycle Bin - Microsoft"; Url = "https://learn.microsoft.com/en-us/powershell/module/activedirectory/remove-adobject" }
+	        @{ Title = "Credential Hunting - MITRE ATT&CK"; Url = "https://attack.mitre.org/techniques/T1552/" }
+	    )
+	    Tools = @("PowerShell AD module", "ldp.exe", "LDAP queries")
+	    MITRE = "T1552"
+	    Triggers = @(
+	        foreach ($attribute in @($Script:CredentialTextBaseAttributes) + @($Script:CredentialTextExchangeAttributes) + @($Script:CredentialTextCloudAttributes)) {
+	            @{ Attribute = $attribute; Custom = 'is_deleted_object'; Pattern = $Script:CredentialAssignmentPattern; Severity = 'Finding' }
+	            if ($Script:CredentialTextUrlAttributes -notcontains $attribute) {
+	                @{ Attribute = $attribute; Custom = 'is_deleted_object'; Pattern = $Script:CredentialMentionPattern; ExcludePattern = $Script:CredentialNoMentionPattern; Severity = 'Hint' }
+	            }
+	        }
+	    )
+	}
+	'DELETED_OBJECTS_READ_DELEGATED' = @{
+	    Title = "Deleted Objects Readable Outside Tier 0"
+	    Risk = "Hint"
+	    BaseScore = 25
+	    Description = "A principal outside Tier 0 may list the Deleted Objects container of the domain - or the account running the scan can, without being a member of Administrators. By default only SYSTEM and Administrators may. A deleted object keeps its security descriptor, so the holder reads of each deleted object what its own ACL allows, and with the AD Recycle Bin enabled that is every attribute the object had, for as long as it is kept. Microsoft documents this delegation for a team that views deleted objects, and it can be intended; the question is whether this principal is that team, and what the deleted objects hold."
+	    Impact = @(
+	        "The holder reads deleted accounts, groups and organizational units that administrators consider gone"
+	        "A credential typed into a free-text attribute of a deleted account stays readable until the object is recycled"
+	        "Together with Reanimate-Tombstones on the domain and write access to a deleted object, the holder can restore it with its SID and its group memberships"
+	    )
+	    Attack = @(
+	        "1. As the delegated principal, search the Deleted Objects container with the show-deleted control"
+	        "2. Read the deleted objects - descriptions, info, extension attributes, Unix password attributes"
+	        "3. Use what they hold, or pick a deleted account worth restoring"
+	    )
+	    Remediation = @(
+	        "Confirm the principal is the team the delegation was meant for; remove its ACE from CN=Deleted Objects otherwise"
+	        "Grant the right to a dedicated group rather than to an account"
+	        "Recycle deleted objects that hold credentials, and change those passwords"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the owner and the ACL of the Deleted Objects container"
+	            Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM"'
+	        }
+	        @{
+	            Description = "Remove every ACE of one principal from the container"
+	            Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM" /R "DOMAIN\principal"'
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Additional Active Directory Recycle Bin Tasks - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd392260(v=ws.10)" }
+	        @{ Title = "Restoring Deleted Objects - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/ad/restoring-deleted-objects" }
+	    )
+	    Tools = @("PowerShell AD module", "ldp.exe", "dsacls")
+	    MITRE = "T1087.002"
+	    Triggers = @(
+	        @{ Attribute = 'deletedObjectsRights'; Pattern = '.'; ExcludePattern = 'granted to a broad group| - Tier 0$| - set by Exchange setup$'; Severity = 'Hint' }
+	    )
+	}
+	'DELETED_OBJECTS_READ_BROAD' = @{
+	    Title = "Deleted Objects Readable by a Broad Group"
+	    Risk = "Finding"
+	    BaseScore = 40
+	    Description = "A broad group - Authenticated Users, Domain Users, Everyone or the like - may list the Deleted Objects container of the domain, so every member reads the deleted objects. By default only SYSTEM and Administrators may. A deleted object keeps its security descriptor and, with the AD Recycle Bin enabled, every attribute it had: descriptions written for a live account, extension attributes, Unix password attributes, for as long as it is kept. This is not a delegation to a team, it is the content of the Recycle Bin handed to the domain."
+	    Impact = @(
+	        "Every account in the domain reads deleted accounts, groups and organizational units"
+	        "A credential in a free-text attribute of a deleted account is readable by every member until the object is recycled"
+	        "Deleted accounts worth restoring are visible to anyone looking for a way back in"
+	    )
+	    Attack = @(
+	        "1. As any domain user, search the Deleted Objects container with the show-deleted control"
+	        "2. Read the attributes of the deleted objects"
+	        "3. Use what they hold"
+	    )
+	    Remediation = @(
+	        "Remove the broad group's ACE from CN=Deleted Objects; grant the right to the team that needs it, if any"
+	        "Recycle deleted objects that hold credentials, and change those passwords"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the owner and the ACL of the Deleted Objects container"
+	            Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM"'
+	        }
+	        @{
+	            Description = "Remove every ACE of the group from the container"
+	            Command = 'dsacls "CN=Deleted Objects,DC=DOMAIN,DC=COM" /R "NT AUTHORITY\Authenticated Users"'
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Additional Active Directory Recycle Bin Tasks - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-r2-and-2008/dd392260(v=ws.10)" }
+	    )
+	    Tools = @("PowerShell AD module", "ldp.exe", "dsacls")
+	    MITRE = "T1087.002"
+	    Triggers = @(
+	        @{ Attribute = 'deletedObjectsRights'; Pattern = 'granted to a broad group'; Severity = 'Finding' }
 	    )
 	}
 	'CREDENTIAL_GPP_PASSWORD' = @{
@@ -19948,6 +20085,9 @@ function Test-CustomTrigger {
 	        $privResult = Test-IsPrivileged -Identity $sid
 	        return ($privResult.Category -eq 'BroadGroup')
 	    }
+	    'is_deleted_object' {
+	        return ($SourceObject -and ([string]$SourceObject.isDeleted -match '^(?i:true)$'))
+	    }
 	    'is_not_default_owner' {
 	        if ($SourceObject -and $SourceObject.OwnerSID) {
 	            $isDefault = Test-IsDefaultOwner -SID $SourceObject.OwnerSID
@@ -23234,6 +23374,39 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    )
 	    SecureMessage = "No credentials were found in the free-text attributes of any object. The attributes a password tends to be typed into - description, info, comment, adminDescription, the link attributes, extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - carry none."
 	    PrimaryFindingId = 'CREDENTIAL_IN_DESCRIPTION'
+	}
+	'DeletedObject' = @{
+	    TitleFormat = "Deleted Object: {Name}"
+	    Module = "Creds"
+	    Category = "Credentials"
+	    SectionTitle = "Readable Deleted Objects"
+	    Summary = "Finds the deleted objects the current user can read, and the credentials they still hold."
+	    WhyItMatters = "With the AD Recycle Bin enabled, a deleted object keeps every attribute in the Deleted Objects container until its lifetime ends - 180 days by default. A password typed into the description of a service account outlives the account, and no check that reads live objects sees it any more. Reading deleted objects takes the show-deleted control and List Contents on the container, which by default only SYSTEM and Administrators hold; an ordinary account that can read them holds a delegation."
+	    WhatWeCheck = @(
+	        "Every deleted object the current user can list in the Deleted Objects container of the domain"
+	        "The free-text attributes Get-PasswordInDescription reads - description, info, comment, adminDescription, the link and path attributes, extensionAttribute1-15 and msDS-cloudExtensionAttribute1-20 - with the same patterns"
+	        "userPassword, unixUserPassword, msSFU30Password, sambaNTPassword and sambaLMPassword"
+	        "Whether the current user reads them as a member of Administrators or through a delegation"
+	    )
+	    FilteringNote = "Only what the current user may read is examined: a domain user sees no deleted object by default, and the line says so rather than calling the container empty. With the Recycle Bin enabled, recycled objects - deleted before it was enabled, or past their deleted object lifetime - are not returned; without it, tombstones are. Neither keeps the attributes examined here."
+	    SecureMessage = "None of the deleted objects the current user can read holds a credential in a free-text or password attribute."
+	    PrimaryFindingId = 'DELETED_OBJECT_CREDENTIAL'
+	}
+	'DeletedObjectsReader' = @{
+	    TitleFormat = "May List Deleted Objects: {Trustee}"
+	    Module = "Creds"
+	    Category = "Credentials"
+	    SectionTitle = "Who May List Deleted Objects"
+	    Summary = "Finds the principals outside Tier 0 that may list the Deleted Objects container."
+	    WhyItMatters = "A deleted object keeps its security descriptor, so whoever may list the container reads of each deleted object what its own ACL allows - for most objects everything an authenticated user could read while it was alive, and with the Recycle Bin that is every attribute it had. Microsoft documents granting List Contents and Read Property on the container to let a team view deleted objects; the question is who was given it."
+	    WhatWeCheck = @(
+	        "List Contents, generic read and full control on CN=Deleted Objects of the domain, as far as the ACE applies to the container itself"
+	        "The owner of the container, who may grant itself the rest"
+	        "Whether the holder is Tier 0, an Exchange service group or a broad group"
+	    )
+	    FilteringNote = "The container's ACL is readable by administrators only by default; run as an ordinary user, the check says it could not be read. Tier 0 holds the right by default and Exchange setup grants it to Exchange Servers and Exchange Trusted Subsystem - both are hidden unless -IncludePrivileged. Restoring a deleted object is a different right, Reanimate-Tombstones on the naming context head, reported by the Dangerous ACLs and the Critical Object ACLs checks."
+	    SecureMessage = "Only Tier 0, and the Exchange service groups where Exchange is installed, may list the Deleted Objects container."
+	    PrimaryFindingId = 'DELETED_OBJECTS_READ_DELEGATED'
 	}
 	'DangerousACL' = @{
 	    TitleFormat = "Dangerous ACL: {Name}"
@@ -53841,6 +54014,108 @@ function Test-UnixPasswordUsableAsIs {
 	    if ($entry -match 'Cleartext|NT hash|LM hash|DES crypt|Unsalted digest') { return $true }
 	}
 	return $false
+}
+$Script:CredentialTextPasswordToken = 'pas(?:sw\S*|sord|vorto)'
+$Script:CredentialTextRealValue = '(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}'
+$Script:CredentialTextTier1Patterns = @(
+	@{ Pattern = $Script:CredentialTextPasswordToken + '\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password-variant assignment (quoted)" }
+	@{ Pattern = $Script:CredentialTextPasswordToken + '\s*[=:]\s*(?!["''])' + $Script:CredentialTextRealValue; Description = "Password-variant assignment (unquoted)" }
+	@{ Pattern = 'pwd\s*[=:]\s*' + $Script:CredentialTextRealValue; Description = "Pwd assignment" }
+	@{ Pattern = 'pw\s*[=:]\s*' + $Script:CredentialTextRealValue; Description = "PW assignment" }
+	@{ Pattern = '\bpass\s*[=:]\s*' + $Script:CredentialTextRealValue; Description = "Pass assignment" }
+	@{ Pattern = 'kennwort\s*[=:]\s*' + $Script:CredentialTextRealValue; Description = "Kennwort assignment (German)" }
+	@{ Pattern = '\bparol[ae]?\s*[=:]\s*' + $Script:CredentialTextRealValue; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
+	@{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'; Description = "Credentials embedded in a URL" }
+)
+$Script:CredentialTextTier2Patterns = @(
+	@{ Pattern = $Script:CredentialTextPasswordToken; Description = "Password-variant mention (EN/DE/NO/LU/EO)" }
+	@{ Pattern = '\bparol[ae]?\b'; Description = "Parola/parole/parol mention (RO/LV/IT)" }
+	@{ Pattern = '\bcred(ential)?s?\b'; Description = "Credential mention" }
+	@{ Pattern = '\b(secret|token)\s*[=:]\s*\S{5,}'; Description = "Secret/token assignment" }
+)
+$Script:CredentialTextExclusionPatterns = @(
+	($Script:CredentialTextPasswordToken + '\s*(policy|policies|requirement|guideline|richtlinie|anforderung)'),
+	'\bparol[ae]?\s*(policy|politica|cerinta)',
+	($Script:CredentialTextPasswordToken + '\s+(must|should|cannot|shall|muss|soll|darf|kann|m\u00E5|b\u00F8r|deve|trebuie)\s+'),
+	($Script:CredentialTextPasswordToken + '\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utl\u00F8p|lunghezza|scadenza)'),
+	($Script:CredentialTextPasswordToken + '\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)'),
+	'\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
+	('(minimum|maximum)\s+' + $Script:CredentialTextPasswordToken),
+	('(set|change|update|reset)\s+(your|the|a)\s+' + $Script:CredentialTextPasswordToken),
+	('Enter\s+(your\s+)?' + $Script:CredentialTextPasswordToken),
+	($Script:CredentialTextPasswordToken + '\s+prompt'),
+	($Script:CredentialTextPasswordToken + '\s+replicat')
+)
+$Script:CredentialTextPlaceholderPatterns = @(
+	($Script:CredentialTextPasswordToken + '\s*[=:]\s*\*+(?:\s|$)'),
+	($Script:CredentialTextPasswordToken + '\s*[=:]\s*<[^>]+>'),
+	'pwd\s*[=:]\s*\*+(?:\s|$)',
+	'pwd\s*[=:]\s*<[^>]+>',
+	'\bpass\s*[=:]\s*\*+(?:\s|$)',
+	'\bpass\s*[=:]\s*<[^>]+>',
+	'kennwort\s*[=:]\s*\*+(?:\s|$)',
+	'kennwort\s*[=:]\s*<[^>]+>',
+	'://[^\s/:@]+:\*+@',
+	'://[^\s/:@]+:<[^>]+>@'
+)
+function Get-CredentialTextMatch {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [object[]]$Attributes = @(),
+	    [Parameter(Mandatory = $false)]
+	    [string]$Label
+	)
+	$bestTier = 0
+	$bestAttrName = $null
+	foreach ($attr in @($Attributes)) {
+	    if (-not $attr) { continue }
+	    $attrValue = [string]$attr.Value
+	    $isTier1 = $false
+	    foreach ($t1 in $Script:CredentialTextTier1Patterns) {
+	        if ($attrValue -imatch $t1.Pattern) {
+	            $isTier1 = $true
+	            break
+	        }
+	    }
+	    if ($isTier1) {
+	        $bestTier = 1
+	        $bestAttrName = $attr.Name
+	        break
+	    }
+	    if ($Script:CredentialTextUrlAttributes -contains $attr.Name) { continue }
+	    $isPlaceholder = $false
+	    foreach ($phPattern in $Script:CredentialTextPlaceholderPatterns) {
+	        if ($attrValue -imatch $phPattern) {
+	            $isPlaceholder = $true
+	            break
+	        }
+	    }
+	    if ($isPlaceholder) { continue }
+	    $excluded = $false
+	    foreach ($exPattern in $Script:CredentialTextExclusionPatterns) {
+	        if ($attrValue -match $exPattern) {
+	            $excluded = $true
+	            break
+	        }
+	    }
+	    if ($excluded) { continue }
+	    $isTier2 = $false
+	    foreach ($t2 in $Script:CredentialTextTier2Patterns) {
+	        if ($attrValue -imatch $t2.Pattern) {
+	            $isTier2 = $true
+	            break
+	        }
+	    }
+	    if ($isTier2 -and $bestTier -eq 0) {
+	        $bestTier = 2
+	        $bestAttrName = $attr.Name
+	    }
+	}
+	return [PSCustomObject]@{
+	    Tier      = $bestTier
+	    Attribute = $bestAttrName
+	}
 }
 function Get-PrivilegedAccountFilter {
 	[CmdletBinding()]
@@ -86252,57 +86527,12 @@ function Get-PasswordInDescription {
 	            Show-Line "OPSEC mode: Skipping password-in-description check (would check all users and computers)" -Class "Hint"
 	            return
 	        }
-	        $pwToken = 'pas(?:sw\S*|sord|vorto)'
-	        $realValue = '(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}'
-	        $tier1Patterns = @(
-	            @{ Pattern = $pwToken + '\s*[=:]\s*["''][^"'']{3,}["'']'; Description = "Password-variant assignment (quoted)" }
-	            @{ Pattern = $pwToken + '\s*[=:]\s*(?!["''])' + $realValue; Description = "Password-variant assignment (unquoted)" }
-	            @{ Pattern = 'pwd\s*[=:]\s*' + $realValue; Description = "Pwd assignment" }
-	            @{ Pattern = 'pw\s*[=:]\s*' + $realValue; Description = "PW assignment" }
-	            @{ Pattern = '\bpass\s*[=:]\s*' + $realValue; Description = "Pass assignment" }
-	            @{ Pattern = 'kennwort\s*[=:]\s*' + $realValue; Description = "Kennwort assignment (German)" }
-	            @{ Pattern = '\bparol[ae]?\s*[=:]\s*' + $realValue; Description = "Parola/parole/parol assignment (RO/LV/IT)" }
-	            @{ Pattern = '[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'; Description = "Credentials embedded in a URL" }
-	        )
-	        $tier2Patterns = @(
-	            @{ Pattern = $pwToken; Description = "Password-variant mention (EN/DE/NO/LU/EO)" }
-	            @{ Pattern = '\bparol[ae]?\b'; Description = "Parola/parole/parol mention (RO/LV/IT)" }
-	            @{ Pattern = '\bcred(ential)?s?\b'; Description = "Credential mention" }
-	            @{ Pattern = '\b(secret|token)\s*[=:]\s*\S{5,}'; Description = "Secret/token assignment" }
-	        )
-	        $exclusionPatterns = @(
-	            ($pwToken + '\s*(policy|policies|requirement|guideline|richtlinie|anforderung)'),
-	            '\bparol[ae]?\s*(policy|politica|cerinta)',
-	            ($pwToken + '\s+(must|should|cannot|shall|muss|soll|darf|kann|m\u00E5|b\u00F8r|deve|trebuie)\s+'),
-	            ($pwToken + '\s+(length|complexity|history|age|expir|wechsel|ablauf|historie|lengde|utl\u00F8p|lunghezza|scadenza)'),
-	            ($pwToken + '\s+(reset|change|recover|forgot|reimpost|cambiar|schimb)'),
-	            '\bparol[ae]?\s+(reset|change|reimpost|cambiar|schimbar)',
-	            ('(minimum|maximum)\s+' + $pwToken),
-	            ('(set|change|update|reset)\s+(your|the|a)\s+' + $pwToken),
-	            ('Enter\s+(your\s+)?' + $pwToken),
-	            ($pwToken + '\s+prompt'),
-	            ($pwToken + '\s+replicat')
-	        )
-	        $placeholderPatterns = @(
-	            ($pwToken + '\s*[=:]\s*\*+(?:\s|$)'),
-	            ($pwToken + '\s*[=:]\s*<[^>]+>'),
-	            'pwd\s*[=:]\s*\*+(?:\s|$)',
-	            'pwd\s*[=:]\s*<[^>]+>',
-	            '\bpass\s*[=:]\s*\*+(?:\s|$)',
-	            '\bpass\s*[=:]\s*<[^>]+>',
-	            'kennwort\s*[=:]\s*\*+(?:\s|$)',
-	            'kennwort\s*[=:]\s*<[^>]+>',
-	            '://[^\s/:@]+:\*+@',
-	            '://[^\s/:@]+:<[^>]+>@'
-	        )
 	        $findingCount = 0
 	        $hintCount = 0
 	        $unreadableCount = 0
-	        $baseAttributes  = @('description', 'info', 'comment', 'adminDescription', 'wWWHomePage', 'url',
-	                             'scriptPath', 'homeDirectory', 'profilePath')
-	        $exchangeAttributes = @(1..15 | ForEach-Object { "extensionAttribute$_" })
-	        $cloudAttributes = @(1..20 | ForEach-Object { "msDS-cloudExtensionAttribute$_" })
-	        $urlAttributes = @('wWWHomePage', 'url', 'scriptPath', 'homeDirectory', 'profilePath')
+	        $baseAttributes     = $Script:CredentialTextBaseAttributes
+	        $exchangeAttributes = $Script:CredentialTextExchangeAttributes
+	        $cloudAttributes    = $Script:CredentialTextCloudAttributes
 	        $candidates = @{}
 	        foreach ($set in @(
 	            @{ Attributes = $baseAttributes;     Optional = $false; Label = 'the base attributes' }
@@ -86355,51 +86585,9 @@ function Get-PasswordInDescription {
 	                    }
 	                    if ($kindLabels.ContainsKey($schemaClass)) { $objectType = $kindLabels[$schemaClass] }
 	                }
-	                $bestTier = 0
-	                $bestAttrName = $null
-	                foreach ($attr in $attributesToCheck) {
-	                    $attrValue = [string]$attr.Value
-	                    $isTier1 = $false
-	                    foreach ($t1 in $tier1Patterns) {
-	                        if ($attrValue -imatch $t1.Pattern) {
-	                            $isTier1 = $true
-	                            break
-	                        }
-	                    }
-	                    if ($isTier1) {
-	                        $bestTier = 1
-	                        $bestAttrName = $attr.Name
-	                        break
-	                    }
-	                    if ($urlAttributes -contains $attr.Name) { continue }
-	                    $isPlaceholder = $false
-	                    foreach ($phPattern in $placeholderPatterns) {
-	                        if ($attrValue -imatch $phPattern) {
-	                            $isPlaceholder = $true
-	                            break
-	                        }
-	                    }
-	                    if ($isPlaceholder) { continue }
-	                    $excluded = $false
-	                    foreach ($exPattern in $exclusionPatterns) {
-	                        if ($attrValue -match $exPattern) {
-	                            $excluded = $true
-	                            break
-	                        }
-	                    }
-	                    if ($excluded) { continue }
-	                    $isTier2 = $false
-	                    foreach ($t2 in $tier2Patterns) {
-	                        if ($attrValue -imatch $t2.Pattern) {
-	                            $isTier2 = $true
-	                            break
-	                        }
-	                    }
-	                    if ($isTier2 -and $bestTier -eq 0) {
-	                        $bestTier = 2
-	                        $bestAttrName = $attr.Name
-	                    }
-	                }
+	                $credentialMatch = Get-CredentialTextMatch -Attributes $attributesToCheck -Label $accountName
+	                $bestTier = $credentialMatch.Tier
+	                $bestAttrName = $credentialMatch.Attribute
 	                if ($bestTier -gt 0) {
 	                    $fullObj = @(Get-DomainObject -Identity $accountName -ShowOwner @connectionParams)[0]
 	                    if ($fullObj) {
@@ -86436,6 +86624,218 @@ function Get-PasswordInDescription {
 	    } catch {
 	        Show-Line "Error during check - credentials in free-text attributes could not be evaluated: $_" -Class Finding
 	    }
+	}
+}
+function Get-DeletedObjectAccess {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludePrivileged
+	)
+	process {
+	    try {
+	        $connectionParams = @{}
+	        if ($Domain)     { $connectionParams['Domain']     = $Domain }
+	        if ($Server)     { $connectionParams['Server']     = $Server }
+	        if ($Credential) { $connectionParams['Credential'] = $Credential }
+	        if (-not (Ensure-LDAPConnection @connectionParams)) {
+	            return
+	        }
+	        Show-SubHeader "Testing which deleted objects the current user can read..." -ObjectType "DeletedObject"
+	        $domainDN = [string]$Script:LDAPContext.DomainDN
+	        $containerDN = "CN=Deleted Objects,$domainDN"
+	        $containerSD = $null
+	        try {
+	            $container = @(Get-DomainObject -SearchBase "<WKGUID=18e2ea80684f11d2b9aa00c04f79f805,$domainDN>" -Scope Base -LDAPFilter '(objectClass=*)' -Properties 'distinguishedName', 'nTSecurityDescriptor' -Raw -IncludeDeleted @connectionParams)[0]
+	            if ($container) {
+	                if ($container.distinguishedName) { $containerDN = [string]$container.distinguishedName }
+	                $containerSD = $container.nTSecurityDescriptor
+	            }
+	        } catch {
+	        }
+	        $deletedObjects = @(Get-DomainObject -SearchBase $containerDN -Scope OneLevel -LDAPFilter '(objectClass=*)' -IncludeDeleted @connectionParams)
+	        $readsAsAdministrator = Test-SIDInTokenGroups -SID 'S-1-5-32-544'
+	        if ($deletedObjects.Count -eq 0) {
+	            if ($readsAsAdministrator) {
+	                Show-Line "No deleted object exists in the domain" -Class Note
+	            } else {
+	                Show-Line "No deleted object is visible to this account - it may not list them, or there is none" -Class Note
+	            }
+	        } else {
+	            if ($readsAsAdministrator) {
+	                Show-Line "This account can read $($deletedObjects.Count) deleted object(s) - as a member of Administrators" -Class Note
+	            } else {
+	                Show-Line "This account can read $($deletedObjects.Count) deleted object(s) through a delegation on the deleted objects container" -Class Hint -FindingId 'DELETED_OBJECTS_READ_DELEGATED'
+	            }
+	            $freeTextAttributes = @($Script:CredentialTextBaseAttributes) + @($Script:CredentialTextExchangeAttributes) + @($Script:CredentialTextCloudAttributes)
+	            $passwordAttributes = @('unixUserPassword', 'userPassword', 'msSFU30Password', 'sambaNTPassword', 'sambaLMPassword')
+	            $reported = 0
+	            foreach ($deletedObject in $deletedObjects) {
+	                $objectDN = [string]$deletedObject.distinguishedName
+	                $attributesToCheck = @()
+	                foreach ($name in $freeTextAttributes) {
+	                    $value = (@($deletedObject.$name) | Where-Object { $_ }) -join ' '
+	                    if (-not [string]::IsNullOrWhiteSpace($value)) {
+	                        $attributesToCheck += @{ Name = $name; Value = $value }
+	                    }
+	                }
+	                $credentialMatch = Get-CredentialTextMatch -Attributes $attributesToCheck -Label $objectDN
+	                $passwordAttribute = @($passwordAttributes | Where-Object { $null -ne $deletedObject.$_ -and [string]$deletedObject.$_ -ne '' })[0]
+	                if ($credentialMatch.Tier -eq 0 -and -not $passwordAttribute) { continue }
+	                $display = ConvertTo-DeletedObjectDisplay -DeletedObject $deletedObject
+	                if ($passwordAttribute) {
+	                    Show-Line "Password attribute $passwordAttribute set on deleted $($display.Kind) '$($display.Name)'" -Class Finding
+	                    $class = 'Finding'
+	                } elseif ($credentialMatch.Tier -eq 1) {
+	                    Show-Line "Probable credential found in $($credentialMatch.Attribute) of deleted $($display.Kind) '$($display.Name)'" -Class Finding
+	                    $class = 'Finding'
+	                } else {
+	                    Show-Line "Possible credential mention in $($credentialMatch.Attribute) of deleted $($display.Kind) '$($display.Name)'" -Class Hint
+	                    $class = 'Hint'
+	                }
+	                $display.Object | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DeletedObject' -Force
+	                Show-Object $display.Object -Class $class
+	                $reported++
+	            }
+	            if ($reported -eq 0) {
+	                Show-Line "None of the $($deletedObjects.Count) deleted object(s) holds a credential in a free-text or password attribute" -Class Secure
+	            }
+	        }
+	        try {
+	            Show-DeletedObjectsReaders -ContainerDN $containerDN -SecurityDescriptor $containerSD -IncludePrivileged:$IncludePrivileged -ConnectionParams $connectionParams
+	        } catch {
+	            Show-Line "Error during the ACL analysis - who may list deleted objects could not be evaluated: $_" -Class Finding
+	        }
+	    } catch {
+	        Show-Line "Error during check - deleted object access could not be evaluated: $_" -Class Finding
+	    }
+	}
+}
+function ConvertTo-DeletedObjectDisplay {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    $DeletedObject
+	)
+	foreach ($attribute in @('name', 'cn')) {
+	    $value = [string]$DeletedObject.$attribute
+	    if ($value -match "`n") {
+	        $DeletedObject | Add-Member -NotePropertyName $attribute -NotePropertyValue (($value -split "`n")[0]) -Force
+	    }
+	}
+	$shownName = if ($DeletedObject.sAMAccountName) { [string]$DeletedObject.sAMAccountName }
+	             elseif ($DeletedObject.'msDS-LastKnownRDN') { [string]$DeletedObject.'msDS-LastKnownRDN' }
+	             elseif ($DeletedObject.name) { [string]$DeletedObject.name }
+	             else { [string]$DeletedObject.distinguishedName }
+	$mostSpecific = [string](@($DeletedObject.objectClass) | Select-Object -Last 1)
+	$kindLabels = @{
+	    'user'                                = 'user'
+	    'computer'                            = 'computer'
+	    'group'                               = 'group'
+	    'contact'                             = 'contact'
+	    'organizationalUnit'                  = 'OU'
+	    'groupPolicyContainer'                = 'GPO'
+	    'msDS-GroupManagedServiceAccount'     = 'gMSA'
+	    'msDS-ManagedServiceAccount'          = 'MSA'
+	    'msDS-DelegatedManagedServiceAccount' = 'dMSA'
+	}
+	$kind = if ($kindLabels.ContainsKey($mostSpecific)) { $kindLabels[$mostSpecific] } elseif ($mostSpecific) { $mostSpecific } else { 'object' }
+	return [PSCustomObject]@{
+	    Object = $DeletedObject
+	    Name   = $shownName
+	    Kind   = $kind
+	}
+}
+function Show-DeletedObjectsReaders {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$ContainerDN,
+	    [Parameter(Mandatory = $false)]
+	    $SecurityDescriptor,
+	    [Parameter(Mandatory = $false)]
+	    [switch]$IncludePrivileged,
+	    [Parameter(Mandatory = $false)]
+	    [hashtable]$ConnectionParams = @{}
+	)
+	Show-SubHeader "Analyzing who may list deleted objects..." -ObjectType "DeletedObjectsReader"
+	if (-not $SecurityDescriptor) {
+	    Show-Line "The ACL of the deleted objects container is readable by administrators only - other readers not checked" -Class Note
+	    return
+	}
+	$aclResult = Get-ObjectACL -DistinguishedName $ContainerDN -SecurityDescriptor $SecurityDescriptor -AllowOnly @ConnectionParams
+	if (-not $aclResult) {
+	    Show-Line "The ACL of the deleted objects container could not be parsed - who may list deleted objects was not checked" -Class Note
+	    return
+	}
+	$rightsBySID = [ordered]@{}
+	$nameBySID = @{}
+	if ($aclResult.OwnerSID) {
+	    $rightsBySID[[string]$aclResult.OwnerSID] = @('Owner')
+	    $nameBySID[[string]$aclResult.OwnerSID] = $(if ($aclResult.Owner) { [string]$aclResult.Owner } else { [string]$aclResult.OwnerSID })
+	}
+	foreach ($ace in @($aclResult.ACEs)) {
+	    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+	    $rights = @($ace.RightsRaw)
+	    $granted = @()
+	    if ($rights -contains 'GenericAll') {
+	        $granted += 'Full control'
+	    } elseif ($rights -contains 'GenericRead' -or $rights -contains 'ListChildren') {
+	        $granted += 'List contents'
+	        if ($rights -contains 'GenericRead' -or $rights -contains 'ReadProperty') { $granted += 'Read properties' }
+	    }
+	    if ($granted.Count -eq 0) { continue }
+	    $sid = [string]$ace.TrusteeSID
+	    if (-not $rightsBySID.Contains($sid)) {
+	        $rightsBySID[$sid] = @()
+	        $nameBySID[$sid] = $(if ($ace.Trustee) { [string]$ace.Trustee } else { $sid })
+	    }
+	    $rightsBySID[$sid] = @($rightsBySID[$sid]) + $granted
+	}
+	$readers = @()
+	$exchangeReads = $false
+	foreach ($sid in @($rightsBySID.Keys)) {
+	    $rightsText = @($rightsBySID[$sid] | Select-Object -Unique) -join ', '
+	    $expectedAs = $null
+	    if ((Test-IsPrivileged -Identity $sid).Category -eq 'Privileged') {
+	        $expectedAs = 'Tier 0'
+	    } elseif ((Test-IsExchangeServiceGroup -Identity $sid).IsExchangeService) {
+	        $expectedAs = 'set by Exchange setup'
+	        $exchangeReads = $true
+	    }
+	    if ($expectedAs) {
+	        if (-not $IncludePrivileged) {
+	            continue
+	        }
+	        $rightsText = "$rightsText - $expectedAs"
+	    } elseif (Test-IsBroadTrustee -SID $sid) {
+	        $rightsText = "$rightsText - granted to a broad group so every member holds it"
+	    }
+	    $readers += [PSCustomObject]@{
+	        Trustee               = $nameBySID[$sid]
+	        TrusteeSID            = $sid
+	        deletedObjectsRights  = $rightsText
+	        _Expected             = [bool]$expectedAs
+	    }
+	}
+	$unexpected = @($readers | Where-Object { -not $_._Expected })
+	if ($unexpected.Count -gt 0) {
+	    $headlineClass = if (@($unexpected | Where-Object { $_.deletedObjectsRights -match 'broad group' }).Count -gt 0) { 'Finding' } else { 'Hint' }
+	    Show-Line "Found $($unexpected.Count) principal(s) outside Tier 0 that may list deleted objects" -Class $headlineClass
+	} else {
+	    Show-Line "Only Tier 0$(if ($exchangeReads) { ' and the Exchange service groups' }) may list deleted objects" -Class Secure
+	}
+	foreach ($reader in $readers) {
+	    $rowClass = if ($reader._Expected) { 'Note' } elseif ($reader.deletedObjectsRights -match 'broad group') { 'Finding' } else { 'Hint' }
+	    $reader.PSObject.Properties.Remove('_Expected')
+	    $reader | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'DeletedObjectsReader' -Force
+	    Show-Object $reader -Class $rowClass
 	}
 }
 function ConvertTo-HtmlEncode {
@@ -97021,7 +97421,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261027-1752"
+$Script:adPEASVersion = "2.8.0+20261027-2019"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -97420,6 +97820,7 @@ try {
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialRoaming' -Title 'Credential Roaming' -Check { Get-CredentialRoaming -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-CredentialExposure' -Title 'Credential Exposure' -Check { Get-CredentialExposure }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-PasswordInDescription' -Title 'Passwords in Description/Info' -Check { Get-PasswordInDescription -OPSEC:$OPSEC }
+	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-DeletedObjectAccess' -Title 'Deleted Object Access' -Check { Get-DeletedObjectAccess -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-KerberoastableAccounts' -Title 'Kerberoastable Accounts' -Check { Get-KerberoastableAccounts -OPSEC:$OPSEC }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-ASREPRoastableAccounts' -Title 'ASREProastable Accounts' -Check { Get-ASREPRoastableAccounts -OPSEC:$OPSEC }
 	        Invoke-CheckWithContext -Category 'Creds' -CheckName 'Get-UnixPasswordAccounts' -Title 'Unix Password Accounts' -Check { Get-UnixPasswordAccounts }
