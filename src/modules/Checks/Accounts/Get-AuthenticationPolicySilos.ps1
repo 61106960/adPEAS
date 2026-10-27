@@ -255,13 +255,28 @@ function Get-AuthenticationPolicySilos {
             }
 
             # Device and service conditions need the domain controllers to apply "KDC
-            # support for claims, compound authentication and Kerberos armoring", which is a
-            # Group Policy setting this check does not read. TGT lifetimes do not need it.
+            # support for claims, compound authentication and Kerberos armoring": the KDC
+            # learns the device a request comes from, and its claims, only through armoring.
+            # TGT lifetimes do not need it, so the policy is read only where a condition is
+            # set. The client half of the setting is per machine and is not read.
+            $kdcSupportMissing = $false
             if ($conditionsSet) {
-                Show-Line "Sign-on and service conditions need DC support for claims and Kerberos armoring - not checked" -Class Note
+                $kdc = Get-KdcClaimsSupport -ConnectionParams $connectionParams
+                switch ($kdc.State) {
+                    'Supported' {
+                        Show-Line "The DCs support claims and Kerberos armoring ($($kdc.Detail)) - client support is not checked" -Class Note
+                    }
+                    'NotSupported' {
+                        $kdcSupportMissing = $true
+                        Show-Line "The DCs do not support claims and Kerberos armoring ($($kdc.Detail)) - the KDC cannot evaluate the conditions" -Class Hint -FindingId 'AUTHN_KDC_ARMORING_NOT_SUPPORTED'
+                    }
+                    default {
+                        Show-Line "Whether the DCs support claims and Kerberos armoring could not be read ($($kdc.Detail)) - not checked" -Class Note
+                    }
+                }
             }
 
-            if (@(@($siloClasses) + @($policyClasses) | Where-Object { $_ -ne 'Standard' }).Count -eq 0) {
+            if (-not $kdcSupportMissing -and @(@($siloClasses) + @($policyClasses) | Where-Object { $_ -ne 'Standard' }).Count -eq 0) {
                 Show-Line "Every silo is enforced with its members enrolled, and only Tier 0 can change silos and policies" -Class Secure
             }
 
@@ -541,4 +556,137 @@ function Get-AuthNObjectWriter {
         if ((Test-IsPrivileged -Identity $sid).Category -eq 'Privileged') { continue }
         "$($nameBySID[$sid]) ($(@($rightsBySID[$sid] | Select-Object -Unique) -join ', '))"
     }
+}
+
+<#
+.SYNOPSIS
+    Whether the domain controllers support claims, compound authentication and Kerberos
+    armoring, as Group Policy configures them.
+
+.DESCRIPTION
+    "KDC support for claims, compound authentication and Kerberos armoring" (kdc.admx,
+    policy CbacAndArmor) writes two values under
+    HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\KDC\Parameters:
+    EnableCbacAndArmor (1 enabled, 0 disabled) and CbacAndArmorLevel (0 Not supported,
+    1 Supported, 2 Always provide claims, 3 Fail unarmored authentication requests). Its
+    help text: disabled or not configured, the domain controller supports neither claims
+    nor armoring.
+
+    The values are read from every Machine\Registry.pol in SYSVOL, and the one in force on
+    the domain controllers is decided the way the LDAP and SMB signing checks decide theirs:
+    only policies whose computer half is on and that reach a domain controller take part,
+    and per value the highest-ranked policy that sets it wins (Get-GPODCPrecedence,
+    Resolve-GPOSettingPrecedence).
+
+.PARAMETER ConnectionParams
+    Domain, Server and Credential of the calling check.
+
+.OUTPUTS
+    PSCustomObject with State ('Supported', 'NotSupported' or 'Unknown') and Detail, the
+    words in brackets on the line that reports it.
+#>
+function Get-KdcClaimsSupport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+
+    $levelNames = @{ 0 = 'Not supported'; 1 = 'Supported'; 2 = 'Always provide claims'; 3 = 'Fail unarmored authentication requests' }
+
+    $gpos = @()
+    try {
+        $gpos = @(Get-DomainGPO @ConnectionParams)
+    } catch {
+        Write-Log "[Get-AuthenticationPolicySilos] The GPOs could not be read: $_"
+    }
+    if ($gpos.Count -eq 0) {
+        return [PSCustomObject]@{ State = 'Unknown'; Detail = 'no Group Policy object could be read' }
+    }
+    $gpoByGuid = @{}
+    foreach ($gpo in $gpos) { if ($gpo.Name) { $gpoByGuid[([string]$gpo.Name).ToUpper()] = $gpo } }
+
+    # Filled inside the SMB block. A hashtable, because a script block run by
+    # Invoke-SMBAccess loses what it assigns to a variable - it may only change an object
+    # it reaches.
+    $valuesByGuid = @{}
+    $sysvol = @{ Read = $false }
+    Invoke-SMBAccess -Description "Reading the KDC claims and armoring policy from SYSVOL" -ScriptBlock {
+        $polFiles = @(Get-CachedSYSVOLFiles -Filter 'Registry.pol')
+        # A readable SYSVOL without a single Registry.pol is an answer, not a failure:
+        # the cache says whether it could look.
+        $sysvol['Read'] = ($polFiles.Count -gt 0) -or [bool]$Script:SYSVOLCacheReachable
+        foreach ($polFile in $polFiles) {
+            if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+            $polGuid = $Matches[1].ToUpper()
+            # The value lives under HKLM; a user-side policy cannot set it.
+            if ($polFile.FullName -notmatch '\\Machine\\') { continue }
+            try {
+                foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+                    if ("$($record.Key)" -notmatch 'Policies\\System\\KDC\\Parameters$') { continue }
+                    if ("$($record.ValueName)" -notin @('EnableCbacAndArmor', 'CbacAndArmorLevel')) { continue }
+                    if ($record.Type -ne 4 -or $null -eq $record.ValueInt) { continue }
+                    if (-not $valuesByGuid.ContainsKey($polGuid)) { $valuesByGuid[$polGuid] = @{} }
+                    $valuesByGuid[$polGuid]["$($record.ValueName)"] = [int]$record.ValueInt
+                }
+            } catch {
+                Write-Log "[Get-AuthenticationPolicySilos] Could not read $($polFile.FullName): $($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not $sysvol['Read']) {
+        return [PSCustomObject]@{ State = 'Unknown'; Detail = 'SYSVOL could not be read' }
+    }
+
+    $linkage = Get-GPOLinkage
+    if ($null -eq $linkage) {
+        return [PSCustomObject]@{ State = 'Unknown'; Detail = 'the links of the Group Policy objects could not be read' }
+    }
+
+    # One object per policy that sets a value, shaped for the precedence helpers: the GUID
+    # as Name, the values as text - absent is "Not configured" to them.
+    $findings = @()
+    foreach ($guid in @($valuesByGuid.Keys)) {
+        $values = $valuesByGuid[$guid]
+        $gpo = $gpoByGuid[$guid]
+        $finding = [PSCustomObject]@{
+            Name             = $guid
+            DisplayName      = $(if ($gpo -and $gpo.DisplayName) { [string]$gpo.DisplayName } else { $guid })
+            KdcClaimsEnabled = $(if ($values.ContainsKey('EnableCbacAndArmor')) { [string]$values['EnableCbacAndArmor'] } else { $null })
+            KdcClaimsLevel   = $(if ($values.ContainsKey('CbacAndArmorLevel')) { [string]$values['CbacAndArmorLevel'] } else { $null })
+        }
+        $links = @()
+        if ($linkage.ContainsKey($guid)) { $links = @($linkage[$guid]) }
+        $precedence = Get-GPODCPrecedence -Link $links
+        $finding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precedence.Scope -Force
+        $finding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
+        $finding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
+        $findings += $finding
+    }
+
+    # A policy whose computer half is switched off writes nothing on any machine.
+    $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap (Get-GPOStatusMap -GPO $gpos) -GPOLinkage $linkage -Scope 'Machine' -GuidProperty 'Name'
+    $winners = Resolve-GPOSettingPrecedence -Finding @($split.Active) -Setting @(
+        @{ Property = 'KdcClaimsEnabled'; Label = 'KDC support for claims and Kerberos armoring' }
+        @{ Property = 'KdcClaimsLevel'; Label = 'its level' }
+    )
+
+    $enabledWinner = $winners['KdcClaimsEnabled']
+    if (-not $enabledWinner) {
+        return [PSCustomObject]@{ State = 'NotSupported'; Detail = 'not configured in any policy that reaches them' }
+    }
+    if ([string]$enabledWinner.KdcClaimsEnabled -ne '1') {
+        return [PSCustomObject]@{ State = 'NotSupported'; Detail = "disabled in '$($enabledWinner.DisplayName)'" }
+    }
+
+    $levelWinner = $winners['KdcClaimsLevel']
+    $level = -1
+    if ($levelWinner) { [void][int]::TryParse([string]$levelWinner.KdcClaimsLevel, [ref]$level) }
+    if ($level -eq 0) {
+        return [PSCustomObject]@{ State = 'NotSupported'; Detail = "set to Not supported in '$($levelWinner.DisplayName)'" }
+    }
+    if ($levelNames.ContainsKey($level)) {
+        return [PSCustomObject]@{ State = 'Supported'; Detail = "$($levelNames[$level]), set in '$($levelWinner.DisplayName)'" }
+    }
+    return [PSCustomObject]@{ State = 'Supported'; Detail = "enabled in '$($enabledWinner.DisplayName)', level not set" }
 }

@@ -21,6 +21,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   Domain Computers, and write access to silos and policies outside Tier 0. Lifetimes are
   shown in minutes and conditions as SDDL. Everything lives in the configuration partition
   and is readable by a domain user (measured).
+- **`Get-AuthenticationPolicySilos` reads whether the domain controllers support claims and
+  Kerberos armoring.** A sign-on or service condition can only be evaluated by a KDC that
+  knows the device a request comes from and its claims, which takes "KDC support for
+  claims, compound authentication and Kerberos armoring" at Supported or above. Where a
+  policy sets a condition, the check reads EnableCbacAndArmor and CbacAndArmorLevel from
+  the Registry.pol of every GPO, decides the values in force on the domain controllers the
+  way the LDAP and SMB signing checks do, and reports the level and the GPO it comes from -
+  or, as a hint with a card of its own, that the domain controllers do not support it.
+  The note that called this "not checked" is gone. The client half of the setting is per
+  machine and is not read.
 - **`Get-ProtectedUsersStatus` says whether a silo or policy applies to a Tier-0 account.**
   Protected Users and an authentication policy silo are two halves of one protection, and
   whether a silo applies cannot be read off the account. A Tier-0 account linked to a silo

@@ -16894,6 +16894,31 @@ $acl.Access | Where-Object {
             @{ Attribute = 'policyWritableBy'; Severity = 'Finding' }
         )
     }
+    'AUTHN_KDC_ARMORING_NOT_SUPPORTED' = @{
+        Title = "Domain Controllers Do Not Support Claims and Kerberos Armoring"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "An authentication policy sets a sign-on or service condition (AllowedToAuthenticateFrom/To), but no Group Policy that reaches the domain controllers enables 'KDC support for claims, compound authentication and Kerberos armoring' at Supported or above. The KDC learns the device a request comes from, and the claims a condition such as the silo claim asks for, only through Kerberos armoring and claims - and per the policy's own help text a domain controller without the setting supports neither. The conditions cannot be evaluated as they are written; TGT lifetimes are not affected."
+        Impact = @(
+            "The device restriction of a silo - the reason it exists for Tier 0 - cannot be evaluated by the KDC"
+            "Conditions on the silo claim have no claim to test"
+        )
+        Remediation = @(
+            "Enable 'KDC support for claims, compound authentication and Kerberos armoring' (Computer Configuration > Administrative Templates > System > KDC) in a policy that reaches every domain controller, at Supported or Always provide claims"
+            "Enable 'Kerberos client support for claims, compound authentication and Kerberos armoring' (System > Kerberos) on the devices the accounts sign on from"
+            "Choose 'Fail unarmored authentication requests' only once every client supports armoring - clients that do not can no longer authenticate"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the setting in force on a domain controller"
+                Command = "Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\KDC\Parameters' -ErrorAction SilentlyContinue | Select-Object EnableCbacAndArmor, CbacAndArmorLevel"
+            }
+        )
+        References = @(
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+        )
+    }
     'DMSA_LINK_IRREGULAR' = @{
         Title = "Account Paired with a dMSA Outside a Regular Migration"
         Risk = "Finding"
@@ -74088,10 +74113,23 @@ function Get-AuthenticationPolicySilos {
                 Show-Line "Found $($policies.Count) authentication policy(ies):" -Class (Get-AuthNHeadlineClass -Class $policyClasses)
                 for ($i = 0; $i -lt $policies.Count; $i++) { Show-Object $policies[$i] -Class $policyClasses[$i] }
             }
+            $kdcSupportMissing = $false
             if ($conditionsSet) {
-                Show-Line "Sign-on and service conditions need DC support for claims and Kerberos armoring - not checked" -Class Note
+                $kdc = Get-KdcClaimsSupport -ConnectionParams $connectionParams
+                switch ($kdc.State) {
+                    'Supported' {
+                        Show-Line "The DCs support claims and Kerberos armoring ($($kdc.Detail)) - client support is not checked" -Class Note
+                    }
+                    'NotSupported' {
+                        $kdcSupportMissing = $true
+                        Show-Line "The DCs do not support claims and Kerberos armoring ($($kdc.Detail)) - the KDC cannot evaluate the conditions" -Class Hint -FindingId 'AUTHN_KDC_ARMORING_NOT_SUPPORTED'
+                    }
+                    default {
+                        Show-Line "Whether the DCs support claims and Kerberos armoring could not be read ($($kdc.Detail)) - not checked" -Class Note
+                    }
+                }
             }
-            if (@(@($siloClasses) + @($policyClasses) | Where-Object { $_ -ne 'Standard' }).Count -eq 0) {
+            if (-not $kdcSupportMissing -and @(@($siloClasses) + @($policyClasses) | Where-Object { $_ -ne 'Standard' }).Count -eq 0) {
                 Show-Line "Every silo is enforced with its members enrolled, and only Tier 0 can change silos and policies" -Class Secure
             }
         } catch {
@@ -74242,6 +74280,94 @@ function Get-AuthNObjectWriter {
         if ((Test-IsPrivileged -Identity $sid).Category -eq 'Privileged') { continue }
         "$($nameBySID[$sid]) ($(@($rightsBySID[$sid] | Select-Object -Unique) -join ', '))"
     }
+}
+function Get-KdcClaimsSupport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+    $levelNames = @{ 0 = 'Not supported'; 1 = 'Supported'; 2 = 'Always provide claims'; 3 = 'Fail unarmored authentication requests' }
+    $gpos = @()
+    try {
+        $gpos = @(Get-DomainGPO @ConnectionParams)
+    } catch {
+        Write-Log "[Get-AuthenticationPolicySilos] The GPOs could not be read: $_"
+    }
+    if ($gpos.Count -eq 0) {
+        return [PSCustomObject]@{ State = 'Unknown'; Detail = 'no Group Policy object could be read' }
+    }
+    $gpoByGuid = @{}
+    foreach ($gpo in $gpos) { if ($gpo.Name) { $gpoByGuid[([string]$gpo.Name).ToUpper()] = $gpo } }
+    $valuesByGuid = @{}
+    $sysvol = @{ Read = $false }
+    Invoke-SMBAccess -Description "Reading the KDC claims and armoring policy from SYSVOL" -ScriptBlock {
+        $polFiles = @(Get-CachedSYSVOLFiles -Filter 'Registry.pol')
+        $sysvol['Read'] = ($polFiles.Count -gt 0) -or [bool]$Script:SYSVOLCacheReachable
+        foreach ($polFile in $polFiles) {
+            if ($polFile.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+            $polGuid = $Matches[1].ToUpper()
+            if ($polFile.FullName -notmatch '\\Machine\\') { continue }
+            try {
+                foreach ($record in @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive 'HKLM')) {
+                    if ("$($record.Key)" -notmatch 'Policies\\System\\KDC\\Parameters$') { continue }
+                    if ("$($record.ValueName)" -notin @('EnableCbacAndArmor', 'CbacAndArmorLevel')) { continue }
+                    if ($record.Type -ne 4 -or $null -eq $record.ValueInt) { continue }
+                    if (-not $valuesByGuid.ContainsKey($polGuid)) { $valuesByGuid[$polGuid] = @{} }
+                    $valuesByGuid[$polGuid]["$($record.ValueName)"] = [int]$record.ValueInt
+                }
+            } catch {
+                Write-Log "[Get-AuthenticationPolicySilos] Could not read $($polFile.FullName): $($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not $sysvol['Read']) {
+        return [PSCustomObject]@{ State = 'Unknown'; Detail = 'SYSVOL could not be read' }
+    }
+    $linkage = Get-GPOLinkage
+    if ($null -eq $linkage) {
+        return [PSCustomObject]@{ State = 'Unknown'; Detail = 'the links of the Group Policy objects could not be read' }
+    }
+    $findings = @()
+    foreach ($guid in @($valuesByGuid.Keys)) {
+        $values = $valuesByGuid[$guid]
+        $gpo = $gpoByGuid[$guid]
+        $finding = [PSCustomObject]@{
+            Name             = $guid
+            DisplayName      = $(if ($gpo -and $gpo.DisplayName) { [string]$gpo.DisplayName } else { $guid })
+            KdcClaimsEnabled = $(if ($values.ContainsKey('EnableCbacAndArmor')) { [string]$values['EnableCbacAndArmor'] } else { $null })
+            KdcClaimsLevel   = $(if ($values.ContainsKey('CbacAndArmorLevel')) { [string]$values['CbacAndArmorLevel'] } else { $null })
+        }
+        $links = @()
+        if ($linkage.ContainsKey($guid)) { $links = @($linkage[$guid]) }
+        $precedence = Get-GPODCPrecedence -Link $links
+        $finding | Add-Member -NotePropertyName '_PrecedenceScope' -NotePropertyValue $precedence.Scope -Force
+        $finding | Add-Member -NotePropertyName '_PrecedenceRank' -NotePropertyValue $precedence.Rank -Force
+        $finding | Add-Member -NotePropertyName '_PrecedenceOrder' -NotePropertyValue $precedence.Order -Force
+        $findings += $finding
+    }
+    $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap (Get-GPOStatusMap -GPO $gpos) -GPOLinkage $linkage -Scope 'Machine' -GuidProperty 'Name'
+    $winners = Resolve-GPOSettingPrecedence -Finding @($split.Active) -Setting @(
+        @{ Property = 'KdcClaimsEnabled'; Label = 'KDC support for claims and Kerberos armoring' }
+        @{ Property = 'KdcClaimsLevel'; Label = 'its level' }
+    )
+    $enabledWinner = $winners['KdcClaimsEnabled']
+    if (-not $enabledWinner) {
+        return [PSCustomObject]@{ State = 'NotSupported'; Detail = 'not configured in any policy that reaches them' }
+    }
+    if ([string]$enabledWinner.KdcClaimsEnabled -ne '1') {
+        return [PSCustomObject]@{ State = 'NotSupported'; Detail = "disabled in '$($enabledWinner.DisplayName)'" }
+    }
+    $levelWinner = $winners['KdcClaimsLevel']
+    $level = -1
+    if ($levelWinner) { [void][int]::TryParse([string]$levelWinner.KdcClaimsLevel, [ref]$level) }
+    if ($level -eq 0) {
+        return [PSCustomObject]@{ State = 'NotSupported'; Detail = "set to Not supported in '$($levelWinner.DisplayName)'" }
+    }
+    if ($levelNames.ContainsKey($level)) {
+        return [PSCustomObject]@{ State = 'Supported'; Detail = "$($levelNames[$level]), set in '$($levelWinner.DisplayName)'" }
+    }
+    return [PSCustomObject]@{ State = 'Supported'; Detail = "enabled in '$($enabledWinner.DisplayName)', level not set" }
 }
 function Get-RODCPasswordReplication {
     [CmdletBinding()]
@@ -99999,7 +100125,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.8.0+20261026-1502"
+$Script:adPEASVersion = "2.8.0+20261027-1337"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

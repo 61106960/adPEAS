@@ -13444,6 +13444,32 @@ $acl.Access | Where-Object {
         )
     }
 
+    'AUTHN_KDC_ARMORING_NOT_SUPPORTED' = @{
+        Title = "Domain Controllers Do Not Support Claims and Kerberos Armoring"
+        Risk = "Hint"
+        BaseScore = 30
+        Description = "An authentication policy sets a sign-on or service condition (AllowedToAuthenticateFrom/To), but no Group Policy that reaches the domain controllers enables 'KDC support for claims, compound authentication and Kerberos armoring' at Supported or above. The KDC learns the device a request comes from, and the claims a condition such as the silo claim asks for, only through Kerberos armoring and claims - and per the policy's own help text a domain controller without the setting supports neither. The conditions cannot be evaluated as they are written; TGT lifetimes are not affected."
+        Impact = @(
+            "The device restriction of a silo - the reason it exists for Tier 0 - cannot be evaluated by the KDC"
+            "Conditions on the silo claim have no claim to test"
+        )
+        Remediation = @(
+            "Enable 'KDC support for claims, compound authentication and Kerberos armoring' (Computer Configuration > Administrative Templates > System > KDC) in a policy that reaches every domain controller, at Supported or Always provide claims"
+            "Enable 'Kerberos client support for claims, compound authentication and Kerberos armoring' (System > Kerberos) on the devices the accounts sign on from"
+            "Choose 'Fail unarmored authentication requests' only once every client supports armoring - clients that do not can no longer authenticate"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the setting in force on a domain controller"
+                Command = "Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\KDC\Parameters' -ErrorAction SilentlyContinue | Select-Object EnableCbacAndArmor, CbacAndArmorLevel"
+            }
+        )
+        References = @(
+            @{ Title = "Guidance about how to configure protected accounts - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/how-to-configure-protected-accounts" }
+            @{ Title = "Authentication Policies and Authentication Policy Silos - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/authentication-policies-and-authentication-policy-silos" }
+        )
+    }
+
     'DMSA_LINK_IRREGULAR' = @{
         Title = "Account Paired with a dMSA Outside a Regular Migration"
         Risk = "Finding"

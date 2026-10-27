@@ -925,6 +925,7 @@ Get-ProtectedUsersStatus
 - Sign-on and service conditions (`AllowedToAuthenticateFrom/To`, shown as SDDL) that admit a broad group such as Domain Computers
 - Write access to silos and policies for principals outside Tier 0
 - TGT lifetimes, shown in minutes
+- Where a condition is set: whether the domain controllers support claims and Kerberos armoring - "KDC support for claims, compound authentication and Kerberos armoring", read from the Registry.pol of the GPOs that reach them, with GPO precedence per value. Without it the KDC cannot evaluate the conditions; the client half of the setting is not read
 
 **Security Impact**: Silos keep Tier 0 accounts off ordinary machines. A silo that restricts nobody looks like that protection without providing it, and whoever can write to a silo or a policy decides which restrictions apply - including none. Silos and policies live in the configuration partition and are readable by every domain user.
 
