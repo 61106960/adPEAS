@@ -7200,23 +7200,23 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    Title = "Reanimate-Tombstones on the Domain Object"
 	    Risk = "Finding"
 	    BaseScore = 51
-	    Description = "A principal holds the Reanimate-Tombstones extended right on the domain object. It allows a deleted object to be brought back directly, bypassing the Active Directory Recycle Bin and the restore tooling around it. A reanimated account comes back with its SID, and therefore with every permission that was granted to that SID."
+	    Description = "A principal holds the Reanimate-Tombstones extended right on the domain object. It is the right every restore of a deleted object of the domain is checked against - a restore from the AD Recycle Bin included - and by default only administrators hold it. Together with write access to the deleted object and the right to create an object of its class in the container it is restored to, it brings the object back: with its SID, and with the AD Recycle Bin enabled also with its attributes, its password and its group memberships."
 	    Impact = @(
-	        "A deleted privileged account can be restored with its original SID, and every ACE naming that SID applies again"
-	        "If the attacker knows or can reset the password of the restored account, it is an immediate route back in"
-	        "Reanimation keeps the SID, so it also restores access granted on other systems that trust that SID"
-	        "It bypasses the approval process that a documented restore normally goes through"
+	        "A restored account comes back with its original SID, and every ACE naming that SID applies again"
+	        "With the AD Recycle Bin enabled it also comes back with its password and its group memberships"
+	        "Restoring keeps the SID, so it also restores access granted on other systems that trust that SID"
+	        "The holder needs write access to the deleted object as well - an account it administered before the deletion, one it created, or one whose ACL grants it - so the right is as wide as those objects"
 	    )
 	    Attack = @(
 	        "1. Attacker holds Reanimate-Tombstones on the domain object"
-	        "2. Finds a deleted account that held privilege, which the deleted-objects container still lists"
-	        "3. Reanimates it, recovering the SID and the ACEs that name it"
-	        "4. Resets its password and uses it"
+	        "2. Lists the deleted objects and picks one it may write whose SID, memberships or password are worth having"
+	        "3. Restores it into a container where it may create objects of that class - isDeleted removed and a new DN set in one modification"
+	        "4. Uses the account, with its old password or after resetting it where its ACL allows"
 	    )
 	    Remediation = @(
 	        "Remove the right from every principal that is not a Tier-0 administrator"
-	        "Audit the deleted objects container for previously privileged accounts"
-	        "Alert on reanimation - it is an object modification on a deleted object, not a creation"
+	        "Review the deleted objects for formerly privileged accounts, and recycle those that will not be restored"
+	        "Audit restores - a restore is a modification of a deleted object, logged as event 5138 (a directory service object was undeleted)"
 	    )
 	    RemediationCommands = @(
 	        @{
@@ -97017,7 +97017,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.8.0+20261027-1745"
+$Script:adPEASVersion = "2.8.0+20261027-1749"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

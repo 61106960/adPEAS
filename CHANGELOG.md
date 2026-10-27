@@ -82,6 +82,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The Reanimate-Tombstones card describes the right as Microsoft does.** It said the
+  right brings a deleted object back "bypassing the Active Directory Recycle Bin". It is
+  the right every restore of a deleted object is checked against, a restore from the
+  Recycle Bin included, and it restores nothing alone: the holder also needs write access
+  to the deleted object and the right to create an object of its class in the container it
+  is restored to (Microsoft, Restoring Deleted Objects). The card says so, says what comes
+  back with the Recycle Bin enabled - the SID, the password and the group memberships -
+  and names the event a restore logs (5138).
 - **`Get-DomainUser -GMSA` finds delegated Managed Service Accounts (Windows Server 2025).**
   A dMSA derives from computer, not from the MSA class, and carries an objectCategory of
   its own, so neither the managed service account query nor the computer query found one.
