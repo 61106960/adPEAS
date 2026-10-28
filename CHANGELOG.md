@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [Unreleased]
+## [2.9.0] - 2026-10-28
 
 ### Added
 
@@ -221,8 +221,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **A certificate's CRL, AIA and OCSP locations are read whole.** The certificate details
   shown for `userCertificate` and `cACertificate` cut each CRL distribution point at its
   first comma or space: an AD CS LDAP location such as
-  `ldap:///CN=Contoso-CA,CN=srv-dc,CN=CDP,CN=Public Key Services,...` came out as
-  `ldap:///CN=Contoso-CA`, and twice, because Windows prints it once as stored and once
+  `ldap:///CN=EXAMPLE-CA,CN=DC01,CN=CDP,CN=Public Key Services,...` came out as
+  `ldap:///CN=EXAMPLE-CA`, and twice, because Windows prints it once as stored and once
   percent-encoded. The AIA and OCSP lists were always empty: they were parsed line by line
   from a rendering that is a single line. All three now hold the full URLs, each once.
 - **An encrypted Windows LAPS password the scanning account can read is reported as
@@ -237,7 +237,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **The HTML card no longer prints raw objects among all attributes.** Three rows of the
   expandable attribute list showed what PowerShell makes of an object as a string:
   - `userCertificate` - `@{Subject=...; CRLDistributionPoints=System.Object[]; ...}`. Each
-    certificate is now one line: `srv-dc.contoso.com - issued by Contoso-CA, valid
+    certificate is now one line: `dc01.example.com - issued by EXAMPLE-CA, valid
     2026-09-29 to 2027-09-29 (Valid)`.
   - `msExchMailboxSecurityDescriptor` - `@{Owner=; ACEs=System.Object[]}`. It now shows
     the owner and one line per ACE, the rights named as Exchange names them:
