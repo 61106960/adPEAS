@@ -382,7 +382,7 @@ $Script:PrimaryAttributes = @{
     # SYSVOLCredential together, without the policy rows - a file on a share belongs to
     # no policy.
     ShareCredential = @(
-        'CredentialType', 'FilePath', 'RegistryValue', 'UnattendSetting', 'VNCHost', 'VNCSetting',
+        'CredentialType', 'FilePath', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'VNCHost', 'VNCSetting',
         'UserName', 'accountInAD', 'Password', 'MatchedLine'
     )
 
@@ -554,7 +554,7 @@ $Script:PrimaryAttributes = @{
     # a caller-supplied -Path, where there is no GPO folder to be relative to, and for a
     # finding that does come from a GPO the full path already contains the GUID.
     GPPCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
     )
     SYSVOLCredential = @(
         'CredentialType', 'GPOName', 'FilePath', 'VNCHost', 'VNCSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'

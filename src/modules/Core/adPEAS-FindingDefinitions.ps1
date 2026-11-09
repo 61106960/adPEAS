@@ -7452,7 +7452,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         Title = "VNC Password Readable"
         Risk = "Finding"
         BaseScore = 50
-        Description = "A VNC password is stored where it can be read here: in a VNC viewer's connection file (.vnc), the .ini of UltraVNC or TightVNC, or a registry value a Group Policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC. VNC keeps it DES-encrypted with a key that is the same in every installation and part of the published source code, so the stored value is the password - shown decrypted here. A VNC password is at most eight characters and is not tied to an account: whoever has it connects to every VNC server that uses it."
+        Description = "A VNC password is stored where it can be read here: in a VNC viewer's connection file (.vnc), the .ini of UltraVNC or TightVNC, or a registry value a Group Policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC. VNC keeps it DES-encrypted with a key that is the same in every installation and part of the published source code, so the stored value is the password - shown decrypted here. The reason that form exists: the classic VNC authentication is a DES operation keyed with the password itself, so the server has to be able to read it back. One 8-byte block carries a password of up to eight characters, and a longer one is stored as several blocks encrypted the same way. A VNC password is not tied to an account: whoever has it connects to every VNC server that uses it."
         Impact = @(
             "Screen and keyboard of every VNC server the password opens - with a full-access password, the session of whoever is signed in there"
             "Readable by whoever can read the share the file or policy sits on - in SYSVOL or NETLOGON, every authenticated user"
@@ -7460,7 +7460,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
         Attack = @(
             "1. Read the .vnc file, the .ini or the policy from the share"
-            "2. Decrypt the 16 hex digits with the fixed VNC DES key"
+            "2. Decrypt every 16 hex digits of the value with the fixed VNC DES key"
             "3. Connect to the host the file names, or to any VNC server that shares the password"
         )
         Remediation = @(
@@ -7482,6 +7482,43 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1552.001"
         Triggers = @(
             @{ Attribute = 'credentialType'; Pattern = '^VNC Password$'; Severity = 'Finding' }
+        )
+    }
+
+    'CREDENTIAL_VNC_PASSWORD_HASH' = @{
+        Title = "VNC Password Deployed in a Form That Cannot Be Reversed"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "A Group Policy deploys a VNC password as a registry value, and the stored value is not the form that can be read back. RealVNC Server stores the password as a salted hash - PBKDF2, 20000 rounds by default - from 6.11.0 onwards wherever its own encryption is enabled. Its RSA/AES security types carry the password inside the encrypted channel, so the server checks the password against the hash instead of having to read the password back out of its own configuration, which is what the classic DES-keyed challenge required. That makes the stored value useless on its own: it is not a credential, holding it authenticates nobody, and with the layout undocumented there is nothing to crack it with either. What the value does say is worth reading: the machines the policy reaches run a VNC server, they authenticate against a shared VNC password rather than a Windows account, and every one of them has the same password."
+        Impact = @(
+            "No password is recovered from the value itself - this is what it is, not what it opens"
+            "Names the machines that run a VNC server with password authentication, to every authenticated user who reads SYSVOL"
+            "One password for all of them: whoever learns it anywhere else reaches every machine in the policy's scope"
+        )
+        Attack = @(
+            "1. Read the policy from SYSVOL to learn which machines run a VNC server"
+            "2. Find those servers on the network (TCP 5900 upwards) and look for a password that can be read back - an older server that still stores the reversible form, a viewer's connection file with a saved password, or a host where the registry can be read"
+            "3. Use what recovers there against every machine the policy reaches, because they share the password"
+        )
+        Remediation = @(
+            "Authenticate VNC against the Windows account (RealVNC system authentication, UltraVNC MS-Logon) instead of one shared VNC password"
+            "Do not deploy a VNC password by Group Policy: the policy itself tells every authenticated user which machines run a VNC server and that they share one password"
+            "Keep the VNC server's own encryption enabled - that is what makes the stored form irreversible, and turning it off converts the password back to the reversible one"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Read the VNC values a policy deploys, to see which form each one is stored in"
+                Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include 'Registry.xml' -ErrorAction SilentlyContinue | Select-String -Pattern 'VNC' -SimpleMatch | Select-Object Path, Line"
+            }
+        )
+        References = @(
+            @{ Title = "VNC Password storage in RealVNC Server"; Url = "https://help.realvnc.com/hc/en-us/articles/6661259023389" }
+            @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+        )
+        Tools = @("Snaffler", "Manual SYSVOL search")
+        MITRE = "T1552.001"
+        Triggers = @(
+            @{ Attribute = 'credentialType'; Pattern = '^VNC Password Hash$'; Severity = 'Hint' }
         )
     }
 
@@ -7600,7 +7637,13 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             # The marker sits on credentialType, which is why the two triggers exclude it
             # differently: an ExcludePattern tests the value, and the value of a matchedLine
             # row is the line, where "(needs review)" never appears.
-            @{ Attribute = 'credentialType'; Pattern = 'Password|Credential|PSExec|Schtasks|Cmdkey|SecureString|API key'; ExcludePattern = '\(needs review\)'; Severity = 'Finding' }
+            # The VNC types are excluded by name for the same reason: both carry the word
+            # "Password" and so match this pattern, and the winner is decided by BaseScore.
+            # CREDENTIAL_VNC_PASSWORD outscores this card at 50 and was never at risk, but
+            # CREDENTIAL_VNC_PASSWORD_HASH is a hint at 15 - nothing was recovered from the
+            # value - and without the exclusion this card took its row and reported a
+            # password found in a script.
+            @{ Attribute = 'credentialType'; Pattern = 'Password|Credential|PSExec|Schtasks|Cmdkey|SecureString|API key'; ExcludePattern = '\(needs review\)|^VNC Password'; Severity = 'Finding' }
             @{ Attribute = 'matchedLine'; Custom = 'credential_not_needs_review'; Severity = 'Finding' }
         )
     }
