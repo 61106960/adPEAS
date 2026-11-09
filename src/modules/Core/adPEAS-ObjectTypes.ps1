@@ -1849,8 +1849,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Summary = "Finds computers running an end-of-life Microsoft operating system."
         WhyItMatters = "EOL systems no longer receive security updates. They have known, unpatched vulnerabilities that attackers can exploit for initial access or lateral movement."
         WhatWeCheck = @(
-            "Windows XP, Vista, 7, 8/8.1, 10 and 11, Server 2003 through 2022"
+            "Windows XP, Vista, 7, 8/8.1, 10 and 11, Server 2003 through 2025"
             "Windows 11 per release, from the build in operatingSystemVersion, with the earlier end date for Home and Pro and the later one for Enterprise and Education"
+            "The long-term servicing editions per release and per edition, because an IoT Enterprise LTSC device is supported for ten years where the Enterprise LTSC of the same release has five"
             "The general support end separately from the end of the paid Extended Security Updates window, because a machine between the two is patched only if that extension was bought"
             "Last logon timestamp to filter active vs stale"
         )

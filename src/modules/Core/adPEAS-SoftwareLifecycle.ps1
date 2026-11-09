@@ -74,11 +74,22 @@ $Script:WindowsLifecycle = @{
     'Windows 10 LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }   # Build 17763 (1809)
     'Windows 10 LTSC 2021' = @{ ExtendedEnd = '2027-01-12' }   # Build 19044 (21H2)
 
+    # The IoT Enterprise editions of those same releases. They are a separate product on
+    # a ten-year fixed lifecycle, so they cannot share a row: the 2021 release runs five
+    # years longer as IoT Enterprise LTSC than as Enterprise LTSC. The three older
+    # releases do end on the same day in both editions - they are listed anyway, so that
+    # the report names the product the device runs rather than one it does not, and so
+    # that a pair of dates drifting apart later is a one-line change here.
+    'Windows 10 IoT LTSB 2015' = @{ ExtendedEnd = '2025-10-14' }   # Build 10240 (1507)
+    'Windows 10 IoT LTSB 2016' = @{ ExtendedEnd = '2026-10-13' }   # Build 14393 (1607)
+    'Windows 10 IoT LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }   # Build 17763 (1809)
+    'Windows 10 IoT LTSC 2021' = @{ ExtendedEnd = '2032-01-13' }   # Build 19044 (21H2)
+
     # ===== Windows 11 =====
     # Per release, keyed by build through $Script:Windows11Builds below. Only the LTSC
-    # edition has a single date, because it is not on the annual channel.
-    'Windows 11 LTSC 2024' = @{ ExtendedEnd = '2029-10-09' }   # Build 26100, Enterprise LTSC
-                                                               # (IoT Enterprise LTSC 2024 runs to 2034-10-10)
+    # editions have a single date each, because they are not on the annual channel.
+    'Windows 11 LTSC 2024'     = @{ ExtendedEnd = '2029-10-09' }   # Build 26100, Enterprise LTSC
+    'Windows 11 IoT LTSC 2024' = @{ ExtendedEnd = '2034-10-10' }   # Build 26100, IoT Enterprise LTSC
 
     # ===== Windows Server =====
     'Windows Server 2003'    = @{ ExtendedEnd = '2015-07-14' }
@@ -206,6 +217,10 @@ $Script:ExchangeLifecycle = @{
     to determine the specific LTSC release (2015/2016/2019/2021) since each has a
     different extended support end date.
 
+    For the LTSC editions of both products the name decides a second time: an IoT
+    Enterprise LTSC release is a product of its own with up to ten years of support,
+    so it returns an "IoT" key and not the Enterprise LTSC one of the same release.
+
 .PARAMETER OSName
     The operatingSystem attribute value from AD.
 
@@ -256,14 +271,22 @@ function Get-NormalizedOSName {
                 if ($OSVersion -match '\((\d+)\)') {
                     $buildNumber = [int]$Matches[1]
                 }
-                # LTSC 2019: Build 17763 (version 1809) - EOL 2029-01-09
-                if ($buildNumber -ge 17763 -and $buildNumber -lt 19044) { return 'Windows 10 LTSC 2019' }
-                # LTSC 2021: Build 19044 (version 21H2) - EOL 2027-01-12
-                if ($buildNumber -ge 19044) { return 'Windows 10 LTSC 2021' }
-                # LTSB 2016: Build 14393 (version 1607) - EOL 2026-10-13
-                if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return 'Windows 10 LTSB 2016' }
-                # LTSB 2015: Build 10240 (version 1507) - EOL 2025-10-14
-                if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return 'Windows 10 LTSB 2015' }
+                # The build says which release, the edition says which lifecycle. IoT
+                # Enterprise LTSC is a separate product with ten years of support where
+                # Enterprise LTSC 2021 has five, and the edition is in operatingSystem:
+                # "Windows 10 IoT Enterprise LTSC". Matched on the word IoT alone, because
+                # what follows it varies between OEM images.
+                $iotPart = ''
+                if ($OSName -match 'IoT') { $iotPart = 'IoT ' }
+
+                # LTSC 2019: Build 17763 (version 1809) - EOL 2029-01-09, IoT the same day
+                if ($buildNumber -ge 17763 -and $buildNumber -lt 19044) { return "Windows 10 ${iotPart}LTSC 2019" }
+                # LTSC 2021: Build 19044 (version 21H2) - EOL 2027-01-12, IoT 2032-01-13
+                if ($buildNumber -ge 19044) { return "Windows 10 ${iotPart}LTSC 2021" }
+                # LTSB 2016: Build 14393 (version 1607) - EOL 2026-10-13, IoT the same day
+                if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return "Windows 10 ${iotPart}LTSB 2016" }
+                # LTSB 2015: Build 10240 (version 1507) - EOL 2025-10-14, IoT the same day
+                if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return "Windows 10 ${iotPart}LTSB 2015" }
                 # Unknown build - fall through to generic Windows 10
             }
             return 'Windows 10'
@@ -276,11 +299,29 @@ function Get-NormalizedOSName {
             $buildNumber = 0
             if ($OSVersion -match '\((\d+)\)') { $buildNumber = [int]$Matches[1] }
 
-            # The LTSC edition is not on the annual channel and has a row of its own.
-            # Matched on the exact build: a future LTSC release will have another one, and
-            # treating any higher build as LTSC 2024 would give it the wrong date.
+            # The LTSC editions are not on the annual channel and have a row each, one per
+            # edition: IoT Enterprise LTSC 2024 is supported to 2034-10-10 where
+            # Enterprise LTSC 2024 ends on 2029-10-09.
             if ($OSName -match 'LTSC') {
-                if ($buildNumber -eq 26100) { return 'Windows 11 LTSC 2024' }
+                $iotPart = ''
+                if ($OSName -match 'IoT') { $iotPart = 'IoT ' }
+
+                # Three builds, one release. 26100 is what the LTSC 2024 media installs;
+                # 26200 (25H2) and 26300 (26H2) are that same platform with a feature
+                # enablement package on top, which raises the build number and changes
+                # nothing about the edition, its licence or its support date. A machine
+                # that took one reports an LTSC edition on a build no LTSC media ever
+                # shipped - measured as "Windows 11 Enterprise LTSC" on 10.0 (26200) - and
+                # was counted as not assessable. Microsoft lists LTSC 2024 as the only
+                # Windows 11 LTSC release, so no other LTSC can be behind any of the three.
+                #
+                # Still matched on the known builds rather than on "26100 or higher": the
+                # next LTSC release arrives on another platform build with a support date
+                # of its own, and reading it as LTSC 2024 would cut years off it. Until it
+                # is entered here it stays not assessable, which is the honest answer.
+                if ($buildNumber -eq 26100 -or $buildNumber -eq 26200 -or $buildNumber -eq 26300) {
+                    return "Windows 11 ${iotPart}LTSC 2024"
+                }
                 return 'Windows 11'
             }
 
