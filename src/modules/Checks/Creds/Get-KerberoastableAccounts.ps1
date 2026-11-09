@@ -126,7 +126,6 @@ function Get-KerberoastableAccounts {
 
                 $totalUsers = @($kerberoastableUsers).Count
                 $currentIndex = 0
-                $privilegedCount = 0
                 foreach ($user in $kerberoastableUsers) {
                     $currentIndex++
                     if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing Kerberoastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -175,7 +174,6 @@ function Get-KerberoastableAccounts {
                     # worth as much as a Tier-0 one to whoever cracks it.
                     $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
                     if ($privileged -and $privileged.IsPrivileged) {
-                        $privilegedCount++
                         $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
                             -NotePropertyValue $privileged.Reason -Force
                     }
@@ -199,10 +197,11 @@ function Get-KerberoastableAccounts {
                 }
                 if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing Kerberoastable accounts" -Completed }
 
-                if ($privilegedCount -gt 0) {
-                    Show-Line "$privilegedCount of them is/are privileged - cracking one of those passwords is a domain compromise" -Class "Finding"
-                }
-
+                # No line counting the privileged ones. The account that is one carries
+                # PrivilegedRoastTarget, which names it and says why, and opens the
+                # ROASTABLE_PRIVILEGED_ACCOUNT card - a count below the list repeated that
+                # and read "1 of them is/are privileged". The section severity does not
+                # need it either: Get-GroupSeverity takes Finding from that attribute.
             } else {
                 Show-Line "No kerberoastable accounts found" -Class "Secure"
             }

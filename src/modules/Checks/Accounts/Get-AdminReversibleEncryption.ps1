@@ -66,7 +66,6 @@ function Get-AdminReversibleEncryption {
                 Show-Line "Found $totalAccounts account(s) with reversible password encryption:" -Class Finding
 
                 $currentIndex = 0
-                $privilegedCount = 0
                 foreach ($user in $vulnerableAccounts) {
                     $currentIndex++
 
@@ -82,7 +81,6 @@ function Get-AdminReversibleEncryption {
                     # them, an operator whose members can create Group Policy.
                     $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
                     if ($privileged -and $privileged.IsPrivileged) {
-                        $privilegedCount++
                         $user | Add-Member -NotePropertyName 'PrivilegedAccount' `
                             -NotePropertyValue $privileged.Reason -Force
                     }
@@ -96,9 +94,9 @@ function Get-AdminReversibleEncryption {
                     Show-Progress -Activity "Processing reversible encryption accounts" -Completed
                 }
 
-                if ($privilegedCount -gt 0) {
-                    Show-Line "$privilegedCount of them is/are privileged - the cleartext password of an administrator is recoverable from the DC" -Class Finding
-                }
+                # No line counting the privileged ones. The account that is one carries
+                # PrivilegedAccount, which names the reason and opens the
+                # PRIVILEGED_ACCOUNT_AFFECTED card; a count below the list repeated it.
             } else {
                 Show-Line "No accounts with reversible password encryption found" -Class Secure
             }

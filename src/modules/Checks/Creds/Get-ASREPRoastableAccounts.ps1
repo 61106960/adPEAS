@@ -132,8 +132,6 @@ function Get-ASREPRoastableAccounts {
 
                 $totalUsers = @($asrepRoastableUsers).Count
                 $currentIndex = 0
-                $privilegedCount = 0
-                $protectedCount = 0
                 foreach ($user in $asrepRoastableUsers) {
                     $currentIndex++
                     if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -188,13 +186,11 @@ function Get-ASREPRoastableAccounts {
                     # account, and AS-REP roasting needs no credentials at all to obtain it.
                     $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
                     if ($privileged -and $privileged.IsPrivileged) {
-                        $privilegedCount++
                         $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
                             -NotePropertyValue $privileged.Reason -Force
                     }
 
                     if ($user.objectSid -and $protectedSIDs.ContainsKey([string]$user.objectSid)) {
-                        $protectedCount++
                         $user | Add-Member -NotePropertyName 'protectedUsersMember' -NotePropertyValue (
                             'Yes - RC4 is refused for members, so the AS-REP is AES-encrypted and far slower to crack') -Force
                     }
@@ -207,13 +203,11 @@ function Get-ASREPRoastableAccounts {
                 }
                 if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Completed }
 
-                if ($privilegedCount -gt 0) {
-                    Show-Line "$privilegedCount of them is/are privileged - this hash needs no credentials at all to obtain" -Class "Finding"
-                }
-
-                if ($protectedCount -gt 0) {
-                    Show-Line "$protectedCount of them is/are in Protected Users - AES-only AS-REP, slower to crack" -Class "Hint"
-                }
+                # No lines counting the privileged accounts and the Protected Users members.
+                # Each account carries what it is - PrivilegedRoastTarget with the reason,
+                # protectedUsersMember with what membership changes - and each of those rows
+                # has its own severity and card. A count below the list repeated them, and
+                # read "1 of them is/are privileged".
 
                 # Kerberoasting without pre-authentication: an account that needs none lets
                 # anybody send an AS-REQ for it whose service name is any account with an SPN,
