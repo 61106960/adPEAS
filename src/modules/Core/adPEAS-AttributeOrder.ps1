@@ -145,7 +145,7 @@ $Script:PrimaryAttributes = @{
         # A template that demands a co-signature from an enrollment agent is both a barrier for
         # direct abuse and the target of an "enroll on behalf of" attack - it must be visible on
         # the console, not only in the HTML extended block.
-        'RASignatureCount', 'RAApplicationPolicies',
+        'RASignatureCount', 'RAApplicationPolicies', 'TemplateKeySettings',
         # 5. Enrollment
         'EnrollmentPrincipals',
         # 6. Security findings

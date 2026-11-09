@@ -849,6 +849,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Template ACLs allowing modification (ESC4)"
             "Schema version and security extension inclusion (ESC9, ESC15)"
             "Issuance policies linked to AD groups (ESC13)"
+            "The algorithms a schema version 4 template prescribes to the enrolling client, where one of them is outdated"
         )
         SecureMessage = "No vulnerable certificate templates found. All templates restrict enrollment to privileged users and do not allow dangerous configurations like enrollee-supplied SANs."
     }

@@ -220,6 +220,12 @@ function Get-ADCSTemplate {
                     @($coreTemplate.'msPKI-RA-Application-Policies')
                 } else { @() }
 
+                # A version 4 template keeps its key settings in that same attribute
+                # (MS-CRTD syntax option 2). ConvertFrom-LDAPAttribute sets this only where
+                # one of them is outdated, so the row exists only in that case - see
+                # ConvertFrom-RAApplicationPolicy.
+                TemplateKeySettings = $coreTemplate.TemplateKeySettings
+
                 # EKUs (from Core - may include friendly names like "Client Authentication (1.3.6.1.5.5.7.3.2)")
                 ExtendedKeyUsage = if ($coreTemplate.pKIExtendedKeyUsage) {
                     @($coreTemplate.pKIExtendedKeyUsage)

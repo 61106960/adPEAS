@@ -2439,13 +2439,18 @@ function Collect-BHCertTemplates {
             }
         }
 
+        # A version 4 template keeps its key settings in this attribute beside the policy
+        # OIDs, as name`type`value triplets (MS-CRTD syntax option 2), so the raw value is
+        # not a list of policies - see ConvertFrom-RAApplicationPolicy.
         $appPolicies = @()
         if ($template.'msPKI-RA-Application-Policies') {
             $rawAp = if ($template.'msPKI-RA-Application-Policies' -is [array]) { $template.'msPKI-RA-Application-Policies' } else { @($template.'msPKI-RA-Application-Policies') }
+            $decodedAp = @()
             foreach ($ap in $rawAp) {
                 if ($ap -is [byte[]]) { $ap = [System.Text.Encoding]::UTF8.GetString($ap) }
-                if ($ap) { $appPolicies += $ap }
+                if ($ap) { $decodedAp += $ap }
             }
+            $appPolicies = @((ConvertFrom-RAApplicationPolicy -Value $decodedAp).Policies)
         }
 
         $issuancePolicies = @()

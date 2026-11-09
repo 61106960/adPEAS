@@ -575,12 +575,16 @@ function ConvertFrom-LDAPAttribute {
         }
 
         # msPKI-RA-Application-Policies / msPKI-RA-Policies - Registration Authority
-        # requirements (ESC3 condition 2). Values are normally OIDs, but schema v3+/v4
-        # templates may store non-OID qualifier strings here - those are passed through
-        # unchanged so they stay visible instead of being mangled by the OID lookup.
+        # requirements (ESC3 condition 2). A version 4 template stores the template's key
+        # settings in the same attribute, as name`type`value triplets with the policy OIDs
+        # nested among them (MS-CRTD syntax option 2) - ConvertFrom-RAApplicationPolicy
+        # separates the two. The whole triplet string used to be passed through as the
+        # value of the row, which printed 180 characters of backticks under a name none of
+        # it belonged to.
         if ($PropName -iin @("msPKI-RA-Application-Policies", "msPKI-RA-Policies")) {
+            $parsedRA = ConvertFrom-RAApplicationPolicy -Value $PropValue
             $raNames = @()
-            foreach ($raValue in @($PropValue)) {
+            foreach ($raValue in @($parsedRA.Policies)) {
                 $raString = [string]$raValue
                 if ($raString -match '^\d+(\.\d+)+$') {
                     $raNames += (ConvertFrom-OID -OID $raString -IncludeOID)
@@ -592,6 +596,11 @@ function ConvertFrom-LDAPAttribute {
                 $ConvertedProperties[$PropName] = $raNames[0]
             } elseif ($raNames.Count -gt 1) {
                 $ConvertedProperties[$PropName] = $raNames
+            }
+            # Only an outdated key setting earns a row - see ConvertFrom-RAApplicationPolicy
+            # for which, and why 3DES is not one of them.
+            if ($parsedRA.Notable) {
+                $ConvertedProperties['TemplateKeySettings'] = $parsedRA.Notable
             }
             return $ConvertedProperties
         }

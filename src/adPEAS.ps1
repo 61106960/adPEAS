@@ -162,6 +162,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-ADInterval.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-GPPPassword.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-VNCPassword.ps1"
+    . "$Script:ScriptPath\modules\Helpers\ConvertFrom-RAApplicationPolicy.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-VBE.ps1"
     . "$Script:ScriptPath\modules\Helpers\Resolve-CredentialAccount.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-Base64OrFile.ps1"

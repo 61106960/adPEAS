@@ -11567,6 +11567,52 @@ foreach ($oid in $linkedOIDs) {
         )
     }
 
+    'ADCS_TEMPLATE_OUTDATED_ALGORITHM' = @{
+        Title = "Certificate Template Prescribes an Outdated Algorithm"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "A schema version 4 certificate template tells the enrolling client which algorithms to use, and one of them is outdated. The settings live in msPKI-RA-Application-Policies, which for such a template holds name-type-value triplets rather than the policy OIDs its name suggests (MS-CRTD syntax option 2), so they are easy to miss. Two of them matter. msPKI-Hash-Algorithm is the hash the client signs its request with: that signature is the proof that the requester holds the private key belonging to the public key in the request, and a hash open to collisions is as much proof as the hash is worth. msPKI-Symmetric-Algorithm and msPKI-Symmetric-Key-Length are used where the template archives the private key: the client encrypts the key with that algorithm before sending it to the CA, so the algorithm is the whole protection of a private key in transit and in the CA's archive. Note what this is not: the algorithm the CA signs the issued certificate with is the CA's own setting, not the template's."
+        Impact = @(
+            "Where the template archives private keys, every key enrolled through it is wrapped with the named algorithm - a 56-bit or RC2 wrapper is recoverable, and the archived key belongs to the subject, not to the CA"
+            "A request signed with MD5 or SHA1 carries a proof of possession only as strong as that hash"
+            "The setting reaches every enrollment from this template, and a template is usually a copy of an older one - the same value tends to sit on several"
+        )
+        Attack = @(
+            "1. Read the template from the Configuration partition, which every authenticated user may do, and note the algorithms it prescribes"
+            "2. Where key archival is on and the symmetric algorithm is weak, obtain an enrollment request - from the network, from the CA's request queue, or from its key archive - and unwrap the private key offline"
+            "3. Use the recovered private key with the certificate that was issued for it, as the subject it was issued to"
+        )
+        Remediation = @(
+            "In certtmpl.msc, Cryptography tab of the template: set the request hash to SHA256 or stronger"
+            "Where the template archives the subject's key, choose AES-256 for the archival algorithm instead of a 3DES or DES default"
+            "Re-enroll the certificates issued from the template whose private key was archived under the weak algorithm - changing the template does not re-protect a key already in the archive"
+            "Check the templates this one was copied from and copied to: the setting travels with the copy"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show every setting of the template, the cryptography ones included"
+                Command = "certutil -v -template TEMPLATE_NAME"
+            }
+            @{
+                Description = "Read the raw attribute the settings are stored in"
+                Command = "Get-ADObject -SearchBase (`"CN=Certificate Templates,CN=Public Key Services,CN=Services,`" + (Get-ADRootDSE).configurationNamingContext) -LDAPFilter '(cn=TEMPLATE_NAME)' -Properties 'msPKI-RA-Application-Policies','msPKI-Template-Schema-Version' | Select-Object -ExpandProperty 'msPKI-RA-Application-Policies'"
+            }
+        )
+        References = @(
+            @{ Title = "MS-CRTD: msPKI-RA-Application-Policies, Syntax Option 2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/c55ec697-be3f-4117-8316-8895e4399237" }
+            @{ Title = "MS-WCCE: how the client uses these properties"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wcce/b083a3c4-f57e-4925-b3f8-3dba81dae946" }
+            @{ Title = "Request Handling and key archival - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc732007(v=ws.10)" }
+        )
+        Tools = @("certutil", "Certify", "Certipy")
+        MITRE = "T1552.004"
+        Triggers = @(
+            # No pattern: the attribute is written only where a setting is outdated, so its
+            # presence is the verdict - ConvertFrom-RAApplicationPolicy decides which, and
+            # why 3DES is not one of them.
+            @{ Attribute = 'TemplateKeySettings'; Severity = 'Hint' }
+        )
+    }
+
     'ADCS_CA_SHORT_KEY' = @{
         Title = "CA Certificate Uses Insufficient Key Length"
         Risk = "Finding"
