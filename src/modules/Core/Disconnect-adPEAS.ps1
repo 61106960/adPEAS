@@ -219,6 +219,10 @@ function Clear-SessionState {
     # different forest must not answer out of the previous one's schema.
     $Script:SchemaClassNameCache = $null
 
+    # Schema facts of Get-DomainWriteAccess - attribute, class and control access right
+    # GUIDs and the property set of each attribute. The same reason: they are the forest's.
+    $Script:WriteAccessSchemaCache = $null
+
     # Anonymous access detection (Connect-LDAP)
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null

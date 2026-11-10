@@ -517,6 +517,8 @@ function Get-adPEASIdentityCompleterRegistrations {
         # Class-agnostic: both accept any object, so both offer every principal cache.
         @{ Command = 'Set-DomainObject';        Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
         @{ Command = 'Move-DomainObject';       Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
+        # Any principal: what a user, a computer or the members of a group may write.
+        @{ Command = 'Get-DomainWriteAccess';   Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
         @{ Command = 'Request-ADCSCertificate'; Parameter = 'TemplateName'; ObjectTypes = @('Templates') }
     )
 }
@@ -527,7 +529,7 @@ function Get-adPEASIdentityCompleterRegistrations {
 
 .DESCRIPTION
     Looked up at completion time from $commandName and $parameterName, which PowerShell hands
-    every completer. This is what lets ONE shared scriptblock serve all eleven registrations.
+    every completer. This is what lets ONE shared scriptblock serve all twelve registrations.
 
     Deliberately NOT a closure per registration. GetNewClosure would capture the object types
     correctly, but it also rebinds the scriptblock to a fresh scope that does not chain to the
@@ -576,9 +578,9 @@ function Get-adPEASIdentityCompleterTypes {
     Registers the identity completer for every parameter that takes an object name.
 
 .DESCRIPTION
-    Eleven registrations sharing ONE plain scriptblock, which resolves its object types per
-    call from the command and parameter name. Eleven hand-written blocks would be eleven copies
-    of the completer body, and eleven closures would break command resolution - see
+    Twelve registrations sharing ONE plain scriptblock, which resolves its object types per
+    call from the command and parameter name. Twelve hand-written blocks would be twelve copies
+    of the completer body, and twelve closures would break command resolution - see
     Get-adPEASIdentityCompleterTypes.
 
 .EXAMPLE
@@ -938,6 +940,7 @@ function Get-adPEASContainerCompleterRegistrations {
         @{ Command = 'Get-CertificateTemplate'; Parameter = 'SearchBase' }
         @{ Command = 'Set-DomainObject';        Parameter = 'SearchBase' }
         @{ Command = 'Invoke-LDAPSearch';       Parameter = 'SearchBase' }
+        @{ Command = 'Get-DomainWriteAccess';   Parameter = 'SearchBase' }
         @{ Command = 'New-DomainUser';          Parameter = 'OrganizationalUnit' }
         @{ Command = 'New-DomainComputer';      Parameter = 'OrganizationalUnit' }
         @{ Command = 'New-DomainGroup';         Parameter = 'OrganizationalUnit' }
@@ -950,8 +953,8 @@ function Get-adPEASContainerCompleterRegistrations {
     Registers the shared container-DN completer for every parameter that takes one.
 
 .DESCRIPTION
-    Twelve parameters across eleven functions accept a container distinguishedName. They all
-    want the same candidate list, so one plain scriptblock serves all twelve.
+    Thirteen parameters across twelve functions accept a container distinguishedName. They all
+    want the same candidate list, so one plain scriptblock serves all thirteen.
 
 .EXAMPLE
     Register-adPEASContainerCompleters

@@ -18,6 +18,7 @@ Core functions provide LDAP-based data retrieval and manipulation for Active Dir
 | [Get-DomainGPO](#get-domaingpo) | Query Group Policy Objects |
 | [Get-DomainObject](#get-domainobject) | Generic AD object query |
 | [Get-ObjectACL](#get-objectacl) | Retrieve Access Control Lists |
+| [Get-DomainWriteAccess](#get-domainwriteaccess) | What an account may write in the directory, and through which group |
 | [Get-CertificateTemplate](#get-certificatetemplate) | Query certificate templates |
 
 ### Modification & Creation Functions
@@ -714,6 +715,81 @@ Get-ObjectACL -Identity "administrator" -ExplicitOnly -AllowOnly
 # Fast query without GUID/SID resolution
 Get-ObjectACL -Identity "DC=contoso,DC=com" -NoResolveGUIDs -NoResolveSIDs
 ```
+
+---
+
+## Get-DomainWriteAccess
+
+Lists what an account may write in the directory: which objects, which right, and through which of its groups. Without `-Identity` it evaluates the account adPEAS is bound as; with `-Identity` any user, computer, managed service account or group - "what could this account do if I took it over".
+
+### How it decides
+
+The account's token is built first: its SID and `sIDHistory`, every group it reaches through member links, its primary group with that group's nesting, and Everyone, Authenticated Users and This Organization with the groups their foreign security principals are in (Pre-Windows 2000 Compatible Access, for one). SELF counts on the account's own object, OWNER RIGHTS on objects it owns.
+
+Every ACE of every object searched is then read the way the access check reads it: in DACL order, the first ACE that carries a right for the node decides it (so an explicit Deny beats any Allow, an inherited Deny only an inherited Allow), an inherit-only ACE does not apply, an object ACE grants on the attribute, property set, extended right, validated write or class it names and nowhere else, a property set covers the attributes the schema puts in it, and the owner holds WRITE_DAC unless an OWNER RIGHTS ACE says otherwise.
+
+For the bound account the domain controller is asked as well. It computes `allowedAttributesEffective`, `allowedChildClassesEffective` and `sDRightsEffective` for the requester with its real token, so for writable attributes, child classes and WriteDacl/WriteOwner its answer is the truth:
+
+| Source | Meaning |
+|--------|---------|
+| `ACL, directory` | Found in the ACLs and confirmed by the domain controller |
+| `ACL` | Found in the ACLs; extended rights and validated writes cannot be confirmed by the directory |
+| `directory` | Granted according to the domain controller, explained by no ACE the token matched - a group in another domain, for example. `Via` is `(directory)` |
+
+A right the ACL evaluation found and the directory contradicts is left out, and a warning says how many. A right on something the object cannot hold - an attribute its class does not have, a child class the schema does not allow below it - is set aside without a warning: the directory computes `allowedAttributes` and `allowedChildClasses` for the object, read only where a row was not confirmed. An object whose ACL the account may not read is still covered by the directory's answer. `-Verbose` names every right left out and every object without a readable ACL, and ends with a summary of what was read and reported.
+
+### Default view and -All
+
+The default view keeps every right over the whole object - Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner, a write of every property, all extended rights, every validated write, every child class - and the single rights that are a known step to control: `member`, `servicePrincipalName`, `msDS-KeyCredentialLink`, `msDS-AllowedToActOnBehalfOfOtherIdentity`, `userAccountControl`, `altSecurityIdentities`, `scriptPath`, `gPLink`, the certificate template flags and others; User-Force-Change-Password and the replication rights; every validated write; creating users, computers, groups, managed service accounts, GPOs, DNS records and certificate templates. Each only on the classes it matters on - `member` on a group, resource-based delegation on a computer. A right the account holds on its own object through SELF is the default every account has and is left out. `-All` shows everything.
+
+### Syntax
+
+```powershell
+Get-DomainWriteAccess
+    [[-Identity] <String>]
+    [-SearchBase <String[]>]
+    [-LDAPFilter <String>]
+    [-All]
+    [-Domain <String>]
+    [-Server <String>]
+    [-Credential <PSCredential>]
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-Identity` | String | The account to evaluate (sAMAccountName, DN, SID, DOMAIN\name or UPN). Default: the bound account |
+| `-SearchBase` | String[] | Subtrees to read. Default: the domain naming context and `CN=Public Key Services,CN=Services` of the configuration naming context |
+| `-LDAPFilter` | String | Limits the objects read. Default: `(objectClass=*)` |
+| `-All` | Switch | Every right, and rights held on the own object through SELF |
+| `-Domain` | String | Target domain (FQDN) |
+| `-Server` | String | Specific Domain Controller to query |
+| `-Credential` | PSCredential | PSCredential object for authentication |
+
+### Output
+
+One object per object and right: `Object`, `ObjectClass`, `Right` (Owner, GenericAll, GenericWrite, WriteDacl, WriteOwner, WriteProperty, ValidatedWrite, ExtendedRight, CreateChild), `Target` (attribute, property set, extended right, validated write or class; `(every property)` and the like for a right over the whole object, with `except ...` when a Deny takes single nodes out), `Via`, `Source`, `DistinguishedName`.
+
+GenericAll is every write right over the whole object - WriteDacl, WriteOwner, every property, every validated write, all extended rights, every child class. Delete rights are not writes; a principal that holds the write rights without all of them gets one GenericAll row with `without Delete, DeleteTree` or similar as its target, not five separate rows. An extended right on an attribute or property set is control access to it - the read of a confidential attribute - and is named after the attribute or set.
+
+### Examples
+
+```powershell
+# What the account I am bound as may write
+Get-DomainWriteAccess | Format-Table Object, Right, Target, Via, Source
+
+# What jdoe could write once taken over
+Get-DomainWriteAccess -Identity jdoe
+
+# What the members of Helpdesk may do under one OU, everything included
+Get-DomainWriteAccess -Identity Helpdesk -SearchBase "OU=Admins,DC=contoso,DC=com" -All
+
+# Only the groups an account can add members to
+Get-DomainWriteAccess -Identity jdoe | Where-Object { $_.ObjectClass -eq 'group' }
+```
+
+Not evaluated: group memberships in other domains, the SID history of groups, and an ACE naming a class the object derives from rather than its own class. Reading every security descriptor of a large domain takes time; narrow it with `-SearchBase` or `-LDAPFilter`.
 
 ---
 

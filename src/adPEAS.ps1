@@ -120,6 +120,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Core\Invoke-LDAPSearch.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainObject.ps1"
     . "$Script:ScriptPath\modules\Core\Get-ObjectACL.ps1"
+    . "$Script:ScriptPath\modules\Core\Get-DomainWriteAccess.ps1"
     . "$Script:ScriptPath\modules\Core\Set-DomainObject.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainUser.ps1"
     . "$Script:ScriptPath\modules\Core\Get-DomainComputer.ps1"
