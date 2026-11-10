@@ -459,6 +459,11 @@ function Compare-UserRightAssignment {
         }
     }
 
+    # A policy that reaches domain controllers and member computers is measured against both
+    # sets, and most rights name the same groups in both. The union kept them twice, and
+    # every default holder the policy dropped came out twice in RemovedFromDefault.
+    $baseline = @($baseline | Select-Object -Unique)
+
     $holders = @($HolderSID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
     if (-not $hasBaseline) {
