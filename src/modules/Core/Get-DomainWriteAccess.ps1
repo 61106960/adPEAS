@@ -275,7 +275,7 @@ function Get-DomainWriteAccess {
                 $dn = [string]$object.distinguishedName
                 $objectName = [string]$object.sAMAccountName
                 if (-not $objectName) { $objectName = [string]$object.name }
-                if (-not $objectName -and $dn -match '^[^=]+=((?:\.|[^,])+)') { $objectName = $Matches[1] }
+                if (-not $objectName -and $dn -match '^[^=]+=((?:\\.|[^,])+)') { $objectName = $Matches[1] }
                 $classes = @($result.Classes)
                 $objectClass = ''
                 if ($classes.Count -gt 0) { $objectClass = [string]$classes[-1] }
@@ -949,7 +949,7 @@ function Get-WriteAccessToken {
     $properties = @('objectSid', 'distinguishedName', 'sAMAccountName', 'name', 'primaryGroupID', 'sIDHistory', 'objectClass')
     $found = @(Get-DomainObject -Identity $Identity -Properties $properties @CredParams | Where-Object { $_ -and $_.objectSid })
     # A user principal name is not one of the forms -Identity takes.
-    if ($found.Count -eq 0 -and $Identity -match '^[^\=@]+@[^@]+$') {
+    if ($found.Count -eq 0 -and $Identity -match '^[^\\=@]+@[^@]+$') {
         $upn = Escape-LDAPFilterValue -Value $Identity
         $found = @(Get-DomainObject -LDAPFilter "(userPrincipalName=$upn)" -Properties $properties @CredParams | Where-Object { $_ -and $_.objectSid })
     }
