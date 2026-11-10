@@ -162,7 +162,7 @@ $Script:PrimaryAttributes = @{
         # Security findings
         'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
         # Linkage
-        'LinkedOUs', 'oneLinkAway', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+        'LinkedOUs', 'oneLinkAway', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
     )
 
     # SMB Signing GPO (only SMB-relevant attributes, no LDAP)
@@ -204,7 +204,7 @@ $Script:PrimaryAttributes = @{
     GPORegistrySetting = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'RegistryKey', 'ConfiguredValue',
         'VulnerabilityName', 'RiskReason',
-        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # The values Get-GPORegistrySettings does not judge, per policy file (-IncludeUnknown).
@@ -226,7 +226,7 @@ $Script:PrimaryAttributes = @{
         'ApprovedDriverSource', 'ApprovedServerList',
         'SpoolerClientConnections', 'QueueSpecificFiles',
         'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # LAPS policy settings deployed via GPO (Get-LAPSConfiguration, Step 3)
@@ -454,7 +454,7 @@ $Script:PrimaryAttributes = @{
     GPOUserRights = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'UserRight', 'UserRightName',
         'GrantedBeyondDefault', 'RemovedFromDefault',
-        'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+        'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # The deny logon rights a GPO sets (Get-GPOLogonRestrictions). A strict type, like
@@ -463,7 +463,7 @@ $Script:PrimaryAttributes = @{
         'GPOName', 'GPOGUID', 'GPOPath', 'AppliesTo',
         'DenyNetworkLogon', 'DenyInteractiveLogon', 'DenyRemoteInteractiveLogon', 'DenyBatchLogon', 'DenyServiceLogon',
         'LogonVerdict',
-        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # The rights Get-GPOUserRightsAssignment does not judge, per policy file (-IncludeUnknown).
@@ -489,13 +489,13 @@ $Script:PrimaryAttributes = @{
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'TaskName', 'Command',
-        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
     GPOScriptPath = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+        'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # GPO Local Group Membership (custom PSCustomObject from Get-GPOLocalGroupMembership)
@@ -512,7 +512,7 @@ $Script:PrimaryAttributes = @{
     GPOLocalGroup = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'TargetGroup', 'Mode',
         'MembersAdded', 'MembersRemoved', 'groupEmptied',
-        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # GPO granting SeMachineAccountPrivilege (enriched native GPO object, same pattern as LDAPConfigGPO/SMBSigning)

@@ -2261,7 +2261,120 @@ function Get-GPOLoopbackMode {
 
 <#
 .SYNOPSIS
-    Adds the WMI filter and loopback rows to a GPO finding, where the policy has them.
+    The lines of a policy comment, from the bytes of its GPO.cmt.
+
+.DESCRIPTION
+    The Group Policy Management Console writes the comment of a policy into GPO.cmt in the
+    policy's SYSVOL folder as UTF-16LE without a byte order mark and without a terminator
+    (measured on a Windows Server 2016 domain controller). That format is taken whenever no
+    mark says otherwise and the length is even; a mark is honoured, and an odd length - no
+    UTF-16 at all - is read in the system code page. The format being known, this needs none
+    of the guessing ConvertFrom-CredentialScanBytes does for files of any kind, and a comment
+    in Cyrillic or CJK reads as well as one in English.
+
+.PARAMETER Bytes
+    The content of GPO.cmt.
+
+.OUTPUTS
+    String - one per non-empty line, trimmed; nothing for a comment of only whitespace.
+#>
+function ConvertFrom-GPOCommentBytes {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes
+    )
+
+    $length = $Bytes.Length
+    $text = if ($length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        [System.Text.Encoding]::UTF8.GetString($Bytes, 3, $length - 3)
+    } elseif ($length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+        [System.Text.Encoding]::Unicode.GetString($Bytes, 2, $length - 2)
+    } elseif ($length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+        [System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $length - 2)
+    } elseif (($length % 2) -eq 0) {
+        [System.Text.Encoding]::Unicode.GetString($Bytes)
+    } else {
+        [System.Text.Encoding]::Default.GetString($Bytes)
+    }
+
+    $lines = @(($text.TrimEnd([char]0) -split '\r?\n') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    return $lines
+}
+
+<#
+.SYNOPSIS
+    The comment of a policy - the text GPMC shows on the policy's Details tab.
+
+.DESCRIPTION
+    Read once per session from the GPO.cmt files of the SYSVOL listing, into
+    $Script:GPOCommentMap (GUID -> lines). Unlike the WMI filter and the loopback mode a
+    comment changes nothing about where a policy applies; it tells the reader what the
+    policy is for. So nothing stands in for a comment that could not be read: a policy
+    without one, a GPO.cmt that could not be read, and SYSVOL out of reach all give no
+    row, and the comment is never "Unknown". Every authenticated user can read the file;
+    a password typed into it is a finding of Get-CredentialExposure, which reads the
+    same file.
+
+.PARAMETER GPOGUID
+    The policy's GUID, with or without braces.
+
+.OUTPUTS
+    String - one per line of the comment; nothing when the policy has none.
+#>
+function Get-GPOComment {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$GPOGUID
+    )
+
+    if ([string]::IsNullOrWhiteSpace($GPOGUID)) { return }
+
+    if ($null -eq $Script:GPOCommentMap) {
+        $built = $null
+        try {
+            $built = Invoke-SMBAccess -Description 'Reading the comments of the GPOs' -ScriptBlock {
+                $comments = @{}
+                foreach ($cmtFile in @(Get-CachedSYSVOLFiles -Filter 'GPO.cmt')) {
+                    # The comment of a policy sits in the policy folder itself, right under
+                    # Policies. A GPO.cmt deeper down - in a folder that happens to be named
+                    # like another policy's GUID - is not that policy's comment.
+                    $folder = $cmtFile.Directory
+                    if ($null -eq $folder -or $null -eq $folder.Parent -or $folder.Parent.Name -ine 'Policies') { continue }
+                    try {
+                        $lines = @(ConvertFrom-GPOCommentBytes -Bytes ([System.IO.File]::ReadAllBytes($cmtFile.FullName)))
+                        if ($lines.Count -gt 0) { $comments[$folder.Name] = $lines }
+                    } catch {
+                        Write-Log "[Get-GPOComment] Could not read $($cmtFile.FullName): $_"
+                    }
+                }
+                $comments
+            }
+        } catch {
+            Write-Log "[Get-GPOComment] Could not read the comments of the GPOs: $_"
+        }
+        if ($built -is [hashtable]) {
+            $Script:GPOCommentMap = $built
+        } else {
+            $Script:GPOCommentMap = @{}
+        }
+    }
+
+    $lookupKey = $GPOGUID.Trim()
+    if ($lookupKey -notmatch '^\{') { $lookupKey = "{$lookupKey}" }
+    if ($Script:GPOCommentMap.ContainsKey($lookupKey)) { return @($Script:GPOCommentMap[$lookupKey]) }
+    return
+}
+
+<#
+.SYNOPSIS
+    Adds the WMI filter, loopback and comment rows to a GPO finding, where the policy has them.
 
 .DESCRIPTION
     Two facts beside LinkedOUs and reachesDomainControllers that change which machines and
@@ -2271,11 +2384,15 @@ function Get-GPOLoopbackMode {
     one, or where it could not be read whether it has - a policy without either applies by
     its links alone, as the other rows already say.
 
+    The third row, gpoComment, is the policy's own comment (Get-GPOComment): what an
+    administrator wrote down the policy is for, which no other row can say. One entry per
+    line of the comment, and no row for a policy without one.
+
 .PARAMETER Object
     The finding to annotate.
 
 .PARAMETER GPOGUID
-    The policy's GUID. Without one, neither row can be looked up and none is added.
+    The policy's GUID. Without one, no row can be looked up and none is added.
 #>
 function Add-GPOConditionRow {
     [CmdletBinding()]
@@ -2294,6 +2411,13 @@ function Add-GPOConditionRow {
 
     $loopback = Get-GPOLoopbackMode -GPOGUID $GPOGUID
     if ($loopback) { $Object | Add-Member -NotePropertyName 'loopbackProcessing' -NotePropertyValue $loopback -Force }
+
+    $comment = @(Get-GPOComment -GPOGUID $GPOGUID)
+    if ($comment.Count -eq 1) {
+        $Object | Add-Member -NotePropertyName 'gpoComment' -NotePropertyValue $comment[0] -Force
+    } elseif ($comment.Count -gt 1) {
+        $Object | Add-Member -NotePropertyName 'gpoComment' -NotePropertyValue $comment -Force
+    }
 }
 
 <#

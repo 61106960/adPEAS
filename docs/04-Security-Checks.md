@@ -1292,6 +1292,8 @@ Three things worth knowing about where the line is drawn:
 Suppressing a finding also keeps it out of the HTML report and the JSON export, so a scan
 comparison will show such a finding as gone once someone disables a link.
 
+**The comment of the policy**: a GPO finding carries `gpoComment`, the comment the Group Policy Management Console shows on the policy's Details tab - read from `GPO.cmt` in the policy's SYSVOL folder, one entry per line. It says what the policy is for, which no other row can. A policy without a comment, or whose `GPO.cmt` could not be read, has no such row. Every authenticated user can read that file; a password typed into it is reported by `Get-CredentialExposure`.
+
 **Reading `EffectiveSetting`**: where several GPOs configure the same thing, this row says
 which of them decides the value, and why. It replaced a `True`/`False` called
 `IsEffectiveSetting`, which could not express the answer - a `False` meant either "a
