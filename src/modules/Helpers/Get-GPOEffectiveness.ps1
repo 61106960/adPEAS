@@ -2295,3 +2295,87 @@ function Add-GPOConditionRow {
     $loopback = Get-GPOLoopbackMode -GPOGUID $GPOGUID
     if ($loopback) { $Object | Add-Member -NotePropertyName 'loopbackProcessing' -NotePropertyValue $loopback -Force }
 }
+
+<#
+.SYNOPSIS
+    Which kinds of machine a policy's computer settings reach: domain controllers, member
+    computers, or both - the defaults a user right is measured against.
+
+.DESCRIPTION
+    The Default Domain Controllers Policy is recognised by its well-known GUID, and an
+    active link at or below the Domain Controllers OU reaches a domain controller. A
+    domain-wide link reaches both kinds of machine. Any other link reaches member
+    computers. A policy without an active link is counted as reaching member computers:
+    for a user right that is the stricter set of defaults, and it is what a policy linked
+    tomorrow would most likely reach.
+
+    Shared by Get-GPOUserRightsAssignment and Get-GPOLogonRestrictions, so that both read
+    "where does this apply" the same way.
+
+.PARAMETER GPOGUID
+    The policy's GUID in braces, as its SYSVOL folder is named.
+
+.PARAMETER ActiveLink
+    The policy's enabled link records, as Get-GPOLinkage returns them.
+
+.PARAMETER DomainControllersOU
+    The distinguished name of OU=Domain Controllers.
+
+.OUTPUTS
+    PSCustomObject: ReachesDC, ReachesMember, Scopes ('Member' and/or 'DC'), Text.
+
+.NOTES
+    Author: Alexander Sturz (@_61106960_)
+#>
+function Get-GPOMachineScope {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyString()]
+        [string]$GPOGUID,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $ActiveLink,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$DomainControllersOU
+    )
+
+    $links = @($ActiveLink | Where-Object { $_ })
+    $isDomainWide = @($links | Where-Object { $_.Scope -eq 'Domain' }).Count -gt 0
+    $linkedOUs = @($links | ForEach-Object { $_.DistinguishedName })
+
+    $reachesDC = (([string]$GPOGUID).ToUpper() -eq '{6AC1786C-016F-11D2-945F-00C04FB984F9}') -or $isDomainWide
+    $reachesMember = $isDomainWide -or ($linkedOUs.Count -eq 0)
+    foreach ($linkDN in $linkedOUs) {
+        if ($DomainControllersOU -and "$linkDN".EndsWith($DomainControllersOU, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $reachesDC = $true
+        } else {
+            $reachesMember = $true
+        }
+    }
+    if (-not $reachesDC -and -not $reachesMember) { $reachesMember = $true }
+
+    $scopes = @()
+    if ($reachesMember) { $scopes += 'Member' }
+    if ($reachesDC)     { $scopes += 'DC' }
+
+    $text = if ($reachesDC -and $reachesMember) {
+        'Domain Controllers and member computers'
+    } elseif ($reachesDC) {
+        'Domain Controllers'
+    } else {
+        'Member computers'
+    }
+
+    return [PSCustomObject]@{
+        ReachesDC     = $reachesDC
+        ReachesMember = $reachesMember
+        Scopes        = $scopes
+        Text          = $text
+    }
+}

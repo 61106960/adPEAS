@@ -6039,6 +6039,109 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
     }
 
     # =========================================================================
+    # GPO LOGON RESTRICTIONS - the deny logon rights (Get-GPOLogonRestrictions)
+    # =========================================================================
+
+    'GPO_TIER0_LOGON_NOT_DENIED' = @{
+        Title = "No Policy Keeps Domain Admins Off Member Computers"
+        Risk = "Hint"
+        BaseScore = 25
+        Description = "No Group Policy that reaches member computers denies Domain Admins the local or Remote Desktop logon (Deny log on locally, Deny log on through Remote Desktop Services) - neither by naming the group nor a group Domain Admins is a member of. Windows denies only the Guest account by default, so a Domain Admin may sign in to every workstation and member server, and each sign-in leaves credential material on the machine: in LSASS, as a Kerberos ticket, as a cached logon. Whoever holds administrator rights on any one of those machines can take it. Microsoft's guidance for securing Active Directory is to deny Domain Admins these two logons, and the network, batch and service logon, in policies linked to the OUs of member servers and workstations. A machine's local policy is not visible here."
+        Impact = @(
+            "A Domain Admin who signs in to a workstation or member server - by habit, for a quick fix - leaves credentials behind that a local administrator of that machine can extract"
+            "One compromised workstation is then one support call away from the domain"
+        )
+        Attack = @(
+            "1. Gain administrator rights on any workstation or member server - a local privilege escalation, a reused local administrator password"
+            "2. Wait for, or provoke, a Domain Admin sign-in to that machine - a support ticket, a scheduled task, a service"
+            "3. Extract the Domain Admin's credentials from LSASS or the Kerberos ticket cache"
+        )
+        Remediation = @(
+            "Add Domain Admins to Deny access to this computer from the network, Deny log on as a batch job, Deny log on as a service, Deny log on locally and Deny log on through Remote Desktop Services in a policy linked to every OU that holds workstations or member servers"
+            "Keep the jump servers used to administer the domain controllers out of those OUs"
+            "Administer member computers with accounts that are not Domain Admins"
+        )
+        References = @(
+            @{ Title = "Appendix F: Securing Domain Admins Groups in Active Directory - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-f--securing-domain-admins-groups-in-active-directory" }
+            @{ Title = "Deny access to this computer from the network - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/deny-access-to-this-computer-from-the-network" }
+        )
+        Tools = @("Mimikatz", "Rubeus")
+        MITRE = "T1003.001"
+    }
+
+    'GPO_LOCAL_ADMIN_NETWORK_NOT_DENIED' = @{
+        Title = "No Policy Denies Local Administrator Accounts the Network Logon"
+        Risk = "Hint"
+        BaseScore = 20
+        Description = "No Group Policy that reaches member computers denies local administrator accounts the network logon (Deny access to this computer from the network) - not Local account and member of Administrators group (S-1-5-114), not Local account (S-1-5-113), not the local Administrator account by its name. Windows denies only the Guest account by default. Where several machines share a local administrator password - a cloned image, a password set by script - the password or its hash taken from one machine opens every other one over the network. Its own password on every machine, as Windows LAPS sets it, takes the reuse away; the deny right takes the network logon away whatever the password is."
+        Impact = @(
+            "A local administrator password or hash taken from one machine logs on to every machine that shares it, over SMB, WMI or WinRM"
+            "Lateral movement across workstations and servers then needs no domain account"
+        )
+        Attack = @(
+            "1. Extract the local administrator's NT hash from one machine's SAM"
+            "2. Authenticate with it to other machines over the network (pass-the-hash)"
+            "3. Repeat from every machine reached until a domain credential turns up"
+        )
+        Remediation = @(
+            "Add Local account and member of Administrators group to Deny access to this computer from the network, and Local account to Deny log on through Remote Desktop Services, in a policy linked to the OUs of member servers and workstations"
+            "Give every machine its own local administrator password with Windows LAPS"
+        )
+        References = @(
+            @{ Title = "Appendix H: Securing Local Administrator Accounts and Groups - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-h--securing-local-administrator-accounts-and-groups" }
+            @{ Title = "Deny access to this computer from the network - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/deny-access-to-this-computer-from-the-network" }
+        )
+        Tools = @("Impacket", "Mimikatz")
+        MITRE = "T1550.002"
+    }
+
+    'GPO_LOGON_LOCKOUT' = @{
+        Title = "Policy Denies a Logon to the Accounts That Need It"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "This Group Policy denies a logon to a principal that covers most or all accounts - Everyone, Authenticated Users, Users, Domain Users, Domain Computers, NETWORK or INTERACTIVE - or denies Domain Admins a logon on the domain controllers it reaches. A deny right wins over every right that would allow the logon, so every account the principal covers loses that kind of logon on every machine in scope, administrators included; on a domain controller every Active Directory operation is a network logon. A configuration mistake rather than an exposure: it either breaks what the policy reaches, or the policy does not reach what its author assumes."
+        Impact = @(
+            "Every account the principal covers loses that kind of logon on every machine the policy reaches"
+            "Denied on a domain controller, the network logon takes Active Directory itself away from those accounts"
+        )
+        Attack = @()
+        Remediation = @(
+            "Replace the broad group with the accounts that are meant to be denied - Guests, Local account, service accounts"
+            "Link a policy that denies Domain Admins a logon to the OUs of member computers only, never to the Domain Controllers OU or the domain"
+        )
+        References = @(
+            @{ Title = "Deny access to this computer from the network - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/deny-access-to-this-computer-from-the-network" }
+        )
+        Tools = @()
+        MITRE = ""
+        Triggers = @(
+            @{ Attribute = 'LogonVerdict'; Pattern = '^Locks out '; Severity = 'Hint' }
+        )
+    }
+
+    'GPO_LOGON_DENIAL_HARDENING' = @{
+        Title = "Policy Keeps Privileged Credentials Off Member Computers"
+        Risk = "Secure"
+        BaseScore = 0
+        Description = "This Group Policy denies Domain Admins, or local administrator accounts, a logon on the member computers it reaches. A deny right wins over every right that would allow the logon, so their credentials cannot be used there in that way and leave nothing behind for a local administrator to take. Not evaluated: which of several policies setting the same right wins on a machine - a policy of higher precedence that sets the right again without these principals replaces the list."
+        Impact = @()
+        Attack = @()
+        Remediation = @(
+            "No action required"
+            "Check that the policy is linked to every OU that holds workstations and member servers, and that no policy of higher precedence sets the same right without these principals"
+        )
+        References = @(
+            @{ Title = "Appendix F: Securing Domain Admins Groups in Active Directory - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-f--securing-domain-admins-groups-in-active-directory" }
+            @{ Title = "Appendix H: Securing Local Administrator Accounts and Groups - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-h--securing-local-administrator-accounts-and-groups" }
+        )
+        Tools = @()
+        MITRE = ""
+        Triggers = @(
+            @{ Attribute = 'LogonVerdict'; Pattern = '^Keeps '; Severity = 'Secure' }
+        )
+    }
+
+    # =========================================================================
     # GPO USER RIGHTS - one definition per right (Get-GPOUserRightsAssignment)
     # =========================================================================
     # GPO_DANGEROUS_USER_RIGHT used to be the tooltip for every one of the 22 rights the

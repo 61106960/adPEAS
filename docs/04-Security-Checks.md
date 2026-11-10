@@ -604,12 +604,13 @@ Get-AddComputerRights -IncludePrivileged
 - The correct baseline for the machines the policy reaches: domain controllers and member computers have different defaults, and a policy reaching both is measured against the union
 - Whether the GPO currently applies at all (disabled half, no link)
 - Maps each finding to the affected OUs / domain-wide scope via GPO links
+- **Rights the table does not judge** — every other right a GPO assigns, such as `SeNetworkLogonRight` (Access this computer from the network), is counted in one Note line and listed with `-IncludeUnknown`. The five deny rights are not counted: Get-GPOLogonRestrictions evaluates them
 
 **Why not a filter on the holder**: an identity filter — hide privileged SIDs, operator groups, service identities — fails in both directions. `Backup Operators` holding `SeDebugPrivilege` is not a Windows default and is a clean path to SYSTEM, and an identity filter hides it because the group looks privileged. Meanwhile which principals hold a right by default depends on the right, not on how privileged the holder looks.
 
 **Baseline gaps are visible, not guessed**: a right whose default set is not established carries no baseline, and the finding says so. `SeServiceLogonRight` is that case — what holds it depends on which products are installed — and the check falls back to an identity filter for that one right.
 
-**Security Impact**: A single GPO can grant a low-level privilege (e.g. SeDebugPrivilege → SYSTEM, SeBackupPrivilege → read SAM/NTDS) across every computer it applies to — a direct, often domain-wide privilege-escalation and lateral-movement path. `SeMachineAccountPrivilege` is covered separately by Get-AddComputerRights; `Se*Deny*` rights take access away and are not evaluated.
+**Security Impact**: A single GPO can grant a low-level privilege (e.g. SeDebugPrivilege → SYSTEM, SeBackupPrivilege → read SAM/NTDS) across every computer it applies to — a direct, often domain-wide privilege-escalation and lateral-movement path. `SeMachineAccountPrivilege` is covered separately by Get-AddComputerRights; the `SeDeny*` rights take access away and are evaluated by Get-GPOLogonRestrictions.
 
 **Usage**:
 ```powershell
@@ -626,6 +627,35 @@ Get-GPOUserRightsAssignment -IncludeDefaults
 |-----------|-------------|
 | `-IncludeDefaults` | Also report assignments that match the Windows default |
 | `-IncludePrivileged` | Alias of `-IncludeDefaults`, kept so existing invocations keep working |
+| `-IncludeUnknown` | List the assignments of rights the check does not judge, one object per policy file |
+
+---
+
+### Get-GPOLogonRestrictions
+
+**Purpose**: Reports which logons Group Policy denies, to whom and on which machines — and whether any policy keeps Domain Admins and local administrator accounts off member computers.
+
+**Why separate from the user rights comparison**: a deny right grants nothing. It takes one kind of logon away from the principals it names and wins over every right that would allow it. Its presence is the hardening and its absence the gap, so "a holder beyond the Windows default" is the wrong question for it.
+
+**What it checks**:
+- `SeDenyNetworkLogonRight`, `SeDenyInteractiveLogonRight`, `SeDenyRemoteInteractiveLogonRight`, `SeDenyBatchLogonRight` and `SeDenyServiceLogonRight` in `GptTmpl.inf` of every GPO, per policy with the machines it reaches
+- **Domain Admins kept off member computers** — the group itself, or a group Domain Admins is a member of (not the BUILTIN groups, which are machine-local on a member computer). Secure. Microsoft, Best Practices for Securing Active Directory, Appendix F
+- **Local administrator accounts kept off member computers** — `Local account and member of Administrators group` (S-1-5-114), `Local account` (S-1-5-113), or the local `Administrator` account entered by its name, as Appendix H does. Secure
+- **Lockouts** — a broad group denied (Everyone, Authenticated Users, Users, Domain Users, Domain Computers, NETWORK, INTERACTIVE), or Domain Admins denied a logon on domain controllers. Hint
+- **Across the policies that apply**: a Hint when none denies Domain Admins the local or Remote Desktop logon on member computers, and one when none denies local administrator accounts the network logon there. Neither is the Windows default, which denies the Guest account alone. Where part of SYSVOL could not be read, the absence is reported as a Note instead
+- Policies that are not linked or disabled are named, and do not count towards the conclusions
+
+**Not evaluated**: which of several policies setting the same right wins on a machine, and a machine's own local policy.
+
+**Security Impact**: A Domain Admin who may sign in to every workstation leaves credentials wherever a support call takes them, and one compromised workstation is then one call away from the domain. A local administrator password shared across machines opens every one of them over the network once it is taken from one.
+
+**Usage**:
+```powershell
+Get-GPOLogonRestrictions
+
+# Also list the policies that reach no machine
+Get-GPOLogonRestrictions -IncludeInactive
+```
 
 ---
 

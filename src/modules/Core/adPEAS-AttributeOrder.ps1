@@ -457,6 +457,20 @@ $Script:PrimaryAttributes = @{
         'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
     )
 
+    # The deny logon rights a GPO sets (Get-GPOLogonRestrictions). A strict type, like
+    # GPOUserRights: the check keeps what the conclusions read on the object, off the display.
+    GPOLogonRestriction = @(
+        'GPOName', 'GPOGUID', 'GPOPath', 'AppliesTo',
+        'DenyNetworkLogon', 'DenyInteractiveLogon', 'DenyRemoteInteractiveLogon', 'DenyBatchLogon', 'DenyServiceLogon',
+        'LogonVerdict',
+        'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+    )
+
+    # The rights Get-GPOUserRightsAssignment does not judge, per policy file (-IncludeUnknown).
+    GPOUserRightValue = @(
+        'GPOName', 'GPOGUID', 'GPOPath', 'UserRights'
+    )
+
     # Machine Account Quota setting
     MachineAccountQuota = @(
         'ms-DS-MachineAccountQuota', 'whoCanAddComputers', 'privilegeGrantedBy'
@@ -836,6 +850,7 @@ $Script:StrictAttributeTypes = @(
     'FineGrainedPasswordPolicy',
     'BitLockerRecoveryKey',
     'GPOUserRights',
+    'GPOLogonRestriction',
     'LAPSCoverage',
     'UnprotectedPrivilegedGroups',
     'PrivilegedAccountsRead'
@@ -858,6 +873,7 @@ $Script:CardOnlyNotes = @(
 # would vanish from the report as well; one named here is kept, in this order.
 $Script:StrictExtendedAttributes = @{
     GPOUserRights = @('SourceFile')
+    GPOLogonRestriction = @('SourceFile')
 }
 
 # Per-ObjectType row labels: what a row is called, where the property it comes from is

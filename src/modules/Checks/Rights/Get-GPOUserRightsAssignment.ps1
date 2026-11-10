@@ -55,6 +55,12 @@ function Get-GPOUserRightsAssignment {
     cleaning up but is not reaching a machine today - and it used to read exactly like one
     that is.
 
+    Every other right a policy assigns is not judged - a right outside the table, such as
+    "Access this computer from the network". Such assignments are counted, so that "every
+    right matches the default" is not read as "nothing else is assigned", and
+    -IncludeUnknown lists them. The five deny rights are not counted among them:
+    Get-GPOLogonRestrictions reads those.
+
     Requires SMB access to \\domain\SYSVOL.
 
     .PARAMETER Domain
@@ -71,6 +77,10 @@ function Get-GPOUserRightsAssignment {
     the ones that match the Windows default exactly, and the ones that only remove default
     holders. Off by default - together they are the majority of what a domain contains, and
     none of them grants anybody anything.
+
+    .PARAMETER IncludeUnknown
+    List the assignments of rights the check does not judge, one object per policy file.
+    Without it they are counted only.
 
     .PARAMETER IncludePrivileged
     Kept as an alias of -IncludeDefaults, so an existing invocation keeps working. Under
@@ -105,7 +115,10 @@ function Get-GPOUserRightsAssignment {
         [switch]$IncludeDefaults,
 
         [Parameter(Mandatory=$false)]
-        [switch]$IncludeInactive
+        [switch]$IncludeInactive,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeUnknown
     )
 
     begin {
@@ -144,6 +157,7 @@ function Get-GPOUserRightsAssignment {
             $statusMap = $gpoStatusMap
             $dcOU = if ($domainDN) { "OU=Domain Controllers,$domainDN" } else { $null }
             $Script:gpoUserRightsFindings = @()
+            $Script:gpoUserRightsUnjudged = [System.Collections.ArrayList]::new()
 
             # Records whether the Policies path was actually read. Without it an empty
             # result cannot be told apart from a scan that never ran, and the check
@@ -216,40 +230,18 @@ function Get-GPOUserRightsAssignment {
                     if ($links) {
                         $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
                     }
-                    $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-                    $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
 
                     # ----- Which default set to measure against -----
                     #
                     # The Default Domain Controllers Policy carries a well-known GUID, and
                     # any policy linked at or below the Domain Controllers OU reaches a DC
                     # as well. A domain-wide link reaches both kinds of machine, so both
-                    # baselines count and the union is what is expected.
-                    $reachesDC = ($gpoGUIDKey -eq '{6AC1786C-016F-11D2-945F-00C04FB984F9}') -or $isDomainWide
-                    $reachesMember = $isDomainWide -or ($linkedOUs.Count -eq 0)
-                    foreach ($linkDN in $linkedOUs) {
-                        if ($dcOU -and "$linkDN".EndsWith($dcOU, [System.StringComparison]::OrdinalIgnoreCase)) {
-                            $reachesDC = $true
-                        } else {
-                            $reachesMember = $true
-                        }
-                    }
-                    # An unlinked policy is measured against the member set, the stricter of
-                    # the two - it is the assumption that reports more, and reporting more
-                    # about a policy that reaches nothing today costs nothing.
-                    if (-not $reachesDC -and -not $reachesMember) { $reachesMember = $true }
-
-                    $scopes = @()
-                    if ($reachesMember) { $scopes += 'Member' }
-                    if ($reachesDC)     { $scopes += 'DC' }
-
-                    $machineScope = if ($reachesDC -and $reachesMember) {
-                        'Domain Controllers and member computers'
-                    } elseif ($reachesDC) {
-                        'Domain Controllers'
-                    } else {
-                        'Member computers'
-                    }
+                    # baselines count and the union is what is expected. An unlinked policy
+                    # is measured against the member set, the stricter of the two. Shared
+                    # with Get-GPOLogonRestrictions.
+                    $machineReach = Get-GPOMachineScope -GPOGUID $gpoGUIDKey -ActiveLink $activeLinks -DomainControllersOU $dcOU
+                    $scopes = @($machineReach.Scopes)
+                    $machineScope = $machineReach.Text
 
                     # ----- Compare every right the table knows -----
                     foreach ($right in $Script:UserRightsBaseline.Keys) {
@@ -399,6 +391,38 @@ function Get-GPOUserRightsAssignment {
 
                         $Script:gpoUserRightsFindings += $finding
                     }
+
+                    # ----- What the table does not judge -----
+                    #
+                    # Every other right the section assigns: counted, so that "every right
+                    # matches the default" is not read as "nothing else is assigned", and
+                    # listed with -IncludeUnknown. A deny right is not among them -
+                    # Get-GPOLogonRestrictions reads those for what they protect.
+                    foreach ($assignment in [regex]::Matches($section, '(?im)^[ \t]*(Se[A-Za-z]+)[ \t]*=[ \t]*([^\r\n]*)')) {
+                        $assignedRight = $assignment.Groups[1].Value
+                        if ($Script:UserRightsBaseline.Contains($assignedRight)) { continue }
+                        if ($Script:LogonDenyRights.Contains($assignedRight)) { continue }
+                        $holders = @()
+                        foreach ($token in ($assignment.Groups[2].Value -split ',')) {
+                            $raw = $token.Trim().TrimStart('*')
+                            if (-not $raw) { continue }
+                            $holderName = $raw
+                            if ($raw -match '^S-1-') {
+                                $resolvedName = $null
+                                try { $resolvedName = ConvertFrom-SID -SID $raw } catch { }
+                                if ($resolvedName) { $holderName = [string]$resolvedName }
+                            }
+                            $holders += $holderName
+                        }
+                        [void]$Script:gpoUserRightsUnjudged.Add([PSCustomObject]@{
+                            GPOName    = $gpo.displayName
+                            GPOGUID    = $gpo.Name
+                            GPOPath    = $gpo.gPCFileSysPath
+                            SourceFile = Get-GPORelativePath -Path $file.FullName
+                            UserRight  = $assignedRight
+                            Holders    = $holders
+                        })
+                    }
                 }
 
                 if ($totalGPOs -gt $Script:ProgressThreshold) {
@@ -410,6 +434,24 @@ function Get-GPOUserRightsAssignment {
             $Script:gpoUserRightsFindings = $null
             $sysvolScanned = [bool]$Script:gpoUserRightsSysvolScanned
             $Script:gpoUserRightsSysvolScanned = $null
+            $unjudged = @($Script:gpoUserRightsUnjudged)
+            $Script:gpoUserRightsUnjudged = $null
+
+            # What the table does not judge, counted over the policies that apply, ahead of
+            # everything else: it is a statement about what was left out.
+            $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
+                -GPOLinkage $gpoLinkage -Scope 'Machine'
+            # Wrapped as a whole: an if-expression unrolls a one-element array, and .Count of
+            # the single object it leaves is $null on Windows PowerShell 5.1.
+            $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
+            if ($unjudgedShown.Count -gt 0) {
+                $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
+                $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
+                $unjudgedText = "$($unjudgedShown.Count) further user right assignment(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
+                # Invoke-adPEAS passes no -IncludeUnknown; outside it the switch is reachable.
+                if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
+                Show-Line $unjudgedText -Class Note
+            }
 
             if ($findings.Count -gt 0) {
                 # A deviation in a policy that reaches no machine is configured and applies
@@ -524,11 +566,34 @@ function Get-GPOUserRightsAssignment {
                 Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
             }
 
+            # The assignments the count above stands for, with -IncludeUnknown: one object
+            # per policy file, a row per right. No colour - nothing here is judged.
+            if ($IncludeUnknown -and $unjudgedShown.Count -gt 0) {
+                $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
+                    Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } })
+                foreach ($group in $unjudgedGroups) {
+                    $first = $group.Group[0]
+                    $inventory = [PSCustomObject][ordered]@{
+                        GPOName           = $first.GPOName
+                        GPOGUID           = $first.GPOGUID
+                        GPOPath           = $first.GPOPath
+                        SourceFile        = $first.SourceFile
+                        UserRights        = @($group.Group | Sort-Object -Property UserRight | ForEach-Object {
+                            $holderText = if (@($_.Holders).Count -gt 0) { @($_.Holders) -join ', ' } else { '(nobody)' }
+                            "$($_.UserRight) = $holderText"
+                        })
+                        _adPEASObjectType = 'GPOUserRightValue'
+                    }
+                    Show-Object $inventory -Class Standard
+                }
+            }
+
         } catch {
             Write-Log "[Get-GPOUserRightsAssignment] Error: $_" -Level Error
             Show-Line "Error during check: $_" -Class "Finding"
         } finally {
             $Script:gpoUserRightsFindings = $null
+            $Script:gpoUserRightsUnjudged = $null
         }
     }
 

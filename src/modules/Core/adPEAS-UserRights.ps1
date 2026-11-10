@@ -489,3 +489,20 @@ function Compare-UserRightAssignment {
         Why         = $entry.Why
     }
 }
+
+# =============================================================================
+# The rights that take a logon away
+# =============================================================================
+# Not compared against the defaults above. A deny right grants nothing: it takes one kind
+# of logon away from the principals it names, and it wins over every right that would
+# allow it. Its presence is the hardening and its absence the gap, so
+# Get-GPOLogonRestrictions reads these five for what they protect, and
+# Get-GPOUserRightsAssignment leaves them out of the rights it counts as not judged.
+# Logon is the short name a result row uses; Property the row it is shown under.
+$Script:LogonDenyRights = [ordered]@{
+    'SeDenyNetworkLogonRight'           = @{ Name = 'Deny access to this computer from the network';  Logon = 'network';        Property = 'DenyNetworkLogon' }
+    'SeDenyInteractiveLogonRight'       = @{ Name = 'Deny log on locally';                            Logon = 'local';          Property = 'DenyInteractiveLogon' }
+    'SeDenyRemoteInteractiveLogonRight' = @{ Name = 'Deny log on through Remote Desktop Services';    Logon = 'remote desktop'; Property = 'DenyRemoteInteractiveLogon' }
+    'SeDenyBatchLogonRight'             = @{ Name = 'Deny log on as a batch job';                     Logon = 'batch';          Property = 'DenyBatchLogon' }
+    'SeDenyServiceLogonRight'           = @{ Name = 'Deny log on as a service';                       Logon = 'service';        Property = 'DenyServiceLogon' }
+}

@@ -1778,6 +1778,40 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'GPO_USERRIGHT_SEDEBUG'
     }
 
+    'GPOLogonRestriction' = @{
+        TitleFormat = "GPO Logon Restrictions: {GPOName}"
+        Module = "Rights"
+        Category = "Rights"
+        SectionTitle = "Logons Denied via GPO"
+        Summary = "Reports which logons Group Policy denies, to whom and on which machines, and whether any policy keeps Domain Admins and local administrator accounts off member computers."
+        WhyItMatters = "A deny logon right takes one kind of logon away and wins over every right that would allow it. Denying Domain Admins the logon on workstations and member servers keeps their credentials off the machines an attacker reaches first; denying local administrator accounts the network logon stops one machine's local password from opening the next. Neither is the Windows default, which denies the Guest account alone. Denying a broad group instead locks out everyone it covers."
+        WhatWeCheck = @(
+            "Deny access to this computer from the network, Deny log on locally, Deny log on through Remote Desktop Services, Deny log on as a batch job and Deny log on as a service in GptTmpl.inf of every GPO"
+            "Domain Admins - or a group Domain Admins is a member of - denied a logon on member computers"
+            "Local account and member of Administrators group, Local account, and the local Administrator account by its name, denied on member computers"
+            "A broad group denied, and Domain Admins denied on domain controllers - a lockout"
+            "Whether any policy that applies denies Domain Admins the local or Remote Desktop logon, and local administrator accounts the network logon, on member computers"
+            "Not evaluated: which of several policies setting the same right wins on a machine, and a machine's local policy"
+        )
+        SecureMessage = "Policies keep Domain Admins and local administrator accounts off member computers, and none locks out a broad group."
+        PrimaryFindingId = 'GPO_TIER0_LOGON_NOT_DENIED'
+    }
+
+    'GPOUserRightValue' = @{
+        TitleFormat = "GPO User Rights Not Judged: {GPOName}"
+        Module = "Rights"
+        Category = "Rights"
+        SectionTitle = "User Rights via GPO That Depart From the Windows Default"
+        Summary = "Lists the user rights a policy file assigns that Get-GPOUserRightsAssignment does not judge (-IncludeUnknown)."
+        WhyItMatters = "The comparison against the Windows defaults covers the rights that are a step to escalation or lateral movement. Rights outside that table - Access this computer from the network, Increase scheduling priority and the like - are assigned by policies as well. Listed here as they are, so that what the table does not cover can still be read."
+        WhatWeCheck = @(
+            "Every right in GptTmpl.inf [Privilege Rights] that the table of the check does not name"
+            "Not the five deny rights - Get-GPOLogonRestrictions reads those"
+            "Not judged: the assignments are listed as they are, without a severity"
+        )
+        SecureMessage = "No user right outside the list of the check is assigned."
+    }
+
     'MachineAccountQuota' = @{
         TitleFormat = "Machine Account Quota Configuration"
         Module = "Rights"

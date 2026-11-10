@@ -262,6 +262,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Rights\Get-PasswordResetRights.ps1"
     . "$Script:ScriptPath\modules\Checks\Rights\Get-AddComputerRights.ps1"
     . "$Script:ScriptPath\modules\Checks\Rights\Get-GPOUserRightsAssignment.ps1"
+    . "$Script:ScriptPath\modules\Checks\Rights\Get-GPOLogonRestrictions.ps1"
     . "$Script:ScriptPath\modules\Checks\Rights\Get-LAPSPermissions.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-LAPSConfiguration.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-OutdatedComputers.ps1"
@@ -1131,6 +1132,7 @@ try {
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-PasswordResetRights' -Title 'Password Reset Rights' -Check { Get-PasswordResetRights -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-AddComputerRights' -Title 'Add Computer Rights' -Check { Get-AddComputerRights -IncludePrivileged:$IncludePrivileged }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-GPOUserRightsAssignment' -Title 'GPO User Rights Assignment' -Check { Get-GPOUserRightsAssignment -IncludePrivileged:$IncludePrivileged }
+            Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-GPOLogonRestrictions' -Title 'GPO Logon Restrictions' -Check { Get-GPOLogonRestrictions }
             Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-LAPSPermissions' -Title 'LAPS Permissions' -Check { Get-LAPSPermissions -IncludePrivileged:$IncludePrivileged }
         } catch {
             Write-Warning "[adPEAS] Error executing Rights Module: $_"
