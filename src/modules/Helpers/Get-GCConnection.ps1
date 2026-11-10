@@ -117,6 +117,12 @@ function Get-GCConnection {
         if (-not $useNegotiate -and $Script:LDAPCredential) {
             $ConnectParams['Credential'] = $Script:LDAPCredential
         }
+        # A pass-the-ticket session binds from its imported tickets and nothing else - under
+        # Negotiate, a GC ticket Windows cannot get turned into NTLM as the Windows logon.
+        # WindowsAuth stays on Negotiate: that logon is the identity it was asked to use.
+        if ($kerbUsed -and -not $winAuth) {
+            $ConnectParams['KerberosOnly'] = $true
+        }
     }
 
     foreach ($GCTarget in $targets) {

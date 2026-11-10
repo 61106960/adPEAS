@@ -14,6 +14,7 @@
     - PermissionError: Access denied
     - DomainError: Domain not found or unreachable
     - KerberosError: Kerberos-specific failures (with sub-types via ErrorCode)
+    - KerberosTicketError: a ticket was obtained or imported, but the LDAP bind with it failed
     - NTLMDisabledError: NTLM disabled and Kerberos not available
     - TicketImportError: Pass-the-Ticket import failed
     - GenericError: Unclassified connection error
@@ -67,6 +68,7 @@ function Show-ConnectionError {
             "PermissionError",
             "DomainError",
             "KerberosError",
+            "KerberosTicketError",
             "NTLMDisabledError",
             "TicketImportError",
             "GenericError"
@@ -393,8 +395,32 @@ function Show-ConnectionError {
                     $detailsArray += $effectiveDetails
                 }
 
-                Show-Message -Type Error -Title "Authentication failed: Invalid credentials" -Details $detailsArray
+                # Without a KDC error code nothing says the credentials were wrong: these are the
+                # flow's own failures (cross-realm, a ticket Windows did not use, a certificate the
+                # KDC did not answer), and "Invalid credentials" sent the reader after the password.
+                $kerberosTitle = if ($null -ne $ErrorCode -and $ErrorCodeType -eq "Kerberos") {
+                    "Authentication failed: Invalid credentials"
+                } else {
+                    "Kerberos authentication failed"
+                }
+                Show-Message -Type Error -Title $kerberosTitle -Details $detailsArray
                 $ThrowMessage = "Authentication failed"
+            }
+
+            "KerberosTicketError" {
+                # The KDC part worked; what failed is the bind with the ticket. Its reason names
+                # which side refused: 82 is Windows on this host, 49 the domain controller.
+                $detailsArray = @()
+                if ($effectiveDetails) {
+                    $detailsArray += $effectiveDetails
+                }
+                $hints = @()
+                if ($ErrorCode -eq 82) {
+                    $hints += "Windows looks up the domain controller and the domain through the system DNS."
+                    $hints += "A VPN or a second network adapter with its own DNS server can answer that lookup instead."
+                }
+                Show-Message -Type Error -Title "Kerberos ticket not usable" -Details $detailsArray -Hints $hints
+                $ThrowMessage = "Kerberos ticket not usable"
             }
 
             "NTLMDisabledError" {

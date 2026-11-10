@@ -496,8 +496,9 @@ function Invoke-KerberosAuthFlow {
             }
 
             # ===== Step 5: Connect to LDAP using Kerberos =====
-            # NOTE: On non-domain-joined machines, the imported Kerberos ticket may NOT be automatically used by System.DirectoryServices.DirectoryEntry.
-            # In this case, we return a specific error to trigger SimpleBind fallback.
+            # Windows may not use the imported ticket - e.g. when the system DNS does not resolve
+            # the DC or the domain. The bind then fails on this host and returns a specific error,
+            # so that Connect-adPEAS can fall back to NTLM with the account's own credentials.
             Write-Log "[Invoke-KerberosAuthFlow] Step 5: Establishing LDAP connection with Kerberos..."
 
             # Check if hosts file was patched - required for Kerberos SPN matching when using custom DNS without hosts file patching
@@ -522,7 +523,9 @@ function Invoke-KerberosAuthFlow {
             }
             if ($UseLDAPS) { $ConnParams['UseLDAPS'] = $true }
             $ConnParams['IgnoreSSLErrors'] = $IgnoreSSLErrors
-            # No Credential - attempts to use Kerberos ticket from session
+            # No Credential - the ticket just imported into the session. Kerberos alone: under
+            # Negotiate an unusable ticket fell back to NTLM as the Windows logon running adPEAS.
+            $ConnParams['KerberosOnly'] = $true
 
             $Connection = Connect-LDAP @ConnParams
 

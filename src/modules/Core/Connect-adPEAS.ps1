@@ -1049,7 +1049,7 @@ function Connect-adPEAS {
                             # Technical error (PTT failed, LDAP without Kerberos, etc.) - fallback is OK
                             $IsPTTError = $ErrorMessage -match "non-domain-joined|Remote Credential Guard|Ticket import failed|ticket not used|ticket not usable"
                             if ($IsPTTError) {
-                                Write-Log "[Connect-adPEAS] Kerberos PTT not available on this system - using SimpleBind"
+                                Write-Log "[Connect-adPEAS] Kerberos tickets obtained, but not usable for LDAP on this system"
                             }
 
                             if ($ForceKerberos) {
@@ -1060,7 +1060,7 @@ function Connect-adPEAS {
                                 else {
                                     if ($null -ne $KdcErrorCode) {
                                         Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
-                                    } else {
+                                    } elseif (-not (Test-TicketErrorAlreadyShown -ErrorMessage $ErrorMessage)) {
                                         Show-ConnectionError -ErrorType "KerberosError" -Details $ErrorMessage -NoThrow
                                     }
                                 }
@@ -1617,7 +1617,9 @@ function Connect-adPEAS {
 
                     $ConnParams['IgnoreSSLErrors'] = $IgnoreSSLErrors
                     $ConnParams['TimeoutSeconds'] = $TimeoutSeconds
-                    # Note: No Credential needed - uses Kerberos TGT from Windows session (PTT)
+                    # Note: No Credential needed - uses Kerberos TGT from Windows session (PTT).
+                    # Kerberos alone, so an unusable ticket cannot turn into NTLM as the Windows logon.
+                    $ConnParams['KerberosOnly'] = $true
 
                     $Connection = Connect-LDAP @ConnParams
 
@@ -1874,10 +1876,11 @@ function Connect-adPEAS {
 
                     # ===== Hash auth failed =====
                     if (-not $KerberosAuthSuccess) {
+                        $ticketErrorShown = Test-TicketErrorAlreadyShown -ErrorMessage $KerberosError
                         $Script:ConnectionState = "HashAuthFailed"
                         if ($null -ne $KerberosErrorCode) {
                             Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KerberosErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
-                        } else {
+                        } elseif (-not $ticketErrorShown) {
                             Show-ConnectionError -ErrorType "KerberosError" -Details $KerberosError -NoThrow
                         }
                         return $null
@@ -1934,7 +1937,9 @@ function Connect-adPEAS {
     
                         $ConnParams['IgnoreSSLErrors'] = $IgnoreSSLErrors
                         $ConnParams['TimeoutSeconds'] = $TimeoutSeconds
-                        # No Credential - uses Kerberos ticket from session
+                        # No Credential - uses Kerberos ticket from session, and Kerberos alone,
+                        # so an unusable ticket cannot turn into NTLM as the Windows logon.
+                        $ConnParams['KerberosOnly'] = $true
 
                         $Connection = Connect-LDAP @ConnParams
 
@@ -2260,4 +2265,37 @@ function Connect-adPEAS {
             Write-Log "[Connect-adPEAS] Authentication process completed"
         }
     }
+}
+
+function Test-TicketErrorAlreadyShown {
+    <#
+    .SYNOPSIS
+        Tells whether Connect-LDAP has already said why a Kerberos ticket was not usable.
+
+    .DESCRIPTION
+        After a pass-the-ticket, Connect-LDAP binds with Kerberos alone; when that bind fails it
+        shows "Kerberos ticket not usable" with the reason, and sets $Script:ConnectionState to
+        KerberosTicketError. Invoke-KerberosAuthFlow then fails with a message of its own.
+
+        Most of the time that message is the generic "Kerberos ticket not usable on this system",
+        which says nothing the reader has not just seen - shown again it came as a second block
+        titled "Authentication failed: Invalid credentials", for an account whose ticket the KDC
+        had issued. The cross-realm and custom-DNS messages explain a cause Connect-LDAP cannot
+        know about, so they are still shown.
+
+    .PARAMETER ErrorMessage
+        The error of the Kerberos flow.
+
+    .OUTPUTS
+        $true when the flow's message would only repeat what Connect-LDAP showed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$ErrorMessage
+    )
+
+    return ($Script:ConnectionState -eq 'KerberosTicketError' -and
+            $ErrorMessage -match 'ticket not usable on this system')
 }

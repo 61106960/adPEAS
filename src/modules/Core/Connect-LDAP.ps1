@@ -110,6 +110,16 @@ function Connect-LDAP {
         [Parameter(Mandatory=$false)]
         [switch]$ForceNTLM,
 
+        # Binds with the Kerberos package alone, from the tickets of the logon session. For the
+        # connections that follow a pass-the-ticket: Negotiate falls back to NTLM when Windows
+        # cannot use the imported ticket, and that NTLM carries the credentials of the Windows
+        # logon that runs adPEAS - the tester's own account, sent to the target's domain
+        # controller, which rejects it with LDAP error 49 (AcceptSecurityContext data 52e).
+        # Kerberos alone fails on the client instead (LDAP error 82) and sends nothing.
+        # Without -Credential only; -UseWindowsAuth keeps Negotiate, its NTLM is the point.
+        [Parameter(Mandatory=$false)]
+        [switch]$KerberosOnly,
+
         # Suppress user-visible error messages (Show-ConnectionError) while still tracking error codes.
         # Used by Connect-adPEAS when it knows it will auto-retry (e.g., LDAPS upgrade after SimpleBind failure),
         # and by Get-GCConnection, whose connection is auxiliary and whose failure is tolerated.
@@ -233,6 +243,19 @@ function Connect-LDAP {
                 $errorType = "GenericError"
             }
 
+            # A Kerberos-only bind (after a pass-the-ticket) that fails means the ticket was not
+            # used. Classified as AuthenticationFailed, LDAP 49 read "Wrong username or password",
+            # although the KDC had accepted the account's key when it issued the ticket.
+            $ticketDetails = $null
+            if ($KerberosOnly -and -not $BindSucceeded -and $ldapErrorCode -in @(49, 82)) {
+                $errorType = "KerberosTicketError"
+                $ticketDetails = if ($ldapErrorCode -eq 82) {
+                    "Reason: Windows did not use the Kerberos ticket for the LDAP bind (LDAP error 82)."
+                } else {
+                    "Reason: The domain controller rejected the Kerberos ticket (LDAP error 49)."
+                }
+            }
+
             if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
             if (-not $SuppressErrorDisplay) {
                 if ($null -ne $ldapErrorCode) {
@@ -240,7 +263,10 @@ function Connect-LDAP {
                     # the TCP connection and authentication handshake worked, but the server
                     # stopped responding to LDAP protocol messages (e.g., incomplete LDAP server implementation)
                     $extraDetails = $null
-                    if ($ldapErrorCode -eq 81 -and $BindSucceeded) {
+                    if ($ticketDetails) {
+                        $extraDetails = $ticketDetails
+                    }
+                    elseif ($ldapErrorCode -eq 81 -and $BindSucceeded) {
                         $extraDetails = "Bind() succeeded but the server did not respond to the search request. The LDAP server may not fully support authenticated queries."
                     }
                     # For LDAP 82 after a successful Bind(), distinguish the NTLM/GSSAPI negotiation failure
@@ -633,6 +659,9 @@ function Connect-LDAP {
                     # Use Basic auth for SimpleBind
                     $LdapProtocolConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Basic
                     $LdapProtocolConn.Credential = New-Object System.Net.NetworkCredential($UserName, $Password)
+                } elseif ($KerberosOnly) {
+                    Write-Log "[Connect-LDAP] Configuring Kerberos authentication (tickets of the logon session, no NTLM fallback)"
+                    $LdapProtocolConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Kerberos
                 } else {
                     Write-Log "[Connect-LDAP] Configuring Negotiate (Kerberos/NTLM) authentication"
                     $LdapProtocolConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Negotiate

@@ -208,9 +208,11 @@ Ensure your tunnel forwards the necessary ports:
 
 ### Troubleshooting Tunnel Connections
 
-**Symptom: `LDAP_LOCAL_ERROR` (Error 82) after Kerberos TGT+TGS**
+**Symptom: "Kerberos ticket not usable" (LDAP error 82) after Kerberos TGT+TGS**
 
-The Kerberos ticket was obtained successfully, but the LDAP bind with Negotiate auth failed locally. This typically means the SPN in the service ticket doesn't match the connection target.
+The Kerberos ticket was obtained successfully, but Windows did not use it for the LDAP bind. After a pass-the-ticket adPEAS binds with the Kerberos package alone, so the bind fails on your host and nothing else is sent - under Negotiate, Windows would fall back to NTLM with the credentials of your own Windows logon and send them to the target's domain controller. Over a tunnel this typically means the SPN in the service ticket doesn't match the connection target.
+
+Without a tunnel, check the system DNS: Windows looks up the domain controller and the domain through it. A VPN or a second network adapter with its own DNS server can answer those lookups instead of the target's DNS - disconnect it, or set the adapter metrics so the target's DNS server is asked first. Without `-ForceKerberos`, adPEAS continues with NTLM using the account you supplied.
 
 ```powershell
 # Fix: Skip Kerberos, use SimpleBind

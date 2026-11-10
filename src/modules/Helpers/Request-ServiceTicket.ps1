@@ -361,10 +361,13 @@ function Request-ServiceTicket {
                 $etypeList += New-ASN1Integer -Value 23  # RC4-HMAC only
                 Write-Log "[Request-ServiceTicket] Requesting RC4 downgrade (etype 23 only)"
             } else {
-                # Offer all types - RC4 first (preferred for cracking), then AES
-                $etypeList += New-ASN1Integer -Value 23  # RC4-HMAC (weakest - preferred for Kerberoasting)
-                $etypeList += New-ASN1Integer -Value 17  # AES128-CTS-HMAC-SHA1-96
+                # Offer all types, strongest first - the order Windows itself sends. The KDC
+                # picks the session key from this list in the client's order, so RC4 first gave
+                # every connection ticket an RC4 session key - weak, and the shape of a downgrade
+                # to whoever watches the KDC. Kerberoasting asks for RC4 with -DowngradeToRC4.
                 $etypeList += New-ASN1Integer -Value 18  # AES256-CTS-HMAC-SHA1-96
+                $etypeList += New-ASN1Integer -Value 17  # AES128-CTS-HMAC-SHA1-96
+                $etypeList += New-ASN1Integer -Value 23  # RC4-HMAC
             }
 
             # KDC-REQ-BODY
