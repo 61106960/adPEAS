@@ -1385,6 +1385,8 @@ Get-GPOLocalGroupMembership
 - A task that runs as a Tier 0 account is a finding. SYSTEM and the operator accounts make a task a finding where its program lies in a directory every user may write by Windows default; otherwise they make it a hint
 - `cmd.exe /c` lines with an unquoted program path containing a space, which cmd.exe splits at the first space. The program field of a task is not affected: the Task Scheduler quotes it itself
 - Tasks of policies that are not linked or not enabled are held back and summarized, and so are task items with the action Delete: they remove the task they name, nothing runs
+- **When each task runs** (`Trigger`, one line per trigger): the time, the interval in days, weeks or months, the weekdays and months, a repetition with its interval and duration, a delay, a random delay and the end date - `Weekly on Monday, Friday at 22:00, starting 2026-01-05`. Both file formats are read; a v1 task (at least Windows XP) stores its time in UTC and says so. A disabled task or trigger is marked, a task without a trigger runs only when started by hand
+- An **immediate task**, and a task whose trigger is its own registration, runs when the policy applies - and again at every Group Policy refresh, because preference items are rewritten at each refresh unless they are set to *Apply once and do not reapply*. The row says which
 
 A password stored in a task (`cpassword`) is reported by `Get-CredentialExposure`.
 

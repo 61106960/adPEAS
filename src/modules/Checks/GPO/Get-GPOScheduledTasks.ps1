@@ -721,19 +721,11 @@ function Parse-ScheduledTasksXML {
                 $risk = "Task runs as SYSTEM"
             }
 
-            $trigger = "Unknown"
-            if ($taskNode.Properties.Task.Triggers) {
-                $triggers = $taskNode.Properties.Task.Triggers
-                if ($triggers.LogonTrigger) {
-                    $trigger = "At Logon"
-                } elseif ($triggers.BootTrigger) {
-                    $trigger = "At Startup"
-                } elseif ($triggers.TimeTrigger) {
-                    $trigger = "Scheduled (Time-based)"
-                } elseif ($triggers.CalendarTrigger) {
-                    $trigger = "Scheduled (Calendar)"
-                }
-            }
+            # When the task runs, one line per trigger: time, interval, days, repetition and
+            # end - see ConvertTo-GPOTaskTriggerText. It used to say only which kind the first
+            # trigger was ("Scheduled (Calendar)"), and Unknown for a v1 task, an immediate
+            # task and a task without triggers alike.
+            $trigger = @(ConvertTo-GPOTaskTriggerText -TaskNode $taskNode)
 
             # Build display object with only user-relevant properties
             # Internal analysis flags (Is*/Has*) are used above for severity but not displayed
@@ -946,4 +938,370 @@ function Get-TaskUNCPaths {
         $seen[$pathKey] = $true
         $uncPath
     }
+}
+
+# =============================================================================
+# When a task runs: its triggers, decoded
+# =============================================================================
+#
+# Two formats. A Task (Scheduled Task, at least Windows XP) carries v1 triggers as
+# attributes of <Properties><Triggers><Trigger> (MS-GPPREF, Task Inner Element); a TaskV2
+# or ImmediateTaskV2 carries the Task Scheduler 2.0 XML below <Properties><Task><Triggers>.
+# An ImmediateTask carries none: it runs when the policy applies.
+#
+# Read as text, never through [datetime]: a boundary keeps the wall clock and the zone it
+# was written with, and no host calendar can turn its year into another one.
+
+<#
+.SYNOPSIS
+    The child elements of an XML node with one local name - namespace or none.
+
+.NOTES
+    Internal helper function
+#>
+function Get-GPOTaskXmlChild {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)] [AllowNull()] $Node,
+        [Parameter(Mandatory=$true)] [string]$Name
+    )
+
+    if (-not $Node) { return }
+    foreach ($child in @($Node.ChildNodes)) {
+        if ($child -is [System.Xml.XmlElement] -and $child.LocalName -eq $Name) { $child }
+    }
+}
+
+<#
+.SYNOPSIS
+    The trimmed text of the first child element of that name, or ''.
+
+.NOTES
+    Internal helper function
+#>
+function Get-GPOTaskXmlText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)] [AllowNull()] $Node,
+        [Parameter(Mandatory=$true)] [string]$Name
+    )
+
+    $child = @(Get-GPOTaskXmlChild -Node $Node -Name $Name)[0]
+    if ($child) { return ([string]$child.InnerText).Trim() }
+    return ''
+}
+
+<#
+.SYNOPSIS
+    An XML duration (PT15M, P1D, PT1H30M) as words: "15 minutes", "1 day", "1 hour 30 minutes".
+
+.NOTES
+    Internal helper function
+#>
+function Format-GPOTaskDuration {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Value
+    )
+
+    if (-not $Value) { return '' }
+    $span = $null
+    try { $span = [System.Xml.XmlConvert]::ToTimeSpan($Value) } catch { return $Value }
+
+    $parts = @()
+    foreach ($unit in @(@{ N = [int][Math]::Floor($span.TotalDays); W = 'day' }, @{ N = $span.Hours; W = 'hour' },
+                        @{ N = $span.Minutes; W = 'minute' }, @{ N = $span.Seconds; W = 'second' })) {
+        if ($unit.N -gt 0) { $parts += "$($unit.N) $($unit.W)$(if ($unit.N -ne 1) { 's' })" }
+    }
+    if ($parts.Count -eq 0) { return '0 minutes' }
+    return ($parts -join ' ')
+}
+
+<#
+.SYNOPSIS
+    A StartBoundary or EndBoundary taken apart: date, time with its zone, the whole as
+    text, and whether it is a Preferences variable such as %LocalTimeXmlEx%, which the
+    client fills in with the moment it applies the policy.
+
+.NOTES
+    Internal helper function
+#>
+function Split-GPOTaskBoundary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Value
+    )
+
+    $result = [PSCustomObject]@{ Date = ''; Time = ''; Text = $Value; IsVariable = ($Value -match '^%[^%]+%$') }
+    if ($Value -match '^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$') {
+        $zone = ''
+        if ($Matches[5] -eq 'Z') { $zone = ' UTC' } elseif ($Matches[5]) { $zone = " UTC$($Matches[5])" }
+        $result.Date = $Matches[1]
+        $result.Time = "$($Matches[2])$zone"
+        $result.Text = "$($Matches[1]) $($Matches[2])$zone"
+    }
+    return $result
+}
+
+<#
+.SYNOPSIS
+    Names joined for a trigger text, with the whole set left out: "in January, July", and
+    nothing for every month.
+
+.NOTES
+    Internal helper function
+#>
+function Join-GPOTaskNames {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$Name = @(),
+        [Parameter(Mandatory=$false)] [int]$All = 0,
+        [Parameter(Mandatory=$false)] [string]$Prefix = ''
+    )
+
+    $names = @($Name | Where-Object { $_ })
+    if ($names.Count -eq 0 -or ($All -gt 0 -and $names.Count -ge $All)) { return '' }
+    return "$Prefix$($names -join ', ')"
+}
+
+<#
+.SYNOPSIS
+    One Task Scheduler 2.0 trigger as a line: what fires it, when, how often, until when.
+
+.DESCRIPTION
+    TimeTrigger, CalendarTrigger (by day, by week, by month, by weekday of the month),
+    BootTrigger, LogonTrigger, IdleTrigger, EventTrigger, RegistrationTrigger and
+    SessionStateChangeTrigger, each followed by what the common elements add: Delay,
+    RandomDelay, Repetition, EndBoundary, and a disabled trigger marked as such.
+
+    A TimeTrigger whose start is a Preferences variable fires the moment the policy is
+    applied - that is how an immediate task is written - and a RegistrationTrigger fires
+    when the policy registers the task. Preference items are rewritten at every Group Policy
+    refresh unless Apply once is set, so both run again each time: Reapply says which.
+
+.NOTES
+    Internal helper function
+#>
+function ConvertFrom-GPOTaskTriggerV2 {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)] $Trigger,
+        [Parameter(Mandatory=$true)] [string]$Reapply
+    )
+
+    $start = Split-GPOTaskBoundary -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'StartBoundary')
+    $at = if ($start.Time) { " at $($start.Time)" } else { '' }
+    $starting = if ($start.Date) { ", starting $($start.Date)" } else { '' }
+    $weekNames = @{ '1' = 'first'; '2' = 'second'; '3' = 'third'; '4' = 'fourth'; 'Last' = 'last' }
+
+    $text = switch ($Trigger.LocalName) {
+        'TimeTrigger' {
+            if ($start.IsVariable) { "When the policy applies, $Reapply" }
+            elseif ($start.Text) { "Once at $($start.Text)" }
+            else { 'Once' }
+        }
+        'CalendarTrigger' {
+            $byDay = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByDay')[0]
+            $byWeek = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByWeek')[0]
+            $byMonth = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByMonth')[0]
+            $byWeekday = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByMonthDayOfWeek')[0]
+            if ($byDay) {
+                $every = 0; [void][int]::TryParse((Get-GPOTaskXmlText -Node $byDay -Name 'DaysInterval'), [ref]$every)
+                $(if ($every -gt 1) { "Every $every days" } else { 'Daily' }) + $at + $starting
+            } elseif ($byWeek) {
+                $every = 0; [void][int]::TryParse((Get-GPOTaskXmlText -Node $byWeek -Name 'WeeksInterval'), [ref]$every)
+                $days = @(@(Get-GPOTaskXmlChild -Node $byWeek -Name 'DaysOfWeek')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+                $(if ($every -gt 1) { "Every $every weeks" } else { 'Weekly' }) + (Join-GPOTaskNames -Name $days -Prefix ' on ') + $at + $starting
+            } elseif ($byMonth) {
+                $daysOfMonth = @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $byMonth -Name 'DaysOfMonth')[0] -Name 'Day' | ForEach-Object { ([string]$_.InnerText).Trim() })
+                $months = @(@(Get-GPOTaskXmlChild -Node $byMonth -Name 'Months')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+                # <Day>Last</Day> is the last day of each month, whatever its number.
+                $onDays = Join-GPOTaskNames -Name @($daysOfMonth | Where-Object { $_ -ne 'Last' }) -Prefix ' on day '
+                if ($daysOfMonth -contains 'Last') { $onDays = $(if ($onDays) { "$onDays and the last day" } else { ' on the last day' }) }
+                'Monthly' + $onDays + $at + (Join-GPOTaskNames -Name $months -All 12 -Prefix ' in ') + $starting
+            } elseif ($byWeekday) {
+                $weeks = @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $byWeekday -Name 'Weeks')[0] -Name 'Week' | ForEach-Object {
+                    $week = ([string]$_.InnerText).Trim(); if ($weekNames.ContainsKey($week)) { $weekNames[$week] } else { $week } })
+                $days = @(@(Get-GPOTaskXmlChild -Node $byWeekday -Name 'DaysOfWeek')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+                $months = @(@(Get-GPOTaskXmlChild -Node $byWeekday -Name 'Months')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+                'Monthly' + (Join-GPOTaskNames -Name $weeks -Prefix ' on the ') + (Join-GPOTaskNames -Name $days -Prefix ' ') + $at + (Join-GPOTaskNames -Name $months -All 12 -Prefix ' in ') + $starting
+            } else {
+                'On a calendar schedule' + $at + $starting
+            }
+        }
+        'BootTrigger' { 'At startup' }
+        'LogonTrigger' {
+            $user = Get-GPOTaskXmlText -Node $Trigger -Name 'UserId'
+            if ($user) { "At logon of $user" } else { 'At logon of any user' }
+        }
+        'IdleTrigger' { 'When the computer is idle' }
+        'EventTrigger' {
+            # The subscription is an event query; its path and filter say which event.
+            $query = Get-GPOTaskXmlText -Node $Trigger -Name 'Subscription'
+            $where = ''
+            if ($query -match '(?i)Path="([^"]+)"') { $where = $Matches[1] }
+            if ($query -match '(?i)EventID=(\d+)') { $where = "$where, event $($Matches[1])".TrimStart(', ') }
+            if ($where) { "On an event: $where" } else { 'On an event' }
+        }
+        'RegistrationTrigger' { "When the policy registers the task, $Reapply" }
+        'SessionStateChangeTrigger' {
+            $states = @{ ConsoleConnect = 'console connect'; ConsoleDisconnect = 'console disconnect'; RemoteConnect = 'remote connect'
+                         RemoteDisconnect = 'remote disconnect'; SessionLock = 'session lock'; SessionUnlock = 'session unlock' }
+            $change = Get-GPOTaskXmlText -Node $Trigger -Name 'StateChange'
+            $label = if ($states.ContainsKey($change)) { $states[$change] } else { 'session state change' }
+            $user = Get-GPOTaskXmlText -Node $Trigger -Name 'UserId'
+            "On $label of $(if ($user) { $user } else { 'any user' })"
+        }
+        default { "On a $($Trigger.LocalName)" }
+    }
+
+    $delay = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'Delay')
+    if ($delay) { $text += ", delayed by $delay" }
+    $random = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'RandomDelay')
+    if ($random) { $text += ", random delay up to $random" }
+
+    $repetition = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'Repetition')[0]
+    $interval = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $repetition -Name 'Interval')
+    if ($interval) {
+        $duration = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $repetition -Name 'Duration')
+        $text += ", repeated every $interval " + $(if ($duration) { "for $duration" } else { 'indefinitely' })
+    }
+
+    $end = Split-GPOTaskBoundary -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'EndBoundary')
+    if ($end.Text -and -not $end.IsVariable) { $text += ", until $($end.Text)" }
+
+    if ((Get-GPOTaskXmlText -Node $Trigger -Name 'Enabled') -eq 'false') { $text += ' (trigger disabled)' }
+    return $text
+}
+
+<#
+.SYNOPSIS
+    One v1 trigger of a Task (Scheduled Task, at least Windows XP) as a line.
+
+.DESCRIPTION
+    The attributes of MS-GPPREF's Trigger element: type (ONCE, DAILY, WEEKLY, MONTHLY,
+    IDLE, STARTUP, LOGON), startHour and startMinutes - UTC, the specification says - the
+    begin and end date, interval in days, weeks or months, days as a weekday mask (1 Sunday
+    to 64 Saturday), months as a month mask (1 January to 2048 December), week as the
+    position in the month, and minutesInterval with minutesDuration for a repetition. A
+    MONTHLY trigger without week names days of the month, read as Task Scheduler 1.0
+    stores them: day n in bit n-1.
+
+.NOTES
+    Internal helper function
+#>
+function ConvertFrom-GPOTaskTriggerV1 {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true)] $Trigger
+    )
+
+    $number = {
+        param([string]$Name)
+        $value = 0
+        [void][int]::TryParse([string]$Trigger.GetAttribute($Name), [ref]$value)
+        $value
+    }
+    $type = ([string]$Trigger.GetAttribute('type')).ToUpper()
+    $at = ''
+    if ([string]$Trigger.GetAttribute('startHour') -ne '') { $at = ' at {0:D2}:{1:D2} UTC' -f (& $number 'startHour'), (& $number 'startMinutes') }
+    $begin = ''
+    if ((& $number 'beginYear') -gt 0) { $begin = '{0:D4}-{1:D2}-{2:D2}' -f (& $number 'beginYear'), (& $number 'beginMonth'), (& $number 'beginDay') }
+    $every = & $number 'interval'
+
+    $dayNames = @('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday')
+    $monthNames = @('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December')
+    $dayMask = & $number 'days'
+    $monthMask = & $number 'months'
+    $weekdays = @(for ($i = 0; $i -lt 7; $i++) { if ($dayMask -band (1 -shl $i)) { $dayNames[$i] } })
+    $months = @(for ($i = 0; $i -lt 12; $i++) { if ($monthMask -band (1 -shl $i)) { $monthNames[$i] } })
+    $inMonths = Join-GPOTaskNames -Name $months -All 12 -Prefix ' in '
+    $starting = if ($begin) { ", starting $begin" } else { '' }
+
+    $text = switch ($type) {
+        'ONCE'    { "Once$(if ($begin) { " on $begin" })$at" }
+        'DAILY'   { $(if ($every -gt 1) { "Every $every days" } else { 'Daily' }) + $at + $starting }
+        'WEEKLY'  { $(if ($every -gt 1) { "Every $every weeks" } else { 'Weekly' }) + (Join-GPOTaskNames -Name $weekdays -Prefix ' on ') + $at + $starting }
+        'MONTHLY' {
+            $week = ([string]$Trigger.GetAttribute('week')).ToLower()
+            if ($week) {
+                "Monthly on the $week" + (Join-GPOTaskNames -Name $weekdays -Prefix ' ') + $at + $inMonths + $starting
+            } else {
+                $daysOfMonth = @(for ($i = 0; $i -lt 31; $i++) { if ($dayMask -band (1L -shl $i)) { [string]($i + 1) } })
+                'Monthly' + (Join-GPOTaskNames -Name $daysOfMonth -Prefix ' on day ') + $at + $inMonths + $starting
+            }
+        }
+        'IDLE'    { 'When the computer is idle' + $(if ((& $number 'idleMinute') -gt 0) { " for $(& $number 'idleMinute') minutes" }) }
+        'STARTUP' { 'At startup' }
+        'LOGON'   { 'At logon of any user' }
+        default   { "On a trigger of type $type" }
+    }
+
+    $repeat = & $number 'minutesInterval'
+    if ($repeat -gt 0) {
+        $for = & $number 'minutesDuration'
+        $text += ", repeated every $repeat minutes" + $(if ($for -gt 0) { " for $for minutes" } else { '' })
+    }
+    if ([string]$Trigger.GetAttribute('hasEndDate') -eq '1' -and (& $number 'endMonth') -gt 0) {
+        $text += ', until {0:D4}-{1:D2}-{2:D2}' -f (& $number 'endYear'), (& $number 'endMonth'), (& $number 'endDay')
+    }
+    return $text
+}
+
+<#
+.SYNOPSIS
+    When a Scheduled Tasks preference item runs its task: one line per trigger.
+
+.DESCRIPTION
+    A disabled task says so first - none of its triggers fire. An ImmediateTask, and an
+    ImmediateTaskV2 without a trigger, runs when the policy applies. Preference items are
+    rewritten at every Group Policy refresh (Microsoft, Configure Common Options), so a task
+    that runs when it is applied or registered runs again at every refresh - unless the
+    item is set to Apply once and do not reapply, which the file records as FilterRunOnce.
+    A task with no trigger at all runs only when someone starts it.
+
+.OUTPUTS
+    [string[]]
+
+.NOTES
+    Internal helper function
+#>
+function ConvertTo-GPOTaskTriggerText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] $TaskNode
+    )
+
+    $kind = [string]$TaskNode.LocalName
+    $properties = @(Get-GPOTaskXmlChild -Node $TaskNode -Name 'Properties')[0]
+    $runOnce = @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $TaskNode -Name 'Filters')[0] -Name 'FilterRunOnce').Count -gt 0
+    $reapply = if ($runOnce) { 'once only (Apply once and do not reapply)' } else { 'again at every Group Policy refresh' }
+
+    $texts = @()
+    $disabled = $false
+    if ($kind -eq 'Task') {
+        if ($properties -and [string]$properties.GetAttribute('enabled') -eq '0') { $disabled = $true }
+        foreach ($trigger in @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $properties -Name 'Triggers')[0] -Name 'Trigger')) {
+            $texts += ConvertFrom-GPOTaskTriggerV1 -Trigger $trigger
+        }
+    } elseif ($kind -eq 'ImmediateTask') {
+        $texts += "When the policy applies, $reapply"
+    } else {
+        $taskXml = @(Get-GPOTaskXmlChild -Node $properties -Name 'Task')[0]
+        if ((Get-GPOTaskXmlText -Node @(Get-GPOTaskXmlChild -Node $taskXml -Name 'Settings')[0] -Name 'Enabled') -eq 'false') { $disabled = $true }
+        $triggersNode = @(Get-GPOTaskXmlChild -Node $taskXml -Name 'Triggers')[0]
+        foreach ($trigger in @(if ($triggersNode) { $triggersNode.ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } })) {
+            $texts += ConvertFrom-GPOTaskTriggerV2 -Trigger $trigger -Reapply $reapply
+        }
+        if ($texts.Count -eq 0 -and $kind -eq 'ImmediateTaskV2') { $texts += "When the policy applies, $reapply" }
+    }
+
+    if ($texts.Count -eq 0) { $texts += 'No trigger - runs only when someone starts it' }
+    if ($disabled) { $texts = @('Task disabled - none of its triggers fire') + $texts }
+    return $texts
 }

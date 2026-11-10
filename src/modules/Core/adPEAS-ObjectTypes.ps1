@@ -2022,6 +2022,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Whether a path lies in a directory where every user may change or add files by Windows default"
             "UNC paths, whose share decides what the task runs - who may write the share is not read"
             "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
+            "When each task runs: every trigger with its time, interval, weekdays, months, repetition, delay and end - for both file formats, the times of a v1 task in UTC as the format stores them"
+            "An immediate task, and a task registered by the policy, runs again at every Group Policy refresh - unless the item is set to apply once"
             "Not tested: the permissions on the hosts themselves, and who may write the share a UNC path names"
         )
         SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
