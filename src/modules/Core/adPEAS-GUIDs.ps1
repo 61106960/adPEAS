@@ -213,6 +213,10 @@ $Script:PropertyGUIDs = @{
     # gMSA (Group Managed Service Account) password attribute
     'msDS-ManagedPassword'           = [GUID]'e362ed86-b728-0842-b27d-2dea7a9df218'
 
+    # The principal named here on a read-only Domain Controller's computer object is an
+    # implicit member of its Administrators group (MS-ADTS 6.1.1.3.2). In no property set.
+    'managedBy'                      = [GUID]'0296c120-40da-11d1-a9c0-0000f80367c1'  # 1.2.840.113556.1.4.653
+
     # Credential Roaming - private keys and DPAPI master keys on the user object.
     # Keyed by the schema object name, which differs from the attribute name here
     # (ms-PKI-DPAPIMasterKeys vs msPKIDPAPIMasterKeys) and is what an ACL editor shows.

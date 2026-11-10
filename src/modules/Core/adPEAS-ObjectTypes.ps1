@@ -1069,14 +1069,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         Module = "Accounts"
         Category = "Accounts"
         SectionTitle = "RODC Password Replication Policy"
-        Summary = "Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of."
-        WhyItMatters = "A read-only Domain Controller stands where physical security is weakest, and every password it caches can be taken from it. Its password replication policy decides which accounts it may cache; a privileged account allowed there is a privileged account outside the Tier-0 boundary."
+        Summary = "Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of, and who administers it or may make itself its administrator."
+        WhyItMatters = "A read-only Domain Controller stands where physical security is weakest, and every password it caches can be taken from it. Its password replication policy decides which accounts it may cache; a privileged account allowed there is a privileged account outside the Tier-0 boundary. Its administrator holds what it caches and the keys of its krbtgt account, and managedBy on its computer object makes a principal that administrator without any group membership."
         WhatWeCheck = @(
             "Each read-only Domain Controller's allow list (msDS-RevealOnDemandGroup) and deny list (msDS-NeverRevealGroup) against the token of every privileged account, primary group included - deny wins"
             "The privileged accounts whose secrets it has received already (msDS-RevealedUsers)"
             "Whether the Denied RODC Password Replication Group is still on its deny list"
+            "managedBy on its computer object: the principal named there is an implicit member of its Administrators group - reported when it is outside Tier-0, a broad group as such"
+            "Who may write that managedBy: the owner, GenericAll, GenericWrite, a write of every property or of managedBy, WriteDacl and WriteOwner, outside Tier-0 - an explicit Deny of the write is honoured, an operator group is reported"
         )
-        SecureMessage = "No read-only Domain Controller may cache the password of a privileged account, and none holds one."
+        SecureMessage = "No read-only Domain Controller may cache the password of a privileged account or holds one, and none is administered by a principal outside Tier-0 or lets one make itself its administrator."
         PrimaryFindingId = 'RODC_PRIVILEGED_PASSWORD_ALLOWED'
     }
 

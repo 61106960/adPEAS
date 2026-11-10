@@ -964,14 +964,16 @@ Get-AuthenticationPolicySilos
 
 ### Get-RODCPasswordReplication
 
-**Purpose**: Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of.
+**Purpose**: Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of, and who administers it or may make itself its administrator.
 
 **What it checks**:
 - Each RODC's allow list (`msDS-RevealOnDemandGroup`) and deny list (`msDS-NeverRevealGroup`) against the token of every privileged account, primary group included - deny wins
 - The privileged accounts whose secrets the RODC has received already (`msDS-RevealedUsers`)
 - Whether the Denied RODC Password Replication Group is still on the RODC's deny list
+- `managedBy` on the RODC's computer object: the principal named there is an implicit member of the RODC's Administrators group (MS-ADTS 6.1.1.3.2) - reported when it is outside Tier-0, a broad group as such
+- Who may write that `managedBy` and so make itself the RODC's administrator: the owner, GenericAll, GenericWrite, a write of every property or of `managedBy`, WriteDacl and WriteOwner, outside Tier-0 - an explicit Deny of the write is honoured
 
-**Security Impact**: An RODC stands where physical security is weakest, and every password it caches can be extracted from it. A privileged account it may cache is outside the Tier-0 boundary.
+**Security Impact**: An RODC stands where physical security is weakest, and every password it caches can be extracted from it. A privileged account it may cache is outside the Tier-0 boundary. Its administrator holds what it caches and the keys of its krbtgt account, with which tickets for every account its password replication policy allows can be signed.
 
 **Usage**:
 ```powershell

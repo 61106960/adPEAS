@@ -2874,6 +2874,127 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         MITRE = "T1003.003"
     }
 
+    'RODC_DELEGATED_ADMIN' = @{
+        Title = "Principal Outside Tier-0 Administers a Read-Only Domain Controller"
+        Risk = "Finding"
+        BaseScore = 40
+        Description = "managedBy on the computer object of this read-only Domain Controller names a principal that is not Tier-0 - a user account, a group of the domain, an operator group - and the principal named there is an implicit member of the server's Administrators group, of that server and of no other (MS-ADTS 6.1.1.3.2). It is the delegated administrator a branch office promotion or Add-ADDSReadOnlyDomainControllerAccount -DelegatedAdministratorAccountName sets, meant for a site without a Domain Admin. Administrator on a read-only Domain Controller is more than administrator on a server: it reaches every secret the server has cached and the keys of its own krbtgt account, which signs the tickets it issues. Tier-0 principals are not marked - they administer every Domain Controller already. Whether the principal is meant to hold the right is not something the directory can say; a dedicated branch administration group may well be."
+        Impact = @(
+            "Whoever controls the principal - its password, a session where it is logged on, a delegated right to reset it or to change the group's members - is administrator on the read-only Domain Controller"
+            "As administrator it extracts the password hashes of every account cached on the server"
+            "With the keys of the server's krbtgt account it signs tickets for any account the server's password replication policy allows; a writable Domain Controller honours such a ticket, and answers a key list request for the account with its password hash"
+            "Where that policy allows a privileged account - reported in this section when it does - that is the domain"
+        )
+        Attack = @(
+            "1. Read managedBy of the read-only Domain Controller - any domain user may"
+            "2. Take over the principal it names: spray or phish the account, reset its password with a delegated right, or add a member to the group"
+            "3. Log on to the read-only Domain Controller as administrator and extract the cached secrets and the keys of its krbtgt account"
+            "4. Use the cached hashes, or sign tickets for the accounts its password replication policy allows"
+        )
+        Remediation = @(
+            "Check that the principal is meant to administer this read-only Domain Controller; clear managedBy where no delegated administrator is needed"
+            "Name a dedicated group rather than a user account, and protect it as well as the server: whoever may reset its members' passwords or change its members administers the server"
+            "Keep the password replication policy to the accounts of the branch office the server serves, so that its administrator reaches no more than those"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show whom managedBy names on each read-only Domain Controller"
+                Command = "Get-ADDomainController -Filter * | Where-Object { `$_.IsReadOnly } | ForEach-Object { Get-ADComputer -Identity `$_.ComputerObjectDN -Properties managedBy } | Select-Object Name, managedBy"
+            }
+            @{
+                Description = "Remove the delegated administrator of a read-only Domain Controller"
+                Command = "Set-ADComputer -Identity 'RODC_NAME' -Clear managedBy"
+            }
+        )
+        References = @(
+            @{ Title = "Read-Only Domain Controller Object - MS-ADTS 6.1.1.3.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/73d11ea7-e634-453e-944d-559654cc91c5" }
+            @{ Title = "Attribute managedBy - MS-ADA2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/48299dda-f25f-4f03-ab9e-1131f6eca51b" }
+            @{ Title = "Add-ADDSReadOnlyDomainControllerAccount - Microsoft"; Url = "https://learn.microsoft.com/en-us/powershell/module/addsdeployment/add-addsreadonlydomaincontrolleraccount" }
+            @{ Title = "At the Edge of Tier Zero: The Curious Case of the RODC - SpecterOps"; Url = "https://specterops.io/blog/2023/01/25/at-the-edge-of-tier-zero-the-curious-case-of-the-rodc/" }
+        )
+        Tools = @("Impacket", "Mimikatz", "Rubeus")
+        MITRE = "T1003.003"
+    }
+
+    'RODC_ADMIN_BROAD_GROUP' = @{
+        Title = "Broad Group Administers a Read-Only Domain Controller"
+        Risk = "Finding"
+        BaseScore = 70
+        Description = "managedBy on the computer object of this read-only Domain Controller names a group that covers most or all of the domain - Domain Users, Domain Computers, Authenticated Users, Everyone - and the principal named there is an implicit member of the server's Administrators group (MS-ADTS 6.1.1.3.2). Every member of the group is administrator on a Domain Controller. Administrator there reaches every secret the server has cached and the keys of its own krbtgt account, which signs the tickets it issues."
+        Impact = @(
+            "Any domain account - one phished or sprayed password - is administrator on the read-only Domain Controller"
+            "That reaches the password hashes of every account cached on the server"
+            "With the keys of the server's krbtgt account any member signs tickets for every account the server's password replication policy allows, and a writable Domain Controller answers a key list request for such an account with its password hash"
+        )
+        Attack = @(
+            "1. Read managedBy of the read-only Domain Controller - any domain user may"
+            "2. Log on to the server with any account the group covers - it is administrator there"
+            "3. Extract the cached secrets and the keys of the server's krbtgt account"
+            "4. Use the cached hashes, or sign tickets for the accounts its password replication policy allows"
+        )
+        Remediation = @(
+            "Replace the broad group in managedBy with a dedicated group of the branch office's administrators, or clear managedBy"
+            "Treat what the server holds as exposed for as long as the setting stood: reset the passwords of the accounts whose secrets it has cached, and the password of its krbtgt account - the account msDS-KrbTgtLink names"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Name a dedicated group as the delegated administrator"
+                Command = "Set-ADComputer -Identity 'RODC_NAME' -ManagedBy 'GROUP_NAME'"
+            }
+            @{
+                Description = "Remove the delegated administrator"
+                Command = "Set-ADComputer -Identity 'RODC_NAME' -Clear managedBy"
+            }
+            @{
+                Description = "List the accounts whose secrets the server holds"
+                Command = "Get-ADDomainControllerPasswordReplicationPolicyUsage -Identity 'RODC_NAME' -RevealedAccounts"
+            }
+        )
+        References = @(
+            @{ Title = "Read-Only Domain Controller Object - MS-ADTS 6.1.1.3.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/73d11ea7-e634-453e-944d-559654cc91c5" }
+            @{ Title = "Attribute managedBy - MS-ADA2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/48299dda-f25f-4f03-ab9e-1131f6eca51b" }
+            @{ Title = "At the Edge of Tier Zero: The Curious Case of the RODC - SpecterOps"; Url = "https://specterops.io/blog/2023/01/25/at-the-edge-of-tier-zero-the-curious-case-of-the-rodc/" }
+        )
+        Tools = @("Impacket", "Mimikatz", "Rubeus")
+        MITRE = "T1003.003"
+    }
+
+    'RODC_MANAGEDBY_WRITE' = @{
+        Title = "Principal Outside Tier-0 May Make Itself Administrator of a Read-Only Domain Controller"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "The principals listed may write managedBy on the computer object of this read-only Domain Controller, and the principal named in managedBy is an implicit member of the server's Administrators group (MS-ADTS 6.1.1.3.2). Writing their own name there makes them administrator on a Domain Controller, without a change to any group. Counted: the owner, which may rewrite the DACL; GenericAll; GenericWrite or WriteProperty on every property; WriteProperty on managedBy itself; WriteDacl and WriteOwner, with which the write can be granted. managedBy belongs to no property set. An explicit Deny of the write is honoured, except against a holder that may rewrite the DACL. Tier-0 principals are not listed - they hold full control on a Domain Controller account by default; an operator group is listed."
+        Impact = @(
+            "The principal becomes administrator on the read-only Domain Controller by changing one attribute - no group that an audit of privileged memberships watches changes"
+            "As administrator it reaches every secret cached on the server and the keys of its krbtgt account"
+            "A write to every property also reaches the password replication policy on the same object (msDS-RevealOnDemandGroup, msDS-NeverRevealGroup): allowing a Domain Admin there and signing a ticket for it with the server's krbtgt key is the domain"
+        )
+        Attack = @(
+            "1. Write the attacker's own account into managedBy of the read-only Domain Controller"
+            "2. Once the change has replicated to the server, log on to it as administrator"
+            "3. Extract the cached secrets and the keys of its krbtgt account"
+            "4. With a write to every property as well: put a privileged account on the allow list, take its groups off the deny list, sign a ticket for it with the server's krbtgt key, and ask a writable Domain Controller for its password hash with a key list request"
+        )
+        Remediation = @(
+            "Remove the right from the principals listed - on the computer object, or on the container it is inherited from"
+            "Where the owner is listed, make Domain Admins the owner of the computer object"
+            "Check that managedBy names the intended principal, and who changed it last (event 5136 for the computer object, with directory service changes audited)"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the owner and the access rules that can write managedBy of a read-only Domain Controller"
+                Command = "`$dn = (Get-ADComputer -Identity 'RODC_NAME').DistinguishedName; `$acl = Get-Acl -Path ('AD:' + `$dn); `$acl.Owner; `$acl.Access | Where-Object { `$_.ObjectType -eq [guid]'0296c120-40da-11d1-a9c0-0000f80367c1' -or `$_.ObjectType -eq [guid]::Empty } | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType,IsInherited -AutoSize"
+            }
+        )
+        References = @(
+            @{ Title = "Read-Only Domain Controller Object - MS-ADTS 6.1.1.3.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/73d11ea7-e634-453e-944d-559654cc91c5" }
+            @{ Title = "Attribute managedBy - MS-ADA2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/48299dda-f25f-4f03-ab9e-1131f6eca51b" }
+            @{ Title = "At the Edge of Tier Zero: The Curious Case of the RODC - SpecterOps"; Url = "https://specterops.io/blog/2023/01/25/at-the-edge-of-tier-zero-the-curious-case-of-the-rodc/" }
+        )
+        Tools = @("PowerView", "Impacket", "Mimikatz", "Rubeus")
+        MITRE = "T1098"
+    }
+
     'UNREGISTERED_DOMAIN_CONTROLLER' = @{
         Title = "Computer Account With the Domain Controller Role That Is Not a Domain Controller"
         Risk = "Finding"
