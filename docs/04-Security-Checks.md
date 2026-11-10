@@ -328,7 +328,7 @@ Get-CredentialRoaming -IncludePrivileged
 **What it checks**:
 - GPP passwords in SYSVOL XML files (cpassword attribute, MS14-025)
 - AutoAdminLogon passwords in Registry.xml (plaintext)
-- Hardcoded credentials in NETLOGON/SYSVOL scripts and configuration files (.bat, .cmd, .ps1, .psm1, .psd1, .vbs, .vbe, .kix, .txt, .ini, .inf, .conf, .cnf, .config, .json, .yml, .yaml, .reg, .vnc) and in GPO comment files (.cmtx). Not GptTmpl.inf - every one names the password policy - and not Registry.pol, which is parsed for password values on its own
+- Hardcoded credentials in NETLOGON/SYSVOL scripts and configuration files (.bat, .cmd, .ps1, .psm1, .psd1, .vbs, .vbe, .kix, .txt, .ini, .inf, .conf, .cnf, .config, .json, .yml, .yaml, .reg, .vnc) and in the two comment files of a policy: GPO.cmt, the comment of the policy itself as the Group Policy Management Console shows it, and comment.cmtx, the comments on its settings - both readable by every authenticated user. Files are decoded by their byte order mark, and UTF-16 without one (as GPO.cmt is written) is recognised. Not GptTmpl.inf - every one names the password policy - and not Registry.pol, which is parsed for password values on its own
 - VNC passwords, decrypted: in VNC viewer connection files (.vnc, with the host they name), in the .ini of UltraVNC and TightVNC, and in the registry values a policy deploys for RealVNC, TightVNC, TigerVNC and UltraVNC (REG_SZ or REG_BINARY). Every VNC installation encrypts the password with the same published DES key, so the stored value is the password
 - Passwords in Windows answer files (unattend XML, recognised by its root element): the administrator, local account, automatic logon and domain join passwords, with values hidden by Windows SIM decoded
 - Net use commands with embedded passwords
@@ -373,7 +373,7 @@ Get-CredentialExposure -Path "\\server\share"
 
 | Tier | Severity | Pattern Examples |
 |------|----------|-----------------|
-| Tier 1 (High Confidence) | Finding | `password=Secret123`, `pwd: admin`, `kennwort=pass` |
+| Tier 1 (High Confidence) | Finding | `password=Secret123`, `pwd: admin`, `kennwort=pass`, `Passwort: Winter2024` |
 | Tier 2 (Lower Confidence) | Hint | Generic mentions of `password`, `credentials`, `secret=...` |
 
 **Exclusion patterns** filter false positives from password policy text, help text, and placeholders.

@@ -722,7 +722,7 @@ function Invoke-ShareHunt {
                                 $found = @(Find-ScriptFileCredential -Content $text -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
                             }
                         } else {
-                            $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop
+                            $text = Read-CredentialScanText -Path $file.FullName
                             if ($file.Extension -ieq '.vbe') { $text = ConvertFrom-VBE -EncodedScript $text }
                             $found = @(Find-ScriptFileCredential -Content $text -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
                         }

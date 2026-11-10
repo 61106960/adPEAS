@@ -1559,6 +1559,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "net use commands with passwords"
             "Configuration files with sensitive data"
             "VNC viewer connection files (.vnc) and VNC .ini files, with the password decrypted"
+            "The comment of a policy (GPO.cmt) and the comments on its settings (comment.cmtx), which every domain user can read"
         )
         SecureMessage = "No credentials or sensitive information were found in SYSVOL/NETLOGON scripts and configuration files."
     }

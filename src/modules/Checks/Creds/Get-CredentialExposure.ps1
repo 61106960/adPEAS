@@ -9,13 +9,16 @@
 $Script:CredentialScanExtensions = @(
     '*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
     '*.ps1', '*.psm1',
-    # The files a credential is written into besides scripts: the GPO comment file an
-    # administrator types into, application and deployment configuration, an exported
-    # registry file - an AutoAdminLogon .reg carries DefaultPassword in clear - and setup
-    # information, a sysprep.inf's AdminPassword among it. Not GptTmpl.inf, which is
-    # skipped by name (see $Script:CredentialScanSkippedFiles). Not *.pol: Registry.pol is
-    # binary and is parsed for password values on its own.
-    '*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1', '*.inf',
+    # The files a credential is written into besides scripts: the two comment files of a
+    # policy an administrator types into - GPO.cmt, the comment of the policy itself as the
+    # Group Policy Management Console shows it (UTF-16LE without a byte order mark, see
+    # ConvertFrom-CredentialScanBytes), and comment.cmtx, the comments on its Administrative
+    # Template settings; both readable by every authenticated user - application and
+    # deployment configuration, an exported registry file - an AutoAdminLogon .reg carries
+    # DefaultPassword in clear - and setup information, a sysprep.inf's AdminPassword among
+    # it. Not GptTmpl.inf, which is skipped by name (see $Script:CredentialScanSkippedFiles).
+    # Not *.pol: Registry.pol is binary and is parsed for password values on its own.
+    '*.cmt', '*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1', '*.inf',
     # A VNC viewer's connection file, which keeps the host and the VNC password - see
     # Get-VNCFileCredential.
     '*.vnc'
@@ -58,6 +61,9 @@ $Script:CredentialTier1Patterns = @(
     @{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
     @{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
     @{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
+    # The other German word, and the more common one. passw(or)?d above stops at the d,
+    # so "Passwort: Winter2024" was neither an assignment nor a mention.
+    @{ Pattern = 'passwort\s*[=:]\s*\S{3,}'; Description = "Passwort assignment (German)" },
     @{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
 )
 
@@ -143,6 +149,92 @@ function Get-ReportedLineKey {
     # A match that spans a line break has no single line to key on; its own text is then
     # the honest key, and the old behaviour for that case.
     return $Match.Trim()
+}
+
+function ConvertFrom-CredentialScanBytes {
+    <#
+    .SYNOPSIS
+    Decodes the bytes of one file the credential scan greps, by what the file is.
+
+    .DESCRIPTION
+    Get-Content without -Encoding reads a file that has no byte order mark as ANSI on
+    Windows PowerShell 5.1 and as UTF-8 on PowerShell 7. A UTF-16LE file without one then
+    comes out with a NUL after every character, and no pattern matches it. GPO.cmt is such a
+    file: the comment of a policy, as the Group Policy Management Console writes it - measured
+    on a Windows Server 2016 domain controller, "Ge" stored as 47 00 65 00, no mark, no
+    terminator.
+
+    In this order: a byte order mark (UTF-8, UTF-16LE, UTF-16BE); then UTF-16LE without one,
+    taken when the length is even and, over the first 512 bytes, at least nine of ten odd
+    bytes are NUL - text in an 8-bit encoding has none; otherwise
+    [System.Text.Encoding]::Default, which is what Get-Content picks for a file without a
+    mark on each runtime - ANSI on 5.1, UTF-8 on 7 - so every other file reads as before.
+
+    Every character up to U+00FF has a NUL in its odd byte, so a comment in a Latin script
+    qualifies, a stray euro sign included. Text mostly beyond it - Cyrillic, Greek, CJK -
+    does not, and is read as before: a known gap for such a GPO.cmt.
+
+    .PARAMETER Bytes
+    The content of the file.
+
+    .OUTPUTS
+    String - the text, without the byte order mark.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes
+    )
+
+    $length = $Bytes.Length
+    if ($length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        return [System.Text.Encoding]::UTF8.GetString($Bytes, 3, $length - 3)
+    }
+    if ($length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+        return [System.Text.Encoding]::Unicode.GetString($Bytes, 2, $length - 2)
+    }
+    if ($length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+        return [System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $length - 2)
+    }
+    if ($length -ge 2 -and ($length % 2) -eq 0) {
+        $sample = [Math]::Min($length, 512)
+        $pairs = [int]($sample / 2)
+        $nulOdd = 0
+        for ($i = 1; $i -lt $sample; $i += 2) {
+            if ($Bytes[$i] -eq 0) { $nulOdd++ }
+        }
+        if (($nulOdd * 10) -ge ($pairs * 9)) {
+            return [System.Text.Encoding]::Unicode.GetString($Bytes)
+        }
+    }
+    return [System.Text.Encoding]::Default.GetString($Bytes)
+}
+
+function Read-CredentialScanText {
+    <#
+    .SYNOPSIS
+    The text of one file the credential scan greps - see ConvertFrom-CredentialScanBytes.
+
+    .DESCRIPTION
+    Reads the bytes once, by literal path: Get-Content -Path, which this replaced, took a
+    file name with brackets in it as a wildcard.
+
+    .PARAMETER Path
+    The file.
+
+    .OUTPUTS
+    String.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    return (ConvertFrom-CredentialScanBytes -Bytes ([System.IO.File]::ReadAllBytes($Path)))
 }
 
 function Get-WinlogonCredential {
@@ -1060,7 +1152,7 @@ function Get-CredentialExposure {
                                 }
                             }
                             else {
-                                $fileContent = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+                                $fileContent = Read-CredentialScanText -Path $file.FullName
                             }
 
                             # The analysis itself - see Find-ScriptFileCredential.
@@ -1325,7 +1417,7 @@ function Get-CredentialExposure {
                                     }
                                 }
                                 else {
-                                    $fileContent = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+                                    $fileContent = Read-CredentialScanText -Path $file.FullName
                                 }
 
                                 # The analysis itself - see Find-ScriptFileCredential.
