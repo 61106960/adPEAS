@@ -97,8 +97,10 @@ function Get-AuthenticationPolicySilos {
             }
 
             if ($silos.Count -eq 0 -and $policies.Count -eq 0) {
-                # Neither secure nor insecure: the feature is simply not in use.
-                Show-Line "No authentication policy silo and no authentication policy is configured"
+                # Neither secure nor insecure: the feature is simply not in use. A note, as
+                # every check says that it found nothing; without a class the line had no
+                # marker at all.
+                Show-Line "No authentication policy silo and no authentication policy is configured" -Class Note
                 return
             }
 
@@ -246,7 +248,7 @@ function Get-AuthenticationPolicySilos {
                 Show-Line "Found $($silos.Count) authentication policy silo(s):" -Class (Get-AuthNHeadlineClass -Class $siloClasses)
                 for ($i = 0; $i -lt $silos.Count; $i++) { Show-Object $silos[$i] -Class $siloClasses[$i] }
             } else {
-                Show-Line "No authentication policy silo is configured"
+                Show-Line "No authentication policy silo is configured" -Class Note
             }
 
             if ($policies.Count -gt 0) {
