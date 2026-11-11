@@ -14,10 +14,10 @@ function Invoke-ASREPRoast {
     - Password policy compliance testing
     - Identifying weak passwords before attackers do
 
-    Encryption Types:
-    - etype 23 (RC4-HMAC) = CRITICAL - Very fast to crack
-    - etype 17 (AES128) = HIGH - Harder to crack
-    - etype 18 (AES256) = MEDIUM - Strongest encryption
+    Encryption Types (severity from the central KERBEROS_ENCRYPTION_TYPES table):
+    - etype 23 (RC4-HMAC) = Critical - weak, very fast to crack
+    - etype 17 (AES128)   = Medium   - moderate security
+    - etype 18 (AES256)   = Low      - strong encryption
 
     Hash Format:
     - Output: $krb5asrep$etype$user@realm:checksum$encrypted_part
