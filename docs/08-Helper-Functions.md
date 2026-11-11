@@ -397,8 +397,7 @@ $name = ConvertFrom-SID -SID "S-1-5-18"
 - Caches resolved SIDs for performance
 - Handles well-known SIDs without LDAP queries
 - Automatically uses the Global Catalog (port 3268/3269) to resolve SIDs from foreign domains in the forest. The GC connection is created on demand via `Get-GCConnection` and cached in `$Script:GCConnection` for the session
-- Falls back to a RID-based format (e.g., `FOREIGN\DomainAdmins (RID:512)`) if the GC connection is unavailable
-- Returns original SID if resolution fails
+- When resolution fails, returns the SID tagged with the reason: `<SID> (FOREIGN)`, `<SID> (UNRESOLVABLE in DOMAIN)` or `<SID> (UNRESOLVABLE)`
 
 ---
 
@@ -407,7 +406,7 @@ $name = ConvertFrom-SID -SID "S-1-5-18"
 Converts a SID string to LDAP binary hex format for queries.
 
 ```powershell
-$sidHex = ConvertTo-LDAPSIDHex -SIDString "S-1-5-21-123456789-123456789-123456789-500"
+$sidHex = ConvertTo-LDAPSIDHex -SID "S-1-5-21-123456789-123456789-123456789-500"
 # Returns: \01\05\00\00\00\00\00\05\15\00\00\00...
 
 # Use in LDAP filter
@@ -436,10 +435,11 @@ $result.IsPrivileged  # $false (Operators not privileged by default)
 $result = Test-IsPrivileged -Identity "S-1-5-32-548" -IncludeOperators
 $result.IsPrivileged  # $true
 
-# Check Exchange service group
+# Exchange service groups are NOT a Test-IsPrivileged category - this returns
+# "Standard". Exchange scoping is decided by Test-IsExpectedInScope /
+# Test-IsExchangeServiceGroup, which the Exchange-aware checks call.
 $result = Test-IsPrivileged -Identity "Organization Management"
-$result.Category      # "ExchangeService"
-$result.IsPrivileged  # $false (by-design permissions, not considered privileged)
+$result.Category      # "Standard"
 ```
 
 **Parameters**:
@@ -455,7 +455,7 @@ $result.IsPrivileged  # $false (by-design permissions, not considered privileged
 | Property | Type | Description |
 |----------|------|-------------|
 | `IsPrivileged` | Boolean/Null | `$true`/`$false`/`$null` (affected by IncludeOperators) |
-| `Category` | String | Privileged, Operator, ExchangeService, BroadGroup, Standard, Unknown |
+| `Category` | String | Privileged, Operator, BroadGroup, Standard, Unknown |
 | `Reason` | String | Why identity was classified this way |
 | `MatchedSID` | String | The SID that matched (or `$null`) |
 | `MatchedGroup` | String | Group name if matched via membership (or `$null`) |
@@ -466,8 +466,7 @@ $result.IsPrivileged  # $false (by-design permissions, not considered privileged
 | Category | IsPrivileged (default) | Examples |
 |----------|------------------------|----------|
 | Privileged | `$true` | Domain Admins, Enterprise Admins, SYSTEM, Administrators |
-| Operator | `$false` | Account/Server/Backup/Print Operators |
-| ExchangeService | `$false` | Organization Management, Exchange Servers (by-design permissions) |
+| Operator | `$false` | Account/Server/Backup/Print Operators, Cert Publishers, GPO Creator Owners |
 | BroadGroup | `$false` | Domain Users, Authenticated Users, Everyone |
 | Standard | `$false` | Regular users and groups |
 | Unknown | `$null` | Could not resolve identity |
@@ -734,7 +733,7 @@ Request-ADCSCertificate -TemplateName "User" -Credential (Get-Credential)
 
 ### Get-LAPSGPOConfig
 
-Parses LAPS Legacy configuration from GPO Registry.pol files. Queries all GPOs and checks their SYSVOL paths for LAPS AdminAccountName settings.
+Parses LAPS configuration from GPO Registry.pol files, both **Legacy LAPS** and **Windows LAPS**. Queries all GPOs and checks their SYSVOL paths for the LAPS settings.
 
 ```powershell
 # Use session DC (default)
@@ -746,7 +745,14 @@ $config = Get-LAPSGPOConfig -DomainController "dc01.contoso.com"
 
 **Parameter**: `-DomainController` (String, optional) - Domain Controller to use for SYSVOL access.
 
-**Returns**: Hashtable with GPO display name as key and configured AdminAccountName as value.
+**Returns**: a hashtable with two sub-hashtables, `Legacy` and `Native` (Windows LAPS), each keyed by GPO display name:
+
+```powershell
+@{
+    Legacy = @{ "<GPO name>" = @{ ... } }
+    Native = @{ "<GPO name>" = @{ ... } }
+}
+```
 
 ---
 
