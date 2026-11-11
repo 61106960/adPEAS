@@ -23,15 +23,20 @@ The following checks filter high-privileged accounts by default:
 | **Get-AddComputerRights** | Domain Admins, Account Operators with computer creation rights | `-IncludePrivileged` |
 | **Get-BitLockerRecoveryKeyAccess** | Privileged principals with a delegated read of the recovery passwords - Domain Admins read them by default | `-IncludePrivileged` |
 | **Get-DeletedObjectAccess** | Tier-0 principals and the Exchange service groups that may list the Deleted Objects container - Administrators may by default, Exchange setup grants it | `-IncludePrivileged` |
+| **Get-DangerousOUPermissions** | Privileged principals with write/control rights on OUs | `-IncludePrivileged` |
+| **Get-CredentialRoaming** | Privileged principals with a delegated read of the roamed credential attributes | `-IncludePrivileged` |
+| **Get-WeakCertificateMapping** | Privileged principals among the accounts with a weak explicit certificate mapping | `-IncludePrivileged` |
+
+For **Get-GPOUserRightsAssignment** and **Get-GPOPointAndPrint**, `-IncludePrivileged` is an alias of `-IncludeDefaults`: it does not recolour privileged principals but adds the default rows the check otherwise leaves out (the documented Windows defaults, and the parts of the policy that were not hardened).
 
 ### How Filtering Works
 
 adPEAS uses a **SID-based classification system** that's language-independent (works in English, German, French, etc.):
 
 1. **Test-IsPrivileged**: Classifies identities into categories:
-   - `Privileged`: Domain Admins (-512), Enterprise Admins (-519), Schema Admins (-518), Administrators (S-1-5-32-544), SYSTEM (S-1-5-18)
-   - `Operator`: Account Operators, Server Operators, Backup Operators, Print Operators
-   - `BroadGroup`: Everyone, Authenticated Users, Domain Users
+   - `Privileged`: Domain Admins (-512), Enterprise Admins (-519), Schema Admins (-518), the built-in Administrator (-500), KRBTGT (-502), Domain Controllers (-516), the read-only DC groups (-498, -521), Key Admins (-526, -527), Administrators (S-1-5-32-544), SYSTEM (S-1-5-18) and Enterprise Domain Controllers (S-1-5-9)
+   - `Operator`: Account, Server, Backup and Print Operators (-548 to -551), Cert Publishers (-517) and Group Policy Creator Owners (-520)
+   - `BroadGroup`: Everyone, Authenticated Users, Anonymous Logon, Interactive, Network, Domain Users, BUILTIN\Users and BUILTIN\Guests
    - `Standard`: Regular users and groups
 
 2. **Test-IsExpectedInScope**: Applies context-aware filtering based on the type of check:
@@ -62,17 +67,17 @@ These checks intentionally show ALL accounts regardless of privilege level:
 - **Get-InactiveAdminAccounts** - Purpose is to find inactive admin accounts
 - **Get-AdminPasswordNeverExpires** - Purpose is to find admin accounts with this setting
 
-### Admin-Only Checks (adminCount=1)
+### Privileged-Account Checks
 
-Some checks are scoped exclusively to accounts with `adminCount=1` — accounts that Active Directory marks as having (or having had) privileged group membership:
+Some checks look only at privileged accounts. The candidate set is built by `Get-PrivilegedAccountFilter`: an account counts when it is a member of a privileged group (nested membership included) **or** carries `adminCount=1`. This is wider than `adminCount` alone, because an operator group such as Group Policy Creator Owners never receives `adminCount`, and narrower in effect, because an account with a left-over `adminCount` but no current privileged membership is treated as orphaned.
 
-| Check | LDAP Scope | Additional Validation |
-|-------|------------|----------------------|
-| **Get-InactiveAdminAccounts** | `adminCount=1` + enabled only | `Test-AccountActivity` for inactivity detection |
-| **Get-AdminPasswordNeverExpires** | `adminCount=1` + password never expires | `Test-IsPrivileged` to filter out orphaned adminCount |
-| **Get-AdminReversibleEncryption** | `adminCount=1` + reversible encryption | None (any admin with this setting is a finding) |
+| Check | Scope | Notes |
+|-------|-------|-------|
+| **Get-InactiveAdminAccounts** | privileged candidates, enabled only | `Test-AccountActivity` for inactivity; orphaned `adminCount` accounts are reported as such |
+| **Get-AdminPasswordNeverExpires** | privileged candidates with password never expires | orphaned `adminCount` accounts are dropped (logged, not shown) |
+| **Get-AdminReversibleEncryption** | **every** account with the reversible-encryption flag | `Test-IsPrivileged` marks the privileged ones; not scoped to `adminCount` |
 
-**Note on orphaned adminCount:** When a user is removed from a privileged group, Active Directory does **not** automatically clear `adminCount=1`. Get-AdminPasswordNeverExpires validates via `Test-IsPrivileged` whether the account is still actually privileged, and flags orphaned adminCount accounts separately.
+**Note on orphaned adminCount:** When a user is removed from a privileged group, Active Directory does **not** automatically clear `adminCount=1`. These checks decide privilege by `Test-IsPrivileged`/group membership rather than by `adminCount`, so a left-over `adminCount` does not by itself keep an account in scope.
 
 ### Disabled Account Handling
 
@@ -98,22 +103,23 @@ A disabled account that carries an SPN, or delegation, is still worth knowing ab
 
 ## Overview
 
-adPEAS performs 43+ security checks organized into 10 categories. Every module runs by
+adPEAS performs 50+ security checks organized into 10 categories. Every module runs by
 default except **Shares**, which has to be asked for by name (`-Module Shares`): it opens
 an SMB connection to every Windows computer of the domain, which is a decision for whoever
-runs the scan.
+runs the scan. A full run also collects BloodHound data (the `Bloodhound` module); it is a
+data collector rather than a security check, so it is not counted below.
 
 | Module        | Checks | Description                               |
 | ------------- | ------ | ----------------------------------------- |
 | Domain        | 5      | Domain configuration, trusts, policies    |
-| Creds         | 7      | Credential exposure vectors               |
-| Rights        | 6      | ACL and permission analysis               |
+| Creds         | 9      | Credential exposure vectors               |
+| Rights        | 8      | ACL and permission analysis               |
 | Delegation    | 3      | Kerberos delegation misconfigurations     |
-| ADCS          | 2      | Certificate Services vulnerabilities      |
-| Accounts      | 9      | Privileged accounts and security settings |
-| GPO           | 4      | Group Policy security                     |
+| ADCS          | 2      | Certificate Services vulnerabilities (plus the standalone `Get-ADCSTemplate` query) |
+| Accounts      | 12     | Privileged accounts and security settings |
+| GPO           | 6      | Group Policy security                     |
 | Computer      | 6      | Computer account security                 |
-| Application   | 3      | Enterprise application infrastructure     |
+| Application   | 4      | Enterprise application infrastructure     |
 | Shares        | 1      | Readable shares and the credentials on them (opt-in) |
 
 ---
@@ -1642,6 +1648,29 @@ Analyzes enterprise application infrastructure.
 **Usage**:
 ```powershell
 Get-ExchangeInfrastructure
+```
+
+---
+
+### Get-ExchangeRBACAssignments
+
+**Purpose**: Reports who holds the Exchange management roles that grant access to mailbox content or allow self-escalation inside Exchange.
+
+**What it checks**: Exchange keeps its Role Based Access Control model in the Configuration partition - every assignment is an `msExchRoleAssignment` linking a role to a principal, readable by any domain user. The check reads the assignments themselves rather than the membership of Organization Management, because a role can be assigned straight to a single user and never show up in a group. Roles reported:
+- **Mailbox Import Export** - export the contents of any mailbox to a file
+- **ApplicationImpersonation** - act as any mailbox over EWS
+- **Role Management** - grant oneself any other Exchange role
+- **Unscoped Role Management** - publish a role that runs arbitrary code
+- **Mailbox Search** - search the contents of every mailbox
+- **Active Directory Permissions** - change Active Directory ACLs through Exchange
+
+An assignment on the role group Exchange ships it on is reported as expected; anything else is a finding. A **delegating** assignment (bit 49 of `msExchRoleAssignmentFlags`) does not grant the role but the right to assign it to others; Exchange setup creates those for Organization Management, so they are expected there and a finding anywhere else. Custom roles derived from one of the roles above carry a different name and are not matched.
+
+**Security Impact**: These roles read or exfiltrate any mailbox, impersonate users, or escalate within Exchange - and Exchange itself often holds high privileges in AD. An assignment outside the expected role group is a path to mailbox content or to further escalation.
+
+**Usage**:
+```powershell
+Get-ExchangeRBACAssignments
 ```
 
 ---

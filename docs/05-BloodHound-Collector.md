@@ -8,6 +8,8 @@ Export Active Directory data in BloodHound Community Edition (CE) compatible for
 
 The `Invoke-adPEASCollector` function collects AD data and exports it as BloodHound CE compatible JSON files. This enables attack path analysis in BloodHound without requiring SharpHound.
 
+A full `Invoke-adPEAS` run collects BloodHound data by default, as the `Bloodhound` module: with `-Outputfile` the ZIP is written next to the reports, otherwise into the current directory, and the completion line prints its full path. `-ExcludeModule Bloodhound` turns it off, and `-OPSEC` removes it. You only call `Invoke-adPEASCollector` directly when you want the collection on its own.
+
 **Key Features:**
 
 - Pure PowerShell implementation (no external dependencies)
@@ -72,7 +74,9 @@ Invoke-adPEASCollector
 | `ACL` | Objects with ACL focus | Users, Groups, Computers, OUs, GPOs, ADCS objects + ACLs |
 | `Trusts` | Domain trusts only | Domains |
 | `Container` | Container structure only | OUs, Containers, GPOs (no ACLs) |
-| `CertServices` | ADCS objects only | CertTemplates, EnterpriseCAs, RootCAs, AIACAs, NTAuthStores, IssuancePolicies + ACLs |
+| `CertServices` | ADCS objects only | CertTemplates, EnterpriseCAs, RootCAs, AIACAs, NTAuthStores, IssuancePolicies (no ACLs) |
+
+**Note:** ACLs are collected only by `DCOnly` and `ACL`. The other methods - `ObjectProps`, `Trusts`, `Container` and `CertServices` - export their objects without ACEs.
 
 **Note:** The `DCOnly` method matches SharpHound's `--collectionmethods DCOnly` which collects all LDAP-accessible data without contacting member hosts. This is the most complete collection method available in adPEAS.
 
@@ -141,7 +145,7 @@ The collector generates the following JSON files:
 
 | File | Contents |
 |------|----------|
-| `*_users.json` | User accounts with properties, SPNs, delegation |
+| `*_users.json` | User accounts with properties, SPNs, delegation; also the managed service accounts (gMSA, sMSA and delegated MSA), with their `ReadGMSAPassword` edges |
 | `*_groups.json` | Groups with membership |
 | `*_computers.json` | Computer accounts with OS, delegation |
 | `*_domains.json` | Domain information, trusts, functional level |
@@ -220,6 +224,7 @@ The collector extracts all BloodHound-compatible ACL edges:
 | `AddAllowedToAct` | Resource-Based Constrained Delegation |
 | `AddMember` | Modify group membership |
 | `WriteGPLink` | Link GPOs to OU/Domain |
+| `WriteAccountRestrictions` | Write the account-restrictions property set (UAC, logon hours, etc.) |
 
 ### Extended Rights Edges
 
