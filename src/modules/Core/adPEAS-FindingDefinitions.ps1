@@ -25,7 +25,7 @@
 
 $Script:ToolUrls = @{
     # Password Cracking
-    "Hashcat"           = "https://github.com/hashcat/hashcat"
+    "hashcat"           = "https://github.com/hashcat/hashcat"
     "John the Ripper"   = "https://github.com/openwall/john"
 
     # Kerberos Tools
@@ -42,7 +42,7 @@ $Script:ToolUrls = @{
     "BloodHound"        = "https://github.com/SpecterOps/BloodHound"
     "ADACLScanner"      = "https://github.com/canix1/ADACLScanner"
     "ADRecon"           = "https://github.com/adrecon/ADRecon"
-    "PingCastle"        = "https://github.com/vletoux/pingcastle"
+    "PingCastle"        = "https://github.com/netwrix/pingcastle"
     "ldapdomaindump"    = "https://github.com/dirkjanm/ldapdomaindump"
     "windapsearch"      = "https://github.com/ropnop/windapsearch"
     "DSInternals"       = "https://github.com/MichaelGrafnetter/DSInternals"
@@ -64,7 +64,7 @@ $Script:ToolUrls = @{
     "ntlmrelayx"        = "https://github.com/fortra/impacket"
 
     # GPO Abuse
-    "SharpGPOAbuse"     = "https://github.com/FSecureLABS/SharpGPOAbuse"
+    "SharpGPOAbuse"     = "https://github.com/ReversecLabs/SharpGPOAbuse"
     "Get-GPPPassword"   = "https://github.com/PowerShellMafia/PowerSploit/blob/master/Exfiltration/Get-GPPPassword.ps1"
     "gpp-decrypt"       = "https://github.com/t0thkr1s/gpp-decrypt"
 
@@ -107,14 +107,78 @@ $Script:ToolUrls = @{
 
     # SCCM/PXE
     "PXEThief"          = "https://github.com/MWR-CyberSec/PXEThief"
-    "PXEThiefy"         = "https://github.com/MWR-CyberSec/PXEThiefy"
-    "ConfigManBearPig"  = "https://github.com/youhavbeenp4wned/ConfigManBearPig"
+    "PXEThiefy"         = "https://github.com/csandker/pxethiefy"
+    "ConfigManBearPig"  = "https://github.com/SpecterOps/ConfigManBearPig"
 
     # Graph Analysis
     "Neo4j"             = "https://github.com/neo4j/neo4j"
 
     # Exchange
     "PrivExchange"      = "https://github.com/dirkjanm/PrivExchange"
+
+    # Network and SMB
+    "NetExec"           = "https://github.com/Pennyw0rth/NetExec"
+    "enum4linux"        = "https://github.com/CiscoCXSecurity/enum4linux"
+    "Nmap"              = "https://github.com/nmap/nmap"
+    "nmap smtp-open-relay" = "https://nmap.org/nsedoc/scripts/smtp-open-relay.html"
+    "Metasploit"        = "https://github.com/rapid7/metasploit-framework"
+
+    # Impacket scripts
+    "secretsdump.py"    = "https://github.com/fortra/impacket/blob/master/examples/secretsdump.py"
+    "lookupsid.py"      = "https://github.com/fortra/impacket/blob/master/examples/lookupsid.py"
+    "GetUserSPNs.py"    = "https://github.com/fortra/impacket/blob/master/examples/GetUserSPNs.py"
+    "dacledit.py"       = "https://github.com/fortra/impacket/blob/master/examples/dacledit.py"
+
+    # AD object abuse
+    "bloodyAD"          = "https://github.com/CravateRouge/bloodyAD"
+    "SharpSuccessor"    = "https://github.com/logangoins/SharpSuccessor"
+    "pre2k"             = "https://github.com/garrettfoster13/pre2k"
+    "RestrictedAdmin"   = "https://github.com/GhostPack/RestrictedAdmin"
+    "OneLogon"          = "https://github.com/rub-softsec/onelogon"
+
+    # Password Spraying
+    "DomainPasswordSpray" = "https://github.com/dafthack/DomainPasswordSpray"
+    "Spray"             = "https://github.com/Greenwolf/Spray"
+
+    # Local Privileges and Tokens
+    "GodPotato"         = "https://github.com/BeichenDream/GodPotato"
+    "JuicyPotato"       = "https://github.com/ohpe/juicy-potato"
+    "RoguePotato"       = "https://github.com/antonioCoco/RoguePotato"
+    "PrintSpoofer"      = "https://github.com/itm4n/PrintSpoofer"
+    "SharpToken"        = "https://github.com/BeichenDream/SharpToken"
+    "Incognito"         = "https://github.com/ReversecLabs/incognito"
+    "EoPLoadDriver"     = "https://github.com/TarlogicSecurity/EoPLoadDriver"
+    "KDU (Kernel Driver Utility)" = "https://github.com/hfiref0x/KDU"
+    "SeBackupPrivilege" = "https://github.com/giuliano108/SeBackupPrivilege"
+    "SeRestoreAbuse"    = "https://github.com/xct/SeRestoreAbuse"
+    "RawCopy"           = "https://github.com/jschicht/RawCopy"
+    "System Informer"   = "https://github.com/winsiderss/systeminformer"
+    "ProcDump"          = "https://learn.microsoft.com/en-us/sysinternals/downloads/procdump"
+    "PsExec"            = "https://learn.microsoft.com/en-us/sysinternals/downloads/psexec"
+
+    # Credential Extraction
+    "pypykatz"          = "https://github.com/skelsec/pypykatz"
+    "Mimikatz (vault::cred)" = "https://github.com/gentilkiwi/mimikatz"
+    "SharpDPAPI"        = "https://github.com/GhostPack/SharpDPAPI"
+    "dislocker"         = "https://github.com/Aorimn/dislocker"
+    "vncpwd"            = "https://github.com/jeroennijhof/vncpwd"
+
+    # ADFS
+    "ADFSDump"          = "https://github.com/mandiant/ADFSDump"
+    "ADFSpoof"          = "https://github.com/mandiant/ADFSpoof"
+
+    # Exchange and Mail
+    "MailSniper"        = "https://github.com/dafthack/MailSniper"
+    "Exchange Health Checker" = "https://github.com/microsoft/CSS-Exchange"
+    "swaks"             = "https://github.com/jetmore/swaks"
+
+    # SCCM, SCOM, WSUS, MSSQL, Printing
+    "Misconfiguration-Manager" = "https://github.com/subat0mik/Misconfiguration-Manager"
+    "SharpSCOM"         = "https://github.com/breakfix/SharpSCOM"
+    "PyWSUS"            = "https://github.com/GoSecure/pywsus"
+    "wsuks"             = "https://github.com/NeffIsBack/wsuks"
+    "PowerUpSQL"        = "https://github.com/NetSPI/PowerUpSQL"
+    "SharpPrintNightmare" = "https://github.com/cube0x0/CVE-2021-1675"
 }
 
 # The two tiers of Get-PasswordInDescription as one regex each, for the
@@ -224,7 +288,7 @@ $Script:FindingDefinitions = @{
             @{ Title = "Detecting Kerberoasting - Microsoft"; Url = "https://docs.microsoft.com/en-us/defender-for-identity/compromised-credentials-alerts" }
             @{ Title = "Kerberoasting Revisited - Harmj0y"; Url = "https://blog.harmj0y.net/redteaming/kerberoasting-revisited/" }
         )
-        Tools = @("Rubeus", "Impacket", "PowerView", "Hashcat", "John the Ripper")
+        Tools = @("Rubeus", "Impacket", "PowerView", "hashcat", "John the Ripper")
         MITRE = "T1558.003"
         Triggers = @(
             @{ Attribute = 'servicePrincipalName'; Custom = 'is_not_computer'; Severity = 'Finding' }
@@ -271,7 +335,7 @@ $Script:FindingDefinitions = @{
             @{ Title = "Kerberos Pre-Authentication - Microsoft"; Url = "https://learn.microsoft.com/en-us/defender-for-identity/security-posture-assessments/accounts" }
             @{ Title = "Roasting AS-REPs - Harmj0y"; Url = "https://blog.harmj0y.net/activedirectory/roasting-as-reps/" }
         )
-        Tools = @("Rubeus", "Impacket", "Hashcat", "John the Ripper")
+        Tools = @("Rubeus", "Impacket", "hashcat", "John the Ripper")
         MITRE = "T1558.004"
         Triggers = @(
             @{ Attribute = 'userAccountControl'; Pattern = 'DONT_REQ_PREAUTH'; Severity = 'Finding' }
@@ -369,7 +433,7 @@ $Script:FindingDefinitions = @{
             @{ Title = "AS-REP Roasting - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/asreproast.html" }
             @{ Title = "Managed Service Accounts - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/security/group-managed-service-accounts/group-managed-service-accounts-overview" }
         )
-        Tools = @("Hashcat", "John the Ripper")
+        Tools = @("hashcat", "John the Ripper")
         MITRE = "T1110.002"
         Triggers = @(
             @{ Attribute = 'KerberoastingHash'; Severity = 'Finding' }
@@ -2282,7 +2346,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             }
         )
         References = @(
-            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
             @{ Title = "Group Policy Object attributes - Microsoft"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
         )
         Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
@@ -2443,7 +2507,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             }
         )
         References = @(
-            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
             @{ Title = "Group Policy Basics - Part 3: Files"; Url = "https://learn.microsoft.com/en-us/archive/blogs/mempson/group-policy-basics-part-3-how-clients-process-gpos" }
             @{ Title = "MS-GPOL: Group Policy Protocol"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
         )
@@ -2492,7 +2556,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             }
         )
         References = @(
-            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
             @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
         )
         Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
@@ -2588,7 +2652,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             }
         )
         References = @(
-            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+            @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
             @{ Title = "MS-GPOL: GPO Search"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/5c7ecdad-469f-4b30-94b3-450b7fff868f" }
         )
         Tools = @("SharpGPOAbuse")
@@ -3385,7 +3449,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             @{ Title = "DCSync - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/dc-sync" }
             @{ Title = "DS-Replication-Get-Changes-All - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-ds-replication-get-changes-all" }
         )
-        Tools = @("Mimikatz", "Impacket secretsdump", "BloodHound")
+        Tools = @("Mimikatz", "secretsdump.py", "BloodHound")
         MITRE = "T1003.006"
         Triggers = @(
             # Same BaseScore as DANGEROUS_ACL_DCSYNC, which is the highest in the project -
@@ -3917,7 +3981,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             @{ Title = "SPN Attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-serviceprincipalname" }
             @{ Title = "Set-Acl - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/set-acl" }
         )
-        Tools = @("Rubeus", "Impacket", "PowerView", "Hashcat")
+        Tools = @("Rubeus", "Impacket", "PowerView", "hashcat")
         MITRE = "T1558.003"
         Triggers = @(
             @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(servicePrincipalName\)'; Severity = 'Finding' }
@@ -4072,7 +4136,7 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
             @{ Title = "Shadow Credentials: Abusing Key Trust Account Mapping for Account Takeover"; Url = "https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab" }
             @{ Title = "Key Credential Link - MS-ADTS"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/f3f01e95-6d0c-4fe6-8b43-d585167658fa" }
         )
-        Tools = @("Whisker", "pyWhisker", "Certipy", "Rubeus")
+        Tools = @("Whisker", "PyWhisker", "Certipy", "Rubeus")
         MITRE = "T1556"
         Triggers = @(
             @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(msDS-KeyCredentialLink\)'; Severity = 'Finding' }
@@ -6238,7 +6302,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Access Token Manipulation - MITRE ATT&CK T1134"; Url = "https://attack.mitre.org/techniques/T1134/" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1134"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
@@ -6357,7 +6421,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "OS Credential Dumping: NTDS - MITRE ATT&CK T1003.003"; Url = "https://attack.mitre.org/techniques/T1003/003/" }
         )
-        Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "PowerSploit SeBackupPrivilege module")
+        Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "SeBackupPrivilege")
         MITRE = "T1003.003"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
@@ -6387,7 +6451,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Hijack Execution Flow: Services File Permissions Weakness - MITRE ATT&CK T1574.010"; Url = "https://attack.mitre.org/techniques/T1574/010/" }
         )
-        Tools = @("SeRestoreAbuse", "PowerSploit SeRestorePrivilege module")
+        Tools = @("SeRestoreAbuse")
         MITRE = "T1574.010"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
@@ -6567,7 +6631,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Abuse Elevation Control Mechanism - MITRE ATT&CK T1548"; Url = "https://attack.mitre.org/techniques/T1548/" }
         )
-        Tools = @("icacls (integrity level flags)", "Process Hacker")
+        Tools = @("icacls (integrity level flags)", "System Informer")
         MITRE = "T1548"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
@@ -6658,7 +6722,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Valid Accounts: Local Accounts - MITRE ATT&CK T1078.003"; Url = "https://attack.mitre.org/techniques/T1078/003/" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1078.003"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
@@ -6856,7 +6920,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Privilege Constants (Winnt.h) - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1134.001"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeDelegateSessionUserImpersonatePrivilege$'; Severity = 'Hint' }
@@ -6886,7 +6950,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Generate security audits - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/generate-security-audits" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1070.001"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeAuditPrivilege$'; Severity = 'Hint' }
@@ -6942,7 +7006,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Create global objects - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/create-global-objects" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1068"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeCreateGlobalPrivilege$'; Severity = 'Hint' }
@@ -6968,7 +7032,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Profile single process - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-single-process" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1057"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeProfileSingleProcessPrivilege$'; Severity = 'Hint' }
@@ -6994,7 +7058,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "Profile system performance - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-system-performance" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1057"
         Triggers = @(
             @{ Attribute = 'UserRight'; Pattern = '^SeSystemProfilePrivilege$'; Severity = 'Hint' }
@@ -7026,7 +7090,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
         References = @(
             @{ Title = "User Rights Assignment - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "-"
         Triggers = @(
             @{ Attribute = 'RemovedFromDefault'; Severity = 'Note' }
@@ -7252,6 +7316,11 @@ Get-ADObject -SearchBase $schema `
             # relay needs, and that keeps the hint and the card it always had.
             @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(DC default'; Severity = 'Note'; SeverityOnly = $true }
             @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(not required'; Severity = 'Hint' }
+
+            # What a member computer gets when no policy that reaches it requires server
+            # signing - Get-SMBSigningStatus's member posture. Not one policy's silence but
+            # the state in force, the one an SMB relay needs, so a finding.
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not required \('; Severity = 'Finding' }
             @{ Attribute = 'ClientSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
             @{ Attribute = 'ClientSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
         )
@@ -7316,11 +7385,6 @@ Get-ADObject -SearchBase $schema `
         # finding, a word that only mentions a password is a hint. One pattern covered
         # both and coloured every mention red - the hint objects of that check carried a
         # red row, and a description saying "passwords" anywhere in the report did too.
-
-            # What a member computer gets when no policy that reaches it requires server
-            # signing - Get-SMBSigningStatus's member posture. Not one policy's silence but
-            # the state in force, the one an SMB relay needs, so a finding.
-            @{ Attribute = 'ServerSigning'; Pattern = '^Not required \('; Severity = 'Finding' }
         # The hint triggers exclude the assignment, so at most one of the two matches.
         # Every attribute the check reads, not description and info alone - see the lists
         # at the top of this file. The link and path attributes take the assignment only,
@@ -8311,7 +8375,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Title = "Kerberos Policy - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/kerberos-policy" }
             @{ Title = "Maximum lifetime for user ticket"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/maximum-lifetime-for-user-ticket" }
         )
-        Tools = @("Rubeus", "mimikatz")
+        Tools = @("Rubeus", "Mimikatz")
         MITRE = "T1550.003"
         Triggers = @(
             # The verdict Get-DomainInformation writes when one of the two values is above
@@ -8369,7 +8433,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Title = "Kerberos KDC usage of RC4 - CVE-2026-20833"; Url = "https://support.microsoft.com/en-us/servicing/os/windows/2025/11/how-to-manage-kerberos-kdc-usage-of-rc4-for-service-account-ticket-issuance-changes-related-to-cve-2" }
             @{ Title = "Decrypting the Selection of Supported Kerberos Encryption Types"; Url = "https://techcommunity.microsoft.com/t5/core-infrastructure-and-security/decrypting-the-selection-of-supported-kerberos-encryption-types/ba-p/1628797" }
         )
-        Tools = @("Rubeus", "Hashcat")
+        Tools = @("Rubeus", "hashcat")
         MITRE = "T1558"
         Triggers = @(
             # On trustEncryptionTypes, not on the raw usesRC4 boolean.
@@ -8561,7 +8625,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Title = "Trust Attributes - MS-ADTS 6.1.6.7.9"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
             @{ Title = "Security Considerations for Trusts"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-considerations-for-trusts" }
         )
-        Tools = @("netdom", "Get-ADTrust", "mimikatz")
+        Tools = @("netdom", "Get-ADTrust", "Mimikatz")
         MITRE = "T1134.005"
         Triggers = @(
             # Only outside one forest. Within a single forest the flag is meaningless -
@@ -8609,7 +8673,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Title = "Securing Domain Controllers Against Attack - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/securing-domain-controllers-against-attack" }
             @{ Title = "Enterprise access model - Microsoft"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "-"
         Triggers = @(
             # The row exists only where domain controllers are in the subnet.
@@ -8699,7 +8763,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
             @{ Title = "Overview of Windows Server Upgrades"; Url = "https://learn.microsoft.com/en-us/windows-server/get-started/upgrade-overview" }
             @{ Title = "Perform an In-Place Upgrade of Windows Server"; Url = "https://learn.microsoft.com/en-us/windows-server/get-started/perform-in-place-upgrade" }
         )
-        Tools = @("nmap", "Metasploit", "BlueKeep scanner")
+        Tools = @("Nmap", "Metasploit", "BlueKeep scanner")
         MITRE = "T1210"
         Triggers = @(
             @{ Attribute = 'eolDate'; Severity = 'Finding' }
@@ -11398,7 +11462,7 @@ foreach ($name in 'ms-PKI-AccountCredentials', 'ms-PKI-DPAPIMasterKeys') {
             @{ Title = "Confidential attributes (searchFlags fCONFIDENTIAL)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-searchflags" }
             @{ Title = "CVE-2022-30170 - Credential Roaming elevation of privilege"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-30170" }
         )
-        Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+        Tools = @("adPEAS", "SharpDPAPI", "Mimikatz")
         MITRE = "T1552.004"
         Triggers = @(
             @{ Attribute = 'RoamedMaterial'; Severity = 'Hint' }
@@ -11462,7 +11526,7 @@ Get-ADUser <targetuser> -Properties msPKIAccountCredentials, msPKIDPAPIMasterKey
             @{ Title = "Confidential attributes (searchFlags fCONFIDENTIAL)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-searchflags" }
             @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
         )
-        Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+        Tools = @("adPEAS", "SharpDPAPI", "Mimikatz")
         MITRE = "T1552.004"
         Triggers = @(
             @{ Attribute = 'ReadableBy'; Pattern = '^Any authenticated user'; Severity = 'Finding' }
@@ -11534,7 +11598,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
             @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
             @{ Title = "Confidential attributes - READ_PROPERTY plus CONTROL_ACCESS"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
         )
-        Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+        Tools = @("adPEAS", "SharpDPAPI", "Mimikatz")
         MITRE = "T1552.004"
         Triggers = @(
             # The rights string is split per value by the dangerousRights transformer, so each
@@ -12568,7 +12632,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Network access: Allow anonymous SID/Name translation"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-allow-anonymous-sidname-translation" }
         )
-        Tools = @("impacket-lookupsid", "rpcclient")
+        Tools = @("lookupsid.py", "rpcclient")
         MITRE = "T1087.002"
         Triggers = @(
             @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Allowed$'; Severity = 'Hint' }
@@ -13012,7 +13076,7 @@ $acl.Access | Where-Object {
             @{ Title = "Protected Users Security Group"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
             @{ Title = "Securing Privileged Access - Tier model"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
         )
-        Tools = @("BloodHound", "mimikatz", "Rubeus")
+        Tools = @("BloodHound", "Mimikatz", "Rubeus")
         MITRE = "T1003.001"
         Triggers = @(
             # The row that says why the account is Tier-0, on the list the check put it in -
@@ -14697,7 +14761,7 @@ $acl.Access | Where-Object {
             @{ Title = "MS-KILE 2.2.7: Supported Encryption Types Bit Flags"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/6cfc7b50-11ed-4b4d-846d-6f08f0812919" }
             @{ Title = "Decrypting the Selection of Supported Kerberos Encryption Types"; Url = "https://techcommunity.microsoft.com/blog/askds/decrypting-the-selection-of-supported-kerberos-encryption-types/1628797" }
         )
-        Tools = @("Rubeus", "Impacket GetUserSPNs.py", "hashcat")
+        Tools = @("Rubeus", "GetUserSPNs.py", "hashcat")
         MITRE = "T1558.003"
         Triggers = @(
             @{ Attribute = 'msDS-SupportedEncryptionTypes'; Custom = 'enc_rc4_without_aes'; Severity = 'Finding' }
@@ -14830,7 +14894,7 @@ $acl.Access | Where-Object {
             @{ Title = "Abusing Active Directory ACLs/ACEs"; Url = "https://www.ired.team/offensive-security-experiments/active-directory-kerberos-abuse/abusing-active-directory-acls-aces" }
             @{ Title = "DACL Abuse - The Hacker Recipes"; Url = "https://www.thehacker.recipes/ad/movement/dacl/" }
         )
-        Tools = @("BloodHound", "PowerView", "Impacket dacledit.py", "Defender for Identity")
+        Tools = @("BloodHound", "PowerView", "dacledit.py", "Defender for Identity")
         MITRE = "T1078.002"
         Triggers = @(
             # Expected/Attention permissions (Exchange groups, privileged users) = Hint.
@@ -14967,7 +15031,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Group Policy overview - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-policy/group-policy-overview" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "-"
     }
 
@@ -15258,7 +15322,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Do not store LAN Manager hash value"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-do-not-store-lan-manager-hash-value-on-next-password-change" }
         )
-        Tools = @("secretsdump", "hashcat")
+        Tools = @("secretsdump.py", "hashcat")
         MITRE = "T1003.002"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'LM hash storage'; Severity = 'Finding' }
@@ -15287,7 +15351,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Pass-the-Hash is Dead: LocalAccountTokenFilterPolicy"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
         )
-        Tools = @("CrackMapExec", "impacket")
+        Tools = @("NetExec", "Impacket")
         MITRE = "T1550.002"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'Remote UAC token filtering'; Severity = 'Finding' }
@@ -15343,7 +15407,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "UAC and remote restrictions"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/user-account-control-and-remote-restriction" }
         )
-        Tools = @("CrackMapExec")
+        Tools = @("NetExec")
         MITRE = "T1548.002"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'User Account Control'; Severity = 'Finding' }
@@ -15432,7 +15496,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Disabling LSA/Defender defences"; Url = "https://research.splunk.com/endpoint/45cd08f8-a2c9-4f4e-baab-e1a0c624b0ab/" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1562.001"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'Microsoft Defender Antivirus disabled'; Severity = 'Hint' }
@@ -15514,7 +15578,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "LocalAccountTokenFilterPolicy / FilterAdministratorToken"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
         )
-        Tools = @("CrackMapExec")
+        Tools = @("NetExec")
         MITRE = "T1550.002"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'RID-500'; Severity = 'Hint' }
@@ -15540,7 +15604,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "CVE-2018-0886 CredSSP"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2018-0886" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1557"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'CredSSP encryption oracle'; Severity = 'Hint' }
@@ -15566,7 +15630,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Domain member: Disable machine account password changes"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
         )
-        Tools = @("Mimikatz", "impacket")
+        Tools = @("Mimikatz", "Impacket")
         MITRE = "T1558.002"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'Machine account password rotation'; Severity = 'Hint' }
@@ -15628,7 +15692,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Network Level Authentication for Remote Desktop Services connections"; Url = "https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1021.001"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Network Level Authentication'; Severity = 'Finding' }
@@ -15656,7 +15720,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Require use of specific security layer for remote (RDP) connections"; Url = "https://admx.newyard.nl/gpo/require-use-of-specific-security-layer-for-remote-rdp-connections/" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1557"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Security Layer'; Severity = 'Finding' }
@@ -15682,7 +15746,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Set client connection encryption level"; Url = "https://admx.newyard.nl/gpo/require-use-of-specific-security-layer-for-remote-rdp-connections/" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1557"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP encryption level'; Severity = 'Hint' }
@@ -15709,7 +15773,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Windows Firewall Group Policy settings"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/embedded/jj963363(v=winembedded.81)" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1562.004"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'Windows Firewall disabled'; Severity = 'Hint' }
@@ -15736,7 +15800,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Policy CSP - LanmanWorkstation"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-lanmanworkstation" }
         )
-        Tools = @("-")
+        Tools = @()
         MITRE = "T1557.001"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = 'Insecure guest logon'; Severity = 'Hint' }
@@ -16201,7 +16265,7 @@ $acl.Access | Where-Object {
         References = @(
             @{ Title = "Interactive logon: Number of previous logons to cache"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available" }
         )
-        Tools = @("Mimikatz", "secretsdump", "hashcat")
+        Tools = @("Mimikatz", "secretsdump.py", "hashcat")
         MITRE = "T1003.005"
         Triggers = @(
             @{ Attribute = 'VulnerabilityName'; Pattern = '^More cached domain logons than the Windows default'; Severity = 'Hint' }
@@ -16485,7 +16549,7 @@ $acl.Access | Where-Object {
             @{ Title = "Disable RegisterSpoolerRemoteRpcEndPoint"; Url = "https://github.com/rdboboia/disable-RegisterSpoolerRemoteRpcEndPoint" }
             @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
         )
-        Tools = @("SpoolSample", "PetitPotam", "printerbug.py")
+        Tools = @("SpoolSample", "PetitPotam", "PrinterBug.py")
         MITRE = "T1187"
         Triggers = @(
             @{ Attribute = 'SpoolerClientConnections'; Pattern = '^Accepted'; Severity = 'Hint' }
