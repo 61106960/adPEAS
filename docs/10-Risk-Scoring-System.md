@@ -3,8 +3,9 @@
 Documentation of the context-aware risk scoring system used in adPEAS v2 HTML reports.
 
 > **Maintenance:** All scoring values are centrally defined in:
-> - **PowerShell:** `src/modules/Core/adPEAS-ScoringDefinitions.ps1`
-> - **JavaScript:** Auto-generated from PowerShell during build via `ConvertTo-ScoringJavaScript`
+> - **Base scores:** the `BaseScore` of each finding in `src/modules/Core/adPEAS-FindingDefinitions.ps1` (read by `Get-FindingBaseScores`)
+> - **Multipliers and bonuses:** `src/modules/Core/adPEAS-ScoringDefinitions.ps1`
+> - **JavaScript:** generated from those tables when the HTML report is written (`Export-HTMLReport` substitutes `{{SCORING_DEFINITIONS}}`), not during the build. `Convert-adPEASReport` therefore rescoring an old JSON uses the current definitions.
 
 ---
 
@@ -32,10 +33,13 @@ The ranges above are the products of the tables in
 `src/modules/Core/adPEAS-ScoringDefinitions.ps1`, not separate numbers:
 
 - **EXPLOITABILITY** multiplies password age (1.0-1.6), minimum password length
-  (0.8-1.4), complexity (1.0-1.25) and encryption type (0.9-1.3). Hence 0.72 at the
-  bottom and 3.64 at the top - this component can raise a score as well as lower it,
-  and it is applied only to the attacks that need cracking (Kerberoast, AS-REP,
-  pre-auth).
+  (0.8-1.4), complexity (1.0-1.25) and encryption type (0.9-1.3), and adds a further
+  ×1.15 when the minimum length is 1-9 and complexity is off. It can raise a score as
+  well as lower it, and it is applied only to the attacks that need cracking (Kerberoast,
+  AS-REP, pre-auth). When the account's password never expires (no `maxPwdAge` to measure
+  against), the age factor uses absolute thresholds instead: ×1.1 over a year, ×1.2 over
+  two, ×1.4 over five. The `aes128` value is defined but never applied - an AES-only
+  account scores with the `aes256` factor (0.9), a mixed RC4+AES account with 1.0.
 - **SECURITY** multiplies whichever mitigations apply, so they compound: on a cracking
   finding, a disabled account (0.1) that requires a smartcard (0.15) and sits in
   Protected Users (0.2) comes out at 0.003. One entry
@@ -57,11 +61,24 @@ not "exactly 100".
 
 Base scores represent the intrinsic risk of each vulnerability type. The actual score is then modified by context.
 
+**How the base score is resolved (not by title keyword):** each finding definition in
+`adPEAS-FindingDefinitions.ps1` carries its own `BaseScore`. For a card, the score is the
+**highest** `BaseScore` among the finding IDs the card actually carries - its ObjectType's
+`primaryFindingId`, every `data-finding-id` row inside it, and its vulnerability tags
+(so a template tagged `ESC1, ESC15` scores as the higher of the two). A red (finding) card
+never scores below 35: the base is `max(35, best BaseScore)`, so a definition below 35 does
+not lower a red card. A card whose matched finding is `DANGEROUS_ACL_DCSYNC` is set straight
+to 100. A Hint card always scores 15 with no modifiers; Note and Secure score 0.
+
+The tables below are **representative** values grouped by band - the authoritative number
+for any finding is the `BaseScore` in its definition, which is why some values here are
+round illustrations rather than the exact current figure.
+
 ### Direct Compromise (Base 80-100)
 
 These findings can lead to immediate domain compromise.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `dcsync` | 100 | Get-DangerousACLs | DCSync rights - immediate domain compromise |
 | `replication rights` | 100 | Get-DangerousACLs | Same as DCSync |
@@ -83,7 +100,7 @@ These findings can lead to immediate domain compromise.
 
 Findings that expose or allow access to credentials.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `laps credential` | 55 | Get-LAPSCredentialAccess | LAPS password readable |
 | `laps access` | 45 | Get-LAPSPermissions | LAPS password read permissions |
@@ -102,7 +119,7 @@ Findings that expose or allow access to credentials.
 
 Findings that require offline password cracking.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `kerberoastable` | 35 | Get-KerberoastableAccounts | Kerberoastable service account |
 | `kerberoast` | 35 | Get-KerberoastableAccounts | Kerberoastable service account |
@@ -114,7 +131,7 @@ Findings that require offline password cracking.
 
 Findings related to Kerberos delegation misconfigurations.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `rbcd` | 55 | Get-ResourceBasedConstrainedDelegation | Resource-Based Constrained Delegation |
 | `resource-based constrained` | 55 | Get-ResourceBasedConstrainedDelegation | RBCD abuse |
@@ -124,7 +141,7 @@ Findings related to Kerberos delegation misconfigurations.
 
 Findings related to dangerous Access Control List entries.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `genericall` | 60 | Get-DangerousACLs | Full control over object |
 | `writedacl` | 55 | Get-DangerousACLs | Can modify permissions |
@@ -142,7 +159,7 @@ Findings related to dangerous Access Control List entries.
 
 Findings related to insecure configurations.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `local admin` | 45 | Get-GPOLocalGroupMembership | Added to local admins via GPO |
 | `computer owner` | 40 | Get-NonDefaultComputerOwners | Non-default computer owner |
@@ -164,7 +181,7 @@ Findings related to insecure configurations.
 
 Findings related to service account security.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `gmsa password readable` | 55 | Get-ManagedServiceAccountSecurity | gMSA password retrievable |
 | `managed service account` | 25 | Get-ManagedServiceAccountSecurity | MSA configuration issue |
@@ -174,7 +191,7 @@ Findings related to service account security.
 
 Findings related to infrastructure components.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `exchange` | 45 | Get-ExchangeInfrastructure | Exchange infrastructure finding |
 | `unsupported os` | 40 | Get-OutdatedComputers | Unsupported operating system |
@@ -190,7 +207,7 @@ Findings related to infrastructure components.
 
 Findings related to LAPS deployment.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `laps not configured` | 35 | Get-LAPSConfiguration | LAPS missing |
 | `laps` | 20 | Get-LAPSConfiguration | LAPS informational |
@@ -199,7 +216,7 @@ Findings related to LAPS deployment.
 
 Low-severity informational findings.
 
-| Keyword | Base Score | Check Module | Description |
+| Finding Type | Base Score | Check Module | Description |
 |---------|------------|--------------|-------------|
 | `privileged group` | 15 | Get-PrivilegedGroupMembers | Privileged group membership |
 | `trust` | 15 | Get-DomainTrusts | Domain trust |
@@ -211,7 +228,7 @@ Low-severity informational findings.
 
 ### Fallback Scores
 
-When no keyword matches, the system uses severity-based fallbacks:
+When a finding carries no `BaseScore` of its own, it falls back to its severity class. These are also the floor for a red card and the fixed value for a hint:
 
 | Severity Class | Fallback Score |
 |----------------|----------------|
@@ -230,12 +247,14 @@ The impact multiplier adjusts the base score based on the privilege level of the
 
 adPEAS uses the [Microsoft Privileged Access Model](https://docs.microsoft.com/en-us/security/privileged-access-workstations/) for tier classification:
 
-| Tier | Multiplier | SID Pattern | Groups | Scope |
-|------|------------|-------------|--------|-------|
-| **Tier 0** | ×2.0 | `-512`, `-519`, `-518` | Domain Admins, Enterprise Admins, Schema Admins | Domain Controllers |
-| **Tier 1** | ×1.5 | `-548`, `-549`, `-551`, `-550` | Account Operators, Server Operators, Backup Operators, Print Operators | Servers |
-| **Tier 2** | ×1.2 | Other privileged | Other administrative groups | Workstations |
-| **None** | ×1.0 | Standard | Regular user accounts | - |
+The tier comes from `Test-IsPrivileged`: its `Privileged` category maps to Tier 0, `Operator` to Tier 1, everything else privileged to Tier 2.
+
+| Tier | Multiplier | SIDs (via Test-IsPrivileged) | Scope |
+|------|------------|------------------------------|-------|
+| **Tier 0** | ×2.0 | Domain/Enterprise/Schema Admins (`-512`/`-519`/`-518`), the built-in Administrator (`-500`), KRBTGT (`-502`), Domain Controllers (`-516`), read-only DC groups (`-498`/`-521`), Key Admins (`-526`/`-527`), Administrators (`S-1-5-32-544`), SYSTEM (`S-1-5-18`), Enterprise DCs (`S-1-5-9`) | Domain Controllers |
+| **Tier 1** | ×1.5 | Account/Server/Backup/Print Operators (`-548`-`-551`), Cert Publishers (`-517`), Group Policy Creator Owners (`-520`) | Servers |
+| **Tier 2** | ×1.2 | Other privileged | Workstations |
+| **None** | ×1.0 | Standard user accounts | - |
 
 ### Example Calculation
 
@@ -317,7 +336,7 @@ Security modifiers **reduce** the score when mitigating controls are in place.
 |------|----------|------------|-------------|
 | `ACCOUNTDISABLE` | ×0.1 | All findings | Account is disabled |
 | `SMARTCARD_REQUIRED` | ×0.15 | Cracking attacks | Password is random/unknown |
-| `USE_DES_KEY_ONLY` | ×1.3 | Kerberos attacks | Weak encryption (increases risk) |
+| `USE_DES_KEY_ONLY` | ×1.3 | All findings | Weak encryption (increases risk) |
 
 Not applied:
 
@@ -337,9 +356,10 @@ Not applied:
 | Member of Protected Users | ×0.2 | Strong Kerberos protections |
 | Not a member | ×1.0 | No additional protection |
 
-Protected Users membership is detected via:
-1. SID ending in `-525` in `memberOf`
-2. `isProtectedUser` flag in scoring context
+The ×0.2 applies only to cracking attacks (Kerberoast, AS-REP, pre-auth), like the smartcard modifier. Protected Users membership is detected via:
+1. the `-525` group among the account's privileged groups
+2. a `memberOf` entry whose DN matches `CN=Protected Users,`
+3. the `isProtectedUser` flag in the scoring context
 
 ### Modifier Application Logic
 
@@ -486,7 +506,7 @@ The scoring context is built in `Export-HTMLReport.ps1` via the `Build-ScoringCo
 
 ```powershell
 $scoringContext = @{
-    accounts = @{}           # Account info by sAMAccountName
+    accounts = @{}           # Account info, keyed by objectSid, then DN, then sAMAccountName
     findingContext = @{}     # Finding metadata
     correlations = @{}       # Account appearance counts
     domainInfo = @{
@@ -505,7 +525,11 @@ The scoring is performed client-side in the HTML report:
 
 ```javascript
 function calculateFindingScore(card) {
-    const baseScore = getBaseScore(title);
+    // note/secure -> 0; hint -> 15 (no modifiers); handled before this point
+    // base = max(35, highest BaseScore among the card's finding IDs); DCSYNC -> 100
+    const { score: resolved } = resolveCardBaseScore(buildMetaFromCard(card));
+    const baseScore = Math.max(severityBaseScores[severity], resolved);
+
     const impactMod = impactMultipliers[accountInfo.adminTier] || 1.0;
     const exploitMod = getExploitabilityModifier(accountInfo, title);
     const securityMod = getSecurityModifier(accountInfo, title);
@@ -515,6 +539,13 @@ function calculateFindingScore(card) {
     return Math.min(Math.max(finalScore, 0), 100);
 }
 ```
+
+**One card, many accounts.** A check like Kerberoasting lists every affected account on a
+single card. The card is scored by the *worst* of its accounts, decided field by field:
+the highest tier, the oldest password, RC4 if any account is RC4-only - while a mitigating
+flag (disabled, smartcard, Protected Users) counts only when it holds for *all* of them.
+A single dangerous account therefore raises the card even when it is far down the list, and
+one hardened account at the top no longer drags the whole card down.
 
 ### Score Display
 
@@ -534,16 +565,20 @@ Scores are displayed as badges with color coding:
 
 All scoring values are centrally maintained in `src/modules/Core/adPEAS-ScoringDefinitions.ps1`.
 
-### Adding New Base Scores
+### Adding or Changing a Base Score
 
-Edit the `$Script:FindingBaseScores` hashtable:
+Base scores are not a central keyword table. Each finding carries its own `BaseScore` in
+its definition in `src/modules/Core/adPEAS-FindingDefinitions.ps1`:
 
 ```powershell
-$Script:FindingBaseScores = @{
-    # ... existing scores ...
-    'new finding keyword'  = 45    # Add your keyword (lowercase)
+SOME_FINDING_ID = @{
+    # ... Risk, Title, Triggers, ObjectType, ...
+    BaseScore = 45          # the intrinsic score for this finding
 }
 ```
+
+A finding without a `BaseScore` falls back to its severity class (35 / 15 / 0). The
+multipliers and bonuses below live in `adPEAS-ScoringDefinitions.ps1`.
 
 ### Adjusting Multipliers
 
