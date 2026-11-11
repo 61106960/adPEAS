@@ -203,7 +203,7 @@ $Script:PrimaryAttributes = @{
     # GPO-deployed dangerous registry settings (Get-GPORegistrySettings)
     GPORegistrySetting = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'RegistryKey', 'ConfiguredValue',
-        'VulnerabilityName', 'RiskReason',
+        'VulnerabilityName', 'RiskReason', 'itemDescription',
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
@@ -382,8 +382,8 @@ $Script:PrimaryAttributes = @{
     # SYSVOLCredential together, without the policy rows - a file on a share belongs to
     # no policy.
     ShareCredential = @(
-        'CredentialType', 'FilePath', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'VNCHost', 'VNCSetting',
-        'UserName', 'accountInAD', 'Password', 'MatchedLine'
+        'CredentialType', 'FilePath', 'PreferenceItem', 'PreferenceField', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'VNCHost', 'VNCSetting',
+        'UserName', 'accountInAD', 'Password', 'MatchedLine', 'itemDescription'
     )
 
     # Open ports, one object per address (Invoke-PortScan). Name carries the host name or
@@ -489,7 +489,7 @@ $Script:PrimaryAttributes = @{
     # GPO Scheduled Tasks (custom PSCustomObject from Get-GPOScheduledTasks)
     GPOScheduledTask = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'TaskName', 'Command',
-        'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
+        'RunAs', 'Context', 'Action', 'Trigger', 'TaskDescription', 'itemDescription', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
     # GPO Script Paths (custom PSCustomObject from Get-GPOScriptPaths)
@@ -511,7 +511,7 @@ $Script:PrimaryAttributes = @{
     # mechanisms wrote the assignment - on the console the row was reading without a finding.
     GPOLocalGroup = @(
         'GPOName', 'GPOGUID', 'GPOPath', 'TargetGroup', 'Mode',
-        'MembersAdded', 'MembersRemoved', 'groupEmptied',
+        'MembersAdded', 'MembersRemoved', 'groupEmptied', 'itemDescription',
         'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
     )
 
@@ -568,7 +568,7 @@ $Script:PrimaryAttributes = @{
     # a caller-supplied -Path, where there is no GPO folder to be relative to, and for a
     # finding that does come from a GPO the full path already contains the GUID.
     GPPCredential = @(
-        'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+        'CredentialType', 'GPOName', 'FilePath', 'PreferenceItem', 'PreferenceField', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'itemDescription', 'LinkedOUs'
     )
     SYSVOLCredential = @(
         'CredentialType', 'GPOName', 'FilePath', 'VNCHost', 'VNCSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'

@@ -1066,6 +1066,12 @@ function Parse-GPPGroups {
                 _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
             }
 
+            # The Description on the item's Common tab - why somebody put these members there.
+            $itemDescription = ConvertTo-GPOTextRow -Text ([string]$group.GetAttribute('desc'))
+            if ($null -ne $itemDescription) {
+                $finding | Add-Member -NotePropertyName 'itemDescription' -NotePropertyValue $itemDescription -Force
+            }
+
             if (@($removedMembers).Count -gt 0) {
                 $finding | Add-Member -NotePropertyName 'MembersRemoved' -NotePropertyValue $removedMembers -Force
             }

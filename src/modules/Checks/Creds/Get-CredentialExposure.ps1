@@ -652,6 +652,91 @@ function Get-UnattendCredential {
     }
 }
 
+function Get-PreferenceItemName {
+    <#
+    .SYNOPSIS
+    The name of the preference item a node belongs to: the first name attribute on the way
+    up - the item element itself, or its Properties for a node inside a v2 task.
+
+    .PARAMETER Node
+    A node of a Group Policy Preferences file.
+
+    .OUTPUTS
+    String - empty where no element above names one.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Node
+    )
+
+    $current = $Node
+    while ($current -is [System.Xml.XmlElement]) {
+        $name = [string]$current.GetAttribute('name')
+        if (-not [string]::IsNullOrWhiteSpace($name)) { return $name }
+        $current = $current.ParentNode
+    }
+    return ''
+}
+
+function Get-PreferenceFreeText {
+    <#
+    .SYNOPSIS
+    The free text of the Group Policy Preferences items in one XML file.
+
+    .DESCRIPTION
+    The fields an administrator types into that no structural check reads:
+    - desc on an item element - the Description box on the Common tab of every item
+    - the description of a scheduled task itself: RegistrationInfo/Description in a v2 task
+      (TaskV2, ImmediateTaskV2), the comment attribute of Properties in a v1 one (Task,
+      ImmediateTask)
+    - the description a Local Users and Groups item writes to the local account or group
+      (Properties description) - the field an administrator notes a password in on an AD
+      account as well
+
+    Measured 2026-11-10: the description typed on the General tab of a v2 task lands in
+    RegistrationInfo/Description, and a "Passwort: ..." there was reported by nothing.
+
+    .PARAMETER XmlContent
+    The parsed file.
+
+    .OUTPUTS
+    PSCustomObject per non-empty field: Item (the name of the item), Field, Text.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [xml]$XmlContent
+    )
+
+    foreach ($node in @($XmlContent.SelectNodes('//*[@desc]'))) {
+        $text = [string]$node.GetAttribute('desc')
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = 'Item description'; Text = $text }
+    }
+    # local-name(): the task XML inside a preference item carries no namespace, a task
+    # exported from Task Scheduler and copied to a share does.
+    foreach ($node in @($XmlContent.SelectNodes("//*[local-name()='RegistrationInfo']/*[local-name()='Description']"))) {
+        $text = [string]$node.InnerText
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = 'Task description'; Text = $text }
+    }
+    foreach ($node in @($XmlContent.SelectNodes('//Task/Properties[@comment] | //ImmediateTask/Properties[@comment]'))) {
+        $text = [string]$node.GetAttribute('comment')
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = 'Task comment'; Text = $text }
+    }
+    foreach ($node in @($XmlContent.SelectNodes('//User/Properties[@description] | //Group/Properties[@description]'))) {
+        $text = [string]$node.GetAttribute('description')
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $field = if ($node.ParentNode.LocalName -eq 'User') { 'Local user description' } else { 'Local group description' }
+        [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = $field; Text = $text }
+    }
+}
+
 function Find-XmlFileCredential {
     <#
     .SYNOPSIS
@@ -667,8 +752,10 @@ function Find-XmlFileCredential {
       read from FilePath again by Parse-RegistryXml, which honours the encoding the file
       declares
     - a Windows answer file, by its root element (Get-UnattendCredential)
+    - the free text of the preference items (Get-PreferenceFreeText) - the description of an
+      item and of a scheduled task - read with the patterns of a script line, field by field
 
-    The four are independent of each other: a Registry.xml with a cpassword item and the
+    They are independent of each other: a Registry.xml with a cpassword item and the
     Winlogon values reports both.
 
     The objects carry no object type and no context: the caller adds what it adds - the
@@ -725,6 +812,14 @@ function Find-XmlFileCredential {
                 UserName       = $username
                 Password       = $decryptedPassword
             }
+            # The Description on the item's Common tab, which often says what the account
+            # is for.
+            if ($properties.ParentNode -is [System.Xml.XmlElement]) {
+                $itemDescription = [string]$properties.ParentNode.GetAttribute('desc')
+                if (-not [string]::IsNullOrWhiteSpace($itemDescription)) {
+                    $credObj | Add-Member -NotePropertyName 'itemDescription' -NotePropertyValue $itemDescription.Trim() -Force
+                }
+            }
             # What the name stands for in the directory. The password of an account that is
             # gone, disabled or changed since the file was written is history, and the
             # finding alone could not tell it from one that still works.
@@ -773,6 +868,17 @@ function Find-XmlFileCredential {
         $accountInAD = Resolve-CredentialAccount -UserName $unattendCredential.UserName -FileName $FileName -FileTime $FileTime
         if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
         [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found a password in a Windows answer file'; Context = 'Unattend' }
+    }
+
+    # The free text of the preference items - see Get-PreferenceFreeText - with the
+    # patterns of a script line, one field at a time. Not the whole file as text: every
+    # empty cpassword="" would then be a mention of a password.
+    foreach ($field in @(Get-PreferenceFreeText -XmlContent $XmlContent)) {
+        foreach ($result in @(Find-ScriptFileCredential -Content $field.Text -FilePath $FilePath -FileName $FileName -FileTime $FileTime)) {
+            if ($field.Item) { $result.Credential | Add-Member -NotePropertyName 'PreferenceItem' -NotePropertyValue $field.Item -Force }
+            $result.Credential | Add-Member -NotePropertyName 'PreferenceField' -NotePropertyValue $field.Field -Force
+            $result
+        }
     }
 }
 

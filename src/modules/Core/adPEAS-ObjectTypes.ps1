@@ -1541,6 +1541,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Groups.xml, ScheduledTasks.xml, and similar GPP files"
             "cpassword attributes and their decryption"
             "AutoAdminLogon credentials in Registry.xml"
+            "The free text of every preference item - the Description on its Common tab, a scheduled task's own description, and the description a local user or group item sets - read with the patterns of a script line"
             "String registry values named like a password - Password, ProxyPassword, Pwd - in Registry.xml and in the Administrative Template file Registry.pol"
             "VNC passwords a policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC, decrypted (one DES key shared by every VNC installation) - and what the value is when it is a form that cannot be reversed"
         )

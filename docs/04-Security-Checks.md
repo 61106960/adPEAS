@@ -328,6 +328,7 @@ Get-CredentialRoaming -IncludePrivileged
 **What it checks**:
 - GPP passwords in SYSVOL XML files (cpassword attribute, MS14-025)
 - AutoAdminLogon passwords in Registry.xml (plaintext)
+- Passwords in the free text of preference items: the Description on an item's Common tab, the description of a scheduled task itself (General tab), and the description a Local Users and Groups item writes to the local account or group, read field by field with the patterns of the script scan - not the whole file, where every empty `cpassword=""` would read as a mention
 - Hardcoded credentials in NETLOGON/SYSVOL scripts and configuration files (.bat, .cmd, .ps1, .psm1, .psd1, .vbs, .vbe, .kix, .txt, .ini, .inf, .conf, .cnf, .config, .json, .yml, .yaml, .reg, .vnc) and in the two comment files of a policy: GPO.cmt, the comment of the policy itself as the Group Policy Management Console shows it, and comment.cmtx, the comments on its settings - both readable by every authenticated user. Files are decoded by their byte order mark, and UTF-16 without one (as GPO.cmt is written) is recognised. Not GptTmpl.inf - every one names the password policy - and not Registry.pol, which is parsed for password values on its own
 - VNC passwords, decrypted: in VNC viewer connection files (.vnc, with the host they name), in the .ini of UltraVNC and TightVNC, and in the registry values a policy deploys for RealVNC, TightVNC, TigerVNC and UltraVNC (REG_SZ or REG_BINARY). Every VNC installation encrypts the password with the same published DES key, so the stored value is the password
 - Passwords in Windows answer files (unattend XML, recognised by its root element): the administrator, local account, automatic logon and domain join passwords, with values hidden by Windows SIM decoded
@@ -1293,6 +1294,8 @@ Suppressing a finding also keeps it out of the HTML report and the JSON export, 
 comparison will show such a finding as gone once someone disables a link.
 
 **The comment of the policy**: a GPO finding carries `gpoComment`, the comment the Group Policy Management Console shows on the policy's Details tab - read from `GPO.cmt` in the policy's SYSVOL folder, one entry per line. It says what the policy is for, which no other row can. A policy without a comment, or whose `GPO.cmt` could not be read, has no such row. Every authenticated user can read that file; a password typed into it is reported by `Get-CredentialExposure`.
+
+**The description of a preference item**: a finding that comes from a Group Policy Preferences item - a scheduled task, a local group, a registry item, a GPP password - carries the Description from the item's Common tab as `itemDescription`. A scheduled task also carries its own description from the General tab as `TaskDescription`. Both appear only where the box holds text, one entry per line.
 
 **Reading `EffectiveSetting`**: where several GPOs configure the same thing, this row says
 which of them decides the value, and why. It replaced a `True`/`False` called

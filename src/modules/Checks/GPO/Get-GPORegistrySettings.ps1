@@ -722,7 +722,7 @@ function New-RegistryFinding {
     $valueNameText = [string]$entry.ValueName
     if ($valueNameText -eq '*') { $valueNameText = [string]$record.ValueName }
 
-    return [PSCustomObject][ordered]@{
+    $finding = [PSCustomObject][ordered]@{
         GPOName           = $RegMatch.GPOName
         GPOGUID           = $RegMatch.GPOGUID
         GPOPath           = $RegMatch.GPOPath
@@ -736,6 +736,16 @@ function New-RegistryFinding {
         # defines for it. Without it the field existed only in the table and nowhere else.
         ConsoleClass      = $entry.ConsoleClass
     }
+
+    # A preference item (Registry.xml) carries the Description of its Common tab; a value
+    # from Registry.pol or GptTmpl.inf has none, and its record no such property.
+    if ($record.PSObject.Properties['Description']) {
+        $itemDescription = ConvertTo-GPOTextRow -Text ([string]$record.Description)
+        if ($null -ne $itemDescription) {
+            $finding | Add-Member -NotePropertyName 'itemDescription' -NotePropertyValue $itemDescription -Force
+        }
+    }
+    return $finding
 }
 
 

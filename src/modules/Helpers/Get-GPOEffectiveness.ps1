@@ -2374,6 +2374,37 @@ function Get-GPOComment {
 
 <#
 .SYNOPSIS
+    A free text a policy carries - a description or a comment - as the value of one row.
+
+.DESCRIPTION
+    One entry per non-empty line, trimmed: a single line as a string, several as an array,
+    which the output renders one under the other. Nothing for an empty or blank text, so
+    the caller adds no row. Used for the descriptions of Group Policy Preferences items
+    (itemDescription) and of scheduled tasks (TaskDescription).
+
+.PARAMETER Text
+    The text, as the file holds it.
+
+.OUTPUTS
+    String, String[], or nothing.
+#>
+function ConvertTo-GPOTextRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    $lines = @(([string]$Text -split '\r?\n') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($lines.Count -eq 0) { return }
+    if ($lines.Count -eq 1) { return $lines[0] }
+    return ,[string[]]$lines
+}
+
+<#
+.SYNOPSIS
     Adds the WMI filter, loopback and comment rows to a GPO finding, where the policy has them.
 
 .DESCRIPTION

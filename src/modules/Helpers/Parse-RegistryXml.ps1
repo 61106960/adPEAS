@@ -9,7 +9,9 @@
     half of the deployed configuration.
 
     Output records use the same shape as Parse-PRegRecords (Hive, Key, ValueName, Type,
-    ValueInt, ValueString) so both parsers can feed the same evaluation logic.
+    ValueInt, ValueString) so both parsers can feed the same evaluation logic. Three more are
+    the item's own: Action and Disabled (the GPP semantics) and Description, the text of the
+    Description box on the item's Common tab.
 
     Unlike Registry.pol, Registry.xml carries the hive explicitly per item, so the hive is read
     from the XML rather than derived from the file location.
@@ -120,6 +122,8 @@ function Parse-RegistryXml {
                 ValueString = $valueString
                 Action      = $action.ToUpper()
                 Disabled    = ([string]$node.disabled -eq '1')
+                # The Description on the item's Common tab, for the finding to show
+                Description = [string]$node.GetAttribute('desc')
             }
         }
     } catch {

@@ -748,6 +748,21 @@ function Parse-ScheduledTasksXML {
                 _Risk      = $risk
             }
 
+            # What the task is for, in the words of whoever set it up: the description of the
+            # task itself - the General tab, RegistrationInfo/Description in a v2 task and the
+            # comment attribute in a v1 one - and the Description on the item's Common tab.
+            # Two boxes in the editor, two rows here; a row only where the box holds text.
+            $taskDescriptionText = ''
+            if ($taskNode.Properties -and $taskNode.Properties.Task -and $taskNode.Properties.Task.RegistrationInfo) {
+                $taskDescriptionText = [string]$taskNode.Properties.Task.RegistrationInfo.Description
+            } elseif ($taskNode.Properties) {
+                $taskDescriptionText = [string]$taskNode.Properties.GetAttribute('comment')
+            }
+            $taskDescription = ConvertTo-GPOTextRow -Text $taskDescriptionText
+            if ($null -ne $taskDescription) { $taskProps['TaskDescription'] = $taskDescription }
+            $itemDescription = ConvertTo-GPOTextRow -Text ([string]$taskNode.GetAttribute('desc'))
+            if ($null -ne $itemDescription) { $taskProps['itemDescription'] = $itemDescription }
+
             # The program path carries the UNC card where the task runs as SYSTEM, an operator
             # or a Tier 0 account from a share (gpo_task_unc_card). It is yellow on every task
             # (GPO_TASK_FIELD_SEVERITY), and red where a directory every user may write by
