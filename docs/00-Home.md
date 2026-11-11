@@ -50,7 +50,7 @@ adPEAS (Active Directory Privilege Escalation Awesome Scripts) is a PowerShell-b
 
 ## Version Information
 
-- **Current Version**: 2.0.0
+- **Current Version**: 2.10.0
 - **PowerShell Version**: 5.1+ required
 - **Platform**: Windows (tested on Windows 10/11, Server 2016-2025)
 
