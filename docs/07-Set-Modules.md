@@ -475,10 +475,9 @@ Set-CertificateTemplate -Identity "SmartcardUser" -AddSmartcardLogon
 # Backup template before modification
 Set-CertificateTemplate -Identity "WebServer" -Export "C:\Backup\WebServer.json"
 
-# Restore template from backup. Note: -Identity is currently mandatory even with
-# -Import (which reads the names from the file and does not use it), so pass any
-# value to satisfy the parameter.
-Set-CertificateTemplate -Identity "WebServer" -Import "C:\Backup\WebServer.json"
+# Restore template(s) from backup. -Import reads the template names from the file,
+# so no -Identity is needed.
+Set-CertificateTemplate -Import "C:\Backup\WebServer.json"
 
 # Cleanup: Revert ESC1 changes
 Set-CertificateTemplate -Identity "WebServer" -DisableEnrolleeSuppliesSubject -AddManagerApproval

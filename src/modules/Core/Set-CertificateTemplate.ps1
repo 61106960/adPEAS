@@ -159,7 +159,10 @@ function Set-CertificateTemplate {
     [CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact='Low')]
     [OutputType([System.Management.Automation.PSCustomObject])]
     param(
-        [Parameter(Mandatory=$true, Position=0)]
+        # Not mandatory: -Import restores the templates named inside the backup file and does
+        # not use -Identity. Every other operation requires it, enforced in the process block
+        # with a clear message instead of a parameter-binding prompt.
+        [Parameter(Mandatory=$false, Position=0)]
         [Alias('Name')]
         [string]$Identity,
 
@@ -259,6 +262,12 @@ function Set-CertificateTemplate {
         }
 
         try {
+            # Identity is required for every operation except -Import, which takes the
+            # template names from the backup file. Enforced here so -Import works on its own.
+            if (-not $Import -and [string]::IsNullOrEmpty($Identity)) {
+                throw "Set-CertificateTemplate: -Identity is required unless -Import is used."
+            }
+
             # IMPORT MODE: Restore template(s) from JSON backup
             if ($Import) {
                 Write-Log "[Set-CertificateTemplate] Importing template(s) from: $Import"
