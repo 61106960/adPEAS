@@ -6,12 +6,12 @@ Common issues and solutions for adPEAS v2.
 
 ## Connection Issues
 
-### Error: "Cannot connect to Domain Controller"
+### Error: "Connection failed: Server unreachable" / "Domain not found or unreachable"
 
-**Symptoms**:
-- Connection timeout
-- "The server is not operational"
-- "The RPC server is unavailable"
+**Symptoms** (the text adPEAS prints):
+- `Connection failed: Server unreachable` with `Port 389 (LDAP) unreachable on <server>` (or port 636 with `-UseLDAPS`)
+- `Domain not found or unreachable` with `Could not discover a Domain Controller for '<domain>' - DNS resolution failed. Use -Server ...`
+- a connection that hangs until the timeout
 
 **Causes and Solutions**:
 
@@ -44,11 +44,11 @@ Common issues and solutions for adPEAS v2.
 
 ---
 
-### Error: "The user name or password is incorrect"
+### Error: "Authentication failed: Invalid credentials"
 
-**Symptoms**:
-- Authentication failure
-- "Logon failure: unknown user name or bad password"
+**Symptoms** (the text adPEAS prints):
+- `Authentication failed: Invalid credentials` with `Reason: Wrong username or password.`
+- for a Kerberos login, a `Reason:` line naming the KDC error - e.g. `Wrong password, hash, or key.` (KDC 24) or `User not found in the domain.` (KDC 6)
 
 **Solutions**:
 
@@ -73,37 +73,37 @@ Common issues and solutions for adPEAS v2.
 
 ---
 
-### Error: "Kerberos authentication failed"
+### Error: "Kerberos ticket not usable" / "Kerberos authentication failed"
 
-**Symptoms**:
-- "KRB5KDC_ERR_PREAUTH_FAILED"
-- "KRB5KDC_ERR_C_PRINCIPAL_UNKNOWN"
-- Kerberos port 88 timeout
+**What the messages mean** (adPEAS does not print raw `KRB5KDC_*` strings):
+
+- A **KDC error** (wrong password, unknown user, expired or disabled account, wrong realm) is reported as `Authentication failed: Invalid credentials` with a `Reason:` line - see the section above.
+- `Kerberos authentication failed` is the title only for a failure **without** a KDC error code, i.e. a client-side problem such as LDAP error 82 (the ticket could not be used).
+- After a pass-the-ticket, a bind that the DC rejects is reported as `Kerberos ticket not usable`, with its reason; for LDAP 82 the hint points at the system DNS or a VPN.
+
+**Fallback is not automatic.** Only a password login (`-Username`/`-Password` or `-Credential`) can fall back to NTLM then SimpleBind, and even then some KDC errors end the chain straight away (wrong password, unknown user, disabled/locked account, expired password, wrong realm) unless it is a cross-domain login. A hash, key, certificate or ticket login has **no** fallback. `ETYPE_NOSUPP` (the DC offers no supported encryption type) does fall back; with `-UseLDAPS`, a TLS handshake or certificate failure also ends the chain.
 
 **Solutions**:
 
-1. **Port 88 blocked - Use SimpleBind or NTLM**
+1. **Port 88 blocked - use SimpleBind or an NTLM bind** (password logins only)
    ```powershell
-   # Skip Kerberos, use direct LDAP bind
+   # Skip Kerberos, use a direct LDAP SimpleBind
    Connect-adPEAS -Domain "contoso.com" -Username "john.doe" -Password "pass" -ForceSimpleBind
 
-   # Or use NTLM impersonation (keeps existing Kerberos tickets)
+   # Or an explicit NTLM bind (does not touch the Windows Kerberos ticket cache)
    Connect-adPEAS -Domain "contoso.com" -Username "john.doe" -Password "pass" -ForceNTLM
    ```
 
-2. **DNS cannot resolve DC**
-   ```powershell
-   # Use custom DNS
-   Connect-adPEAS -Domain "contoso.com" -DnsServer "10.0.0.1" -Username "john.doe" -Password "pass"
-   ```
+2. **Windows cannot reach the DC's SPN after a pass-the-ticket** (LDAP 82)
+   - `-DnsServer` only steers adPEAS's own lookups; Windows still resolves the DC through the system DNS when it uses the ticket
+   - add `-PatchHostsFile` (needs admin) so Windows can match the `ldap/<DC>` SPN, or fix the system DNS
 
 3. **Time synchronization issue**
-   - Kerberos requires time within 5 minutes of DC
-   - Check system clock
+   - Kerberos requires time within 5 minutes of the DC
+   - Check the system clock
 
 4. **Principal not found**
-   - Verify username exists in domain
-   - Check for typos in domain name
+   - Verify the username exists in the domain and the domain name has no typo
 
 ---
 
@@ -171,6 +171,8 @@ Connect-adPEAS -Domain "contoso.com" -Server "127.0.0.1" -Certificate "user.pfx"
 Connect-adPEAS -Domain "contoso.com" -Server "10.10.10.10" -DnsServer "10.10.10.10" -Username "john.doe" -Password "P@ssw0rd"
 ```
 
+> **If the domain enforces LDAP server signing**, a SimpleBind on port 389 is refused (LDAP error 8). adPEAS reports `LDAP signing required - the simple bind was refused on port 389, auto-upgrading to LDAPS` and retries over LDAPS, so the tunnel must also forward port 636 for `-ForceSimpleBind` to work there.
+
 ---
 
 ### Why Use ForceSimpleBind Over a Tunnel?
@@ -199,7 +201,7 @@ Ensure your tunnel forwards the necessary ports:
 | 88   | TCP | Kerberos | Only if using Kerberos auth |
 | 3268 | TCP | Global Catalog (LDAP) | Optional — cross-domain/forest SID resolution |
 | 3269 | TCP | Global Catalog (LDAPS) | Optional — cross-domain/forest SID resolution (SSL) |
-| 445  | TCP | SMB/CIFS | Only for SMB checks (`Get-SMBSigningStatus`) |
+| 445  | TCP | SMB/CIFS | For every check that reads SYSVOL or NETLOGON - all the GPO checks, credential exposure, LDAP/SMB-signing, domain info, authentication policy silos and add-computer rights (~14 checks), and the opt-in share hunt |
 | 53   | UDP | DNS | Optional — names `Get-NetworkMap` does not find in the AD-integrated zones (none under `-OPSEC`) |
 
 **Minimum for enumeration:** Port 389 (LDAP) + SimpleBind credentials.
@@ -212,7 +214,7 @@ Ensure your tunnel forwards the necessary ports:
 
 The Kerberos ticket was obtained successfully, but Windows did not use it for the LDAP bind. After a pass-the-ticket adPEAS binds with the Kerberos package alone, so the bind fails on your host and nothing else is sent - under Negotiate, Windows would fall back to NTLM with the credentials of your own Windows logon and send them to the target's domain controller. Over a tunnel this typically means the SPN in the service ticket doesn't match the connection target.
 
-Without a tunnel, check the system DNS: Windows looks up the domain controller and the domain through it. A VPN or a second network adapter with its own DNS server can answer those lookups instead of the target's DNS - disconnect it, or set the adapter metrics so the target's DNS server is asked first. Without `-ForceKerberos`, adPEAS continues with NTLM using the account you supplied.
+Without a tunnel, check the system DNS: Windows looks up the domain controller and the domain through it. A VPN or a second network adapter with its own DNS server can answer those lookups instead of the target's DNS - disconnect it, or set the adapter metrics so the target's DNS server is asked first. For a **password** login without `-ForceKerberos`, adPEAS then continues with NTLM using the account you supplied; a hash, key, certificate or ticket login has no such fallback and stops here.
 
 ```powershell
 # Fix: Skip Kerberos, use SimpleBind
@@ -239,10 +241,10 @@ Connect-adPEAS -Domain "contoso.com" -Server "127.0.0.1" -DnsServer "127.0.0.1" 
 
 **Symptom: LDAPS certificate validation error**
 
-The certificate is issued for the DC hostname, not for `127.0.0.1` or `localhost`.
+The certificate is issued for the DC hostname, not for `127.0.0.1` or `localhost`. `-IgnoreSSLErrors` already defaults to `$true`, so validation is off unless you turned it back on with `-IgnoreSSLErrors:$false`; passing the bare switch keeps it off.
 
 ```powershell
-# Ignore certificate hostname mismatch
+# Certificate validation is off by default; pass the switch explicitly to be sure
 Connect-adPEAS -Domain "contoso.com" -Server "127.0.0.1" -UseLDAPS -IgnoreSSLErrors -Username "john.doe" -Password "P@ssw0rd" -ForceSimpleBind
 ```
 
@@ -255,11 +257,11 @@ High-latency connections (SOCKS tunnels, VPN, multi-hop pivots) can cause LDAP q
 **Solution: Increase the timeout**
 
 ```powershell
-# Increase timeout to 120 seconds (recommended for tunneled connections)
-Invoke-adPEAS -Domain "contoso.com" -Server "127.0.0.1" -Username "john.doe" -Password "P@ssw0rd" -ForceSimpleBind -TimeoutSeconds 120
-
-# Or with Connect-adPEAS directly
+# Increase timeout to 120 seconds (recommended for tunneled connections).
+# -ForceSimpleBind and the auth parameters belong on Connect-adPEAS, not
+# Invoke-adPEAS: connect once, then run Invoke-adPEAS against the session.
 Connect-adPEAS -Domain "contoso.com" -Server "127.0.0.1" -Username "john.doe" -Password "P@ssw0rd" -ForceSimpleBind -TimeoutSeconds 120
+Invoke-adPEAS
 
 # Maximum: 600 seconds (10 minutes) for extremely slow connections
 Connect-adPEAS -Domain "contoso.com" -TimeoutSeconds 600 -Username "john.doe" -Password "P@ssw0rd" -ForceSimpleBind
@@ -276,18 +278,14 @@ Connect-adPEAS -Domain "contoso.com" -TimeoutSeconds 600 -Username "john.doe" -P
 
 ### NT Hash Authentication Not Working
 
-**Symptoms**:
-- "Overpass-the-Hash failed"
-- Authentication fails completely (no fallback for hash-based auth)
+**Symptoms** (the text adPEAS prints):
+- `Invalid NT-Hash format: Expected 32 hex chars, got N` - the format is validated before anything is sent
+- for a DC that offers no supported encryption type (`ETYPE_NOSUPP`): with an NT hash the reason names RC4 being disabled; with an AES key it says the account has no AES key
+- authentication fails completely - hash-based auth has no fallback
 
 **Solutions**:
 
-1. **Verify hash format**
-   ```powershell
-   # Must be 32 hex characters
-   $hash = "32ED87BDB5FDC5E9CBA88547376818D4"
-   if ($hash.Length -ne 32) { Write-Error "Invalid hash length" }
-   ```
+1. **Verify hash format** - must be 32 hex characters (adPEAS checks this itself and prints the message above)
 
 2. **RC4 disabled in domain**
    - If RC4 is disabled, NT hash auth will fail
@@ -306,16 +304,15 @@ Connect-adPEAS -Domain "contoso.com" -TimeoutSeconds 600 -Username "john.doe" -P
 
 ### Certificate (PKINIT) Authentication Not Working
 
-**Symptoms**:
-- "PKINIT authentication failed"
-- "Certificate not valid for logon"
+**Symptoms** (the text adPEAS prints):
+- `Certificate load failed`, with hints about the password and the private key
+- a KDC error naming the cause: 77 (the EKU must be Smart Card Logon or Client Authentication), 62 (`Client certificate not trusted by KDC ... DC lacks PKINIT support`), 66 (the certificate does not match the principal), 72 (certificate revoked)
 
 **Solutions**:
 
 1. **Verify certificate requirements**
-   - Must contain private key
-   - Must have Smart Card Logon or Client Auth EKU
-   - Must have UPN or other identity in SAN
+   - Must contain the private key, and have Smart Card Logon or Client Auth EKU
+   - The identity is taken from the SAN UPN; a DNS SAN maps to the computer account `host$`, and the Subject CN is the last resort. If the certificate carries several identities, pick one with `-Username <name>`
 
 2. **Check certificate password**
    ```powershell
@@ -324,32 +321,34 @@ Connect-adPEAS -Domain "contoso.com" -TimeoutSeconds 600 -Username "john.doe" -P
    $cert.Subject
    ```
 
-3. **Certificate expired or revoked**
-   - Check certificate validity dates
-   - Check if CA has revoked the certificate
+3. **DC has no PKINIT support (KDC 62)**
+   - Use `-ForcePassTheCert` to authenticate the certificate over Schannel/LDAPS instead of PKINIT
+
+4. **Certificate expired or revoked**
+   - Check the certificate validity dates and whether the CA has revoked it
 
 ---
 
 ### Kirbi/Ccache Import Not Working
 
-**Symptoms**:
-- "Failed to import ticket"
-- "Access denied"
+**Symptoms** (the text adPEAS prints):
+- `Invalid ticket file format` - the file could not be parsed (only ccache v3/v4 is accepted)
+- `Ticket import failed (Pass-the-Ticket)`; for NTSTATUS `0xC000009A` the detail is `PTT requires domain-joined machine or elevated privileges`
+- `Ticket is EXPIRED` (a warning) for a ticket past its lifetime
+- since 2.10.0, a ticket that imports but the DC will not accept is reported as `Kerberos ticket not usable` - there is no fallback
 
 **Solutions**:
 
 1. **Restrictive LSA policy**
    - adPEAS uses `LsaConnectUntrusted` which does NOT require admin rights
-   - In rare cases, restrictive security policies may block LSA access
+   - In rare cases, restrictive security policies may block LSA access; NTSTATUS `0xC000009A` points to a non-domain-joined host or missing elevation
    - Try running from a different session or machine
 
 2. **Ticket expired**
-   - Check ticket expiration time
-   - Request a new ticket
+   - Check ticket expiration time and request a new ticket
 
 3. **Wrong ticket type**
-   - Ensure it's a TGT (krbtgt service)
-   - Or a service ticket for LDAP
+   - Ensure it's a TGT (krbtgt service) or a service ticket for LDAP
 
 ---
 
