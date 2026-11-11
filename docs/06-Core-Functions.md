@@ -20,6 +20,9 @@ Core functions provide LDAP-based data retrieval and manipulation for Active Dir
 | [Get-ObjectACL](#get-objectacl) | Retrieve Access Control Lists |
 | [Get-DomainWriteAccess](#get-domainwriteaccess) | What an account may write in the directory, and through which group |
 | [Get-CertificateTemplate](#get-certificatetemplate) | Query certificate templates |
+| [Get-CertificateAuthority](#get-certificateauthority) | Query certificate authorities |
+| [Invoke-LDAPSearch](#invoke-ldapsearch) | Low-level LDAP search engine |
+| [Get-DomainDNSZone / Get-DomainDNSRecord](#get-domaindnszone--get-domaindnsrecord) | Query AD-integrated DNS zones and records |
 
 ### Modification & Creation Functions
 
@@ -887,6 +890,89 @@ Get-CertificateTemplate -Identity "VulnTemplate" -Export -ExportPath "C:\backup\
 - `pKIExtendedKeyUsage` - EKU OIDs
 - `msPKI-Certificate-Application-Policy` - Application policies
 - `nTSecurityDescriptor` - ACL (who can enroll)
+
+---
+
+## Get-CertificateAuthority
+
+Retrieves AD CS Certificate Authorities (the Enrollment Services objects in the Configuration partition).
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-Identity` | String | CA name (optional; all CAs if omitted) |
+| `-Properties` | String[] | Array of attribute names to return |
+| `-Domain` | String | Target domain (FQDN) |
+| `-Server` | String | Specific Domain Controller to query |
+| `-Credential` | PSCredential | PSCredential object for authentication |
+
+### Examples
+
+```powershell
+# All enterprise CAs
+Get-CertificateAuthority
+
+# One CA by name
+Get-CertificateAuthority -Identity "contoso-CA01-CA"
+```
+
+---
+
+## Invoke-LDAPSearch
+
+The low-level LDAP search engine. All `Get-Domain*` functions build on it; call it directly only when a query cannot be expressed through them (for example a read of the Configuration partition by explicit `-SearchBase`, or a deleted-object read).
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-Filter` | String | LDAP filter (required) |
+| `-SearchBase` | String | Search base DN; defaults to the domain DN |
+| `-Properties` | String[] | Attributes to return |
+| `-AdditionalProperties` | String[] | Extra attributes added to the default set |
+| `-Scope` | String | `Base`, `OneLevel` or `Subtree` (default `Subtree`) |
+| `-PageSize` | Int | Page size for paged results (default 1000) |
+| `-SizeLimit` | Int | Maximum results, 0 = unlimited |
+| `-Raw` | Switch | Return unconverted LDAP values |
+| `-CountOnly` | Switch | Return only the number of matches |
+| `-IncludeDeleted` | Switch | Send the show-deleted control (1.2.840.113556.1.4.417) so deleted objects are returned |
+| `-LdapConnection` | Object | Use a specific connection (e.g. a Global Catalog connection) instead of `$Script:LdapConnection` |
+
+### Examples
+
+```powershell
+# Count matches only
+Invoke-LDAPSearch -Filter "(objectClass=user)" -CountOnly
+
+# Read the Configuration partition by explicit base
+Invoke-LDAPSearch -Filter "(objectClass=certificationAuthority)" -SearchBase "CN=Configuration,DC=contoso,DC=com"
+```
+
+---
+
+## Get-DomainDNSZone / Get-DomainDNSRecord
+
+Read Active Directory-integrated DNS over LDAP. `Get-DomainDNSZone` lists the forward lookup zones; `Get-DomainDNSRecord` decodes the address records of one or more zones.
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-Zone` | Object[] | Zone(s) to read records from (`Get-DomainDNSRecord`); accepts the output of `Get-DomainDNSZone` |
+| `-Domain` | String | Target domain (FQDN) |
+| `-Server` | String | Specific Domain Controller to query |
+| `-Credential` | PSCredential | PSCredential object for authentication |
+
+### Examples
+
+```powershell
+# List the AD-integrated forward lookup zones
+Get-DomainDNSZone
+
+# Decode the records of every zone
+Get-DomainDNSZone | Get-DomainDNSRecord
+```
 
 ---
 

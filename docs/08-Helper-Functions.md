@@ -10,16 +10,18 @@ Helper functions provide supporting functionality for core operations and securi
 
 | Category | Functions |
 |----------|-----------|
-| [Session Management](#session-management) | Connect-adPEAS, Disconnect-adPEAS, Get-adPEASSession, Ensure-LDAPConnection |
-| [Logging](#logging) | Write-Log |
-| [Tab-Completion](#tab-completion) | Build-CompletionCache, Clear-CompletionCache, Get-CompletionCacheStats |
+| [Session Management](#session-management) | Connect-adPEAS, Disconnect-adPEAS, Get-adPEASSession, Build-CompletionCache, Clear-CompletionCache, Get-CompletionCacheStats |
 | [Kerberos Authentication](#kerberos-authentication) | Invoke-KerberosAuth, Request-ServiceTicket, Import-KerberosTicket, Invoke-UnPACTheHash |
 | [Password Hash Derivation](#password-hash-derivation) | Get-Hash |
 | [SID and ACL Utilities](#sid-and-acl-utilities) | ConvertFrom-SID, ConvertTo-SID, ConvertTo-LDAPSIDHex, Test-IsPrivileged, Get-ObjectOwner |
 | [Credential Decryption](#credential-decryption) | ConvertFrom-GPPPassword, ConvertFrom-VBE |
 | [Testing Functions](#testing-functions) | Invoke-Kerberoast, Invoke-ASREPRoast |
 | [ADCS Certificate Enrollment](#adcs-certificate-enrollment) | Request-ADCSCertificate |
+| [LAPS Utilities](#laps-utilities) | Get-LAPSGPOConfig, Get-OUPermissions |
+| [GPO Utilities](#gpo-utilities) | Get-GPOLinkage |
 | [Network Utilities](#network-utilities) | Invoke-PortScan, Invoke-SMBAccess, Resolve-adPEASName |
+
+> Not every function above has its own subsection yet; the tab-completion cache functions are documented under Session Management.
 
 ---
 
@@ -112,7 +114,7 @@ Build-CompletionCache
 # Build cache for specific types only
 Build-CompletionCache -ObjectTypes @('Users', 'Groups')
 
-# Available types: Users, Computers, Groups, GPOs, All (default)
+# Available types: Users, Computers, Groups, GPOs, Templates, Containers, All (default)
 ```
 
 **Note**: Requires an active LDAP connection (`Connect-adPEAS` must be called first).
@@ -145,7 +147,9 @@ Users       : 523
 Computers   : 87
 Groups      : 142
 GPOs        : 31
-Total       : 783
+Templates   : 24
+Containers  : 65
+Total       : 872
 CacheExists : True
 ```
 
@@ -161,6 +165,8 @@ CacheExists : True
 | Computers | sAMAccountName (without $) | `DC01`, `WS001` |
 | Groups | sAMAccountName | `Domain Admins`, `IT-Support` |
 | GPOs | displayName | `Default Domain Policy` |
+| Templates | template name | `User`, `Machine` |
+| Containers | DN | `CN=Users,DC=contoso,DC=com` |
 
 **Important Notes**:
 - Cache is stored in memory only - cleared when PowerShell session ends
@@ -495,17 +501,30 @@ if ($result.Reason -like "*sIDHistory*") {
 
 ### Get-ObjectOwner
 
-Retrieves the owner of an AD object.
+Retrieves the owner of an AD object. Takes a DN with `-DistinguishedName`, or an object (including from the pipeline) with `-ADObject`. `-NonDefaultOnly` returns nothing when the owner is a default owner (Domain/Enterprise Admins, Administrators or SYSTEM).
 
 ```powershell
 $owner = Get-ObjectOwner -DistinguishedName "CN=Computer01,CN=Computers,DC=contoso,DC=com"
+
+# Only objects whose owner is not a default owner
+Get-DomainComputer | Get-ObjectOwner -NonDefaultOnly
 ```
 
-**Returns**:
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-DistinguishedName` | String | DN of the object to read the owner of |
+| `-ADObject` | Object | An AD object (accepts pipeline input) instead of a DN |
+| `-NonDefaultOnly` | Switch | Return only objects whose owner is not a default owner |
+
+**Returns** a PSCustomObject:
 ```powershell
-@{
-    OwnerSID  = "S-1-5-21-..."
-    OwnerName = "CONTOSO\Domain Admins"
+[PSCustomObject]@{
+    OwnerSID          = "S-1-5-21-..."
+    OwnerName         = "CONTOSO\Domain Admins"
+    IsDefaultOwner    = $true          # Domain/Enterprise Admins, Administrators or SYSTEM
+    DistinguishedName = "CN=Computer01,CN=Computers,DC=contoso,DC=com"
 }
 ```
 
@@ -778,12 +797,17 @@ $perms = Get-OUPermissions -DistinguishedName "OU=Admins,DC=contoso,DC=com" -Che
 - `GroupMembership` - Group membership modification (member attribute)
 - `SPNModification` - SPN modification (servicePrincipalName, Validated-SPN)
 - `DNSHostName` - DNS hostname modification (dNSHostName, Validated-DNS-Host-Name)
+- `KeyCredentialLink` - Shadow Credentials (msDS-KeyCredentialLink)
 - `ScriptPath` - Logon script path modification (scriptPath)
 - `Delegation` - Delegation attribute modification (msDS-AllowedToDelegateTo, msDS-AllowedToActOnBehalfOfOtherIdentity)
 - `LAPS` - LAPS password read (Legacy ms-Mcs-AdmPwd + Windows LAPS attributes)
 - `CredentialRoaming` - read of the Credential Roaming attributes on user objects (ms-PKI-DPAPIMasterKeys, ms-PKI-AccountCredentials, ms-PKI-RoamingTimeStamp)
+- `BitLocker` - read of BitLocker recovery information (msFVE-RecoveryInformation)
 - `ObjectCreation` - CreateChild rights (User, Computer, Group, OU creation)
 - `GPOLinking` - GPO link modification (gPLink attribute on OUs)
+- `Ownership` - owner of the OU (WriteOwner holder / current owner)
+
+**Parameter `-ExcludeInherited`**: report only ACEs defined on the OU itself, dropping inherited ones.
 
 **Finding fields**: `CheckType`, `Right`, `Principal`, `SID`, `Severity`, `InheritedFrom`. `CredentialRoaming` findings additionally carry `GrantsControlAccess`, because a confidential attribute needs `READ_PROPERTY` **and** `CONTROL_ACCESS` while a non-confidential one needs only the former — the schema decides, and only the caller knows what it says.
 
