@@ -612,19 +612,17 @@ Invoke-Kerberoast -SAMAccountName "svc_sql" -Credential (Get-Credential)
 **Return Object:**
 ```powershell
 [PSCustomObject]@{
-    Success          = $true/$false
-    SAMAccountName   = "svc_sql"
-    SPN              = "MSSQLSvc/db01.contoso.com:1433"
-    Hash             = "$krb5tgs$23$*svc_sql$CONTOSO.COM$MSSQLSvc/db01...*"
-    EncryptionType   = 23
+    Success            = $true/$false
+    EncryptionType     = 23                  # 23=RC4, 17=AES128, 18=AES256
     EncryptionTypeName = "RC4-HMAC"
-    HashcatMode      = 13100
-    Method           = "WindowsAPI" / "InMemory"
-    Error            = $null / "Error message"
+    Severity           = "Critical"          # Critical (RC4), Medium (AES128), Low (AES256)
+    HashcatMode        = 13100               # TGS-REP mode: 13100 RC4, 19600 AES128, 19700 AES256
+    Hash               = "$krb5tgs$23$*svc_sql$CONTOSO.COM$MSSQLSvc/db01...*"
+    Error              = $null / "Error message"
 }
 ```
 
-**Output**: Hashcat-compatible hash (mode 13100 for RC4, 19700 for AES)
+**Output**: Hashcat-compatible hash - TGS-REP mode 13100 for RC4, 19600 for AES128, 19700 for AES256. (There is no `Method` field.)
 
 ---
 
@@ -655,7 +653,7 @@ $result = Invoke-ASREPRoast -SAMAccountName "vulnuser" -Domain "contoso.com" -Do
 # Check result
 if ($result.Success) {
     $result.Hash          # Hashcat/John compatible hash
-    $result.Severity      # "CRITICAL" (RC4), "HIGH" (AES128), "MEDIUM" (AES256)
+    $result.Severity      # "Critical" (RC4), "Medium" (AES128), "Low" (AES256)
 }
 ```
 
@@ -666,14 +664,14 @@ if ($result.Success) {
     Success            = $true/$false
     EncryptionType     = 23                  # 23=RC4, 17=AES128, 18=AES256
     EncryptionTypeName = "RC4-HMAC"
-    Severity           = "CRITICAL"          # Based on encryption type
-    Description        = "Very fast to crack"
+    Severity           = "Critical"          # Critical (RC4), Medium (AES128), Low (AES256)
+    Description        = "Weak - very fast to crack"
     Hash               = "$krb5asrep$23$vulnuser@CONTOSO.COM:checksum$encrypted"
     Error              = $null / "Error message"
 }
 ```
 
-**Output**: Hashcat-compatible hash (mode 18200 for RC4, mode 19600 for AES)
+**Output**: Hashcat-compatible hash - AS-REP mode 18200, which exists for RC4 only; an AES AS-REP has no Hashcat AS-REP mode.
 
 ---
 
@@ -709,28 +707,31 @@ Request-ADCSCertificate -TemplateName "User" -Subject "CN=Test" -NoPassword
 Request-ADCSCertificate -TemplateName "User" -Credential (Get-Credential)
 ```
 
-**Parameters**:
-- `-CAServer` - CA FQDN (auto-discovered if omitted and session exists)
-- `-TemplateName` - Certificate template name (required)
+**Parameters** (key ones; see [Set- & New-Module Reference](07-Set-Modules.md#request-adcscertificate) for the full list):
+- `-CAServer` / `-CAName` - CA host and, if it runs several CAs, the CA name (auto-discovered if omitted and a session exists)
+- `-TemplateName` - Certificate template name. Optional; omitted with `-RetrieveID`
 - `-Impersonate` - Convenience parameter: sets Subject + appropriate SAN automatically
-- `-Subject` - Certificate subject (CN= prefix added if missing)
-- `-UPN` - UPN for SAN (e.g., `admin@contoso.com`)
-- `-DNS` - DNS name for SAN (e.g., `srv01.contoso.com`)
-- `-ModifyTemplate` - ESC4: Backup → Modify → Request → Restore
-- `-NoPassword` - Export PFX without password
-- `-UseHTTP` - Force HTTP (skip HTTPS)
-- `-OutputPath` - Custom PFX path
-- `-PassThru` - Return result object for scripting
+- `-Subject`, `-UPN`, `-DNS`, `-AlternativeNames` - subject and SAN
+- `-SID` / `-NoSID`, `-ApplicationPolicies` - the security-extension SID and application-policy OIDs
+- `-OnBehalfOf` / `-PFX` / `-PFXPassword` - ESC3: request on behalf of another principal with an enrollment-agent certificate
+- `-RetrieveID` / `-KeyFile` - retrieve a previously submitted (pending) request
+- `-Method {Auto|Web|COM}`, `-Port`, `-UseHTTP` - submission method and endpoint
+- `-ModifyTemplate` - ESC4: Backup -> Modify -> Request -> Restore
+- `-NoPassword`, `-OutputPath`, `-PassThru`, `-Force`
 
 **Return** (with `-PassThru`):
 ```powershell
 [PSCustomObject]@{
-    Success       = $true
-    PFXPath       = ".\administrator_20260222_125500.pfx"
-    PFXPassword   = "K8#mP2@xL9!nQ4$wR7"
-    CAServer      = "ca01.contoso.com"
-    TemplateName  = "VulnTemplate"
-    RequestID     = 142
+    Success     = $true
+    Status      = "Issued"
+    RequestID   = 142
+    PFXPath     = ".\administrator_20260222_125500.pfx"
+    PFXPassword = "<generated>"
+    Thumbprint  = "..."
+    Subject     = "CN=Administrator"
+    Issuer      = "CN=contoso-CA01-CA,..."
+    Template    = "VulnTemplate"
+    CAServer    = "ca01.contoso.com"
 }
 ```
 
