@@ -11,7 +11,7 @@ adPEAS v2 supports multiple authentication methods for maximum flexibility in pe
 | Windows Auth         | `-UseWindowsAuth`                  | SSPI      | N/A (Windows handles)  |
 | PSCredential         | `-Credential`                      | Yes       | NTLM → SimpleBind      |
 | Username/Password    | `-Username` `-Password`            | Yes       | NTLM → SimpleBind      |
-| NTLM Impersonation   | `-ForceNTLM`                       | No        | No (NTLM only)         |
+| NTLM bind            | `-ForceNTLM`                       | No        | No (NTLM only)         |
 | NT-Hash (OPtH)       | `-Username` `-NTHash`              | Yes       | No (requires Kerberos) |
 | AES256 Key (PtK)     | `-Username` `-AES256Key`           | Yes       | No (requires Kerberos) |
 | AES128 Key (PtK)     | `-Username` `-AES128Key`           | Yes       | No (requires Kerberos) |
@@ -31,10 +31,10 @@ adPEAS v2 attempts Kerberos authentication by default for all methods. The authe
 1. Obtain TGT (AS-REQ/AS-REP)
    - For password auth: Try ETypes in order (AES256 → AES128 → RC4)
    - For hash/key auth: Use fixed EType based on key type
-2. Request LDAP and CIFS service tickets (TGS-REQ/TGS-REP)
+2. Request LDAP and CIFS service tickets (TGS-REQ/TGS-REP), offering AES256, AES128, RC4 in that order
 3. Import tickets into Windows session (Pass-the-Ticket)
-4. Connect to LDAP and CIFS using Kerberos authentication
-5. If Kerberos fails -> Tiered fallback (unless disabled)
+4. Connect to LDAP and CIFS - after a pass-the-ticket the bind uses the Kerberos package alone (never Negotiate), so it does not silently fall back to NTLM with your own Windows logon
+5. If Kerberos fails -> Tiered fallback, for password logins only (unless disabled)
 ```
 
 ### Encryption Type (EType) Fallback
@@ -76,33 +76,38 @@ This means you can enter `administrator` (lowercase) and adPEAS will automatical
 
 ### Tiered Fallback System
 
-When Kerberos authentication fails (e.g., port 88 blocked, DNS issues), adPEAS uses a tiered fallback:
+The fallback is only for a **password** login (`-Username`/`-Password` or `-Credential`). A hash, key, certificate or ticket login has no fallback - it stops at its own method. When a password-based Kerberos attempt fails (e.g., port 88 blocked, DNS issues), adPEAS falls back:
 
 ```
 Kerberos PTT (Primary)
         ↓ fails
-NTLM Impersonation (1st Fallback)
+NTLM bind (1st Fallback)
+   - Explicit NTLM on the LDAP connection (AuthType Ntlm), not a logon impersonation
    - Supports LDAP signing
    - No cleartext credentials over network
         ↓ fails (e.g., NTLM disabled)
 SimpleBind (Final Fallback)
    - Direct LDAP bind with credentials
-   - Fails if "LDAP Server Signing Requirements = Require signing"
+   - Refused if "LDAP Server Signing Requirements = Require signing" (adPEAS then auto-upgrades to LDAPS)
 ```
 
+Some KDC errors end the chain immediately with **no** fallback (wrong password, unknown user, disabled/locked account, expired password, wrong realm), unless it is a cross-domain login; `ETYPE_NOSUPP` does fall back. With `-UseLDAPS`, a TLS handshake or certificate failure also ends the chain.
+
 **Why NTLM before SimpleBind?**
-- NTLM Impersonation supports LDAP signing (required in hardened environments)
+- The NTLM bind supports LDAP signing (required in hardened environments)
 - No cleartext credentials transmitted over the network
-- SimpleBind fails when LDAP signing is required
+- SimpleBind is refused when LDAP signing is required
 
 ### Control Flags
 
 | Flag                    | Effect                                                    |
 | ----------------------- | --------------------------------------------------------- |
 | `-ForceSimpleBind`      | Force SimpleBind, skip Kerberos AND NTLM                  |
-| `-ForceNTLM`            | Force NTLM Impersonation (runas /netonly style)           |
+| `-ForceNTLM`            | Force an explicit NTLM bind (password credentials only)   |
 | `-ForceKerberos`        | Force Kerberos, fail if unavailable (no fallback)         |
 | `-ForcePassTheCert`     | Force Schannel (TLS client certificate) instead of PKINIT |
+
+The three `-Force*` switches are mutually exclusive. `-ForceNTLM` exists only in the password parameter sets. `-ForceSimpleBind` and `-ForceKerberos` have no effect with `-UseWindowsAuth`, and `-ForceKerberos` has none with `-ForcePassTheCert` (adPEAS warns in those cases). `-NTHash`/`-AES*Key` combined with `-ForceSimpleBind` fails - SimpleBind needs a password.
 
 
 ---
@@ -114,6 +119,8 @@ Uses the current Windows user context via SSPI (Security Support Provider Interf
 ```powershell
 Connect-adPEAS -Domain "contoso.com" -UseWindowsAuth
 ```
+
+`-Domain` is optional with `-UseWindowsAuth`; without it the current domain is used.
 
 **Requirements**:
 - Domain-joined machine, or
@@ -142,7 +149,7 @@ Connect-adPEAS -Domain "contoso.com" -Credential $cred
 
 **Authentication Flow**:
 1. Kerberos: TGT request with password-derived key (AES256 default)
-2. Fallback 1: NTLM Impersonation (supports LDAP signing)
+2. Fallback 1: NTLM bind (supports LDAP signing)
 3. Fallback 2: LDAP SimpleBind with credentials
 
 ---
@@ -166,9 +173,9 @@ Connect-adPEAS -Domain "contoso.com" -Username "john.doe" -Password $securePass
 
 ---
 
-## NTLM Impersonation
+## NTLM Bind (`-ForceNTLM`)
 
-Uses `LogonUser()` with `LOGON32_LOGON_NEW_CREDENTIALS` to simulate `runas /netonly`.
+Binds the LDAP connection with NTLM directly - `AuthType Ntlm` (Sicily) plus the supplied credential. Nothing is impersonated: there is no `LogonUser()`/`ImpersonateLoggedOnUser()` and no `runas /netonly`. The Windows logon's Kerberos tickets are left untouched because adPEAS never changes the ticket cache for this path. SMB access in this mode uses `New-PSDrive -Credential`, and `Get-adPEASSession` shows the method as `NTLM (LDAP)` or `NTLM (LDAPS)`.
 
 ```powershell
 # With Username/Password
@@ -180,28 +187,20 @@ Connect-adPEAS -Domain "contoso.com" -Credential $cred -ForceNTLM
 ```
 
 **Key Advantages**:
-- Does NOT modify the Kerberos ticket cache
-- Original Kerberos tickets remain intact
-- Uses NTLM Challenge/Response for network authentication
+- Does NOT touch the Kerberos ticket cache; the Windows logon's tickets remain intact
+- Uses NTLM Challenge/Response for the LDAP bind
 - Supports LDAP Signing (unlike SimpleBind)
 - Works without LDAPS
 
-**How It Works**:
-1. `LogonUser()` creates a new logon session with alternate credentials
-2. `ImpersonateLoggedOnUser()` impersonates this token in the current thread
-3. All network operations (LDAP, SMB) use NTLM with the impersonated credentials
-4. Local operations still use the original user context
-5. `Disconnect-adPEAS` reverts the impersonation
-
 **Best for**:
-- Domain-joined machines where you want to keep existing Kerberos tickets
+- Machines where you want to keep the current Windows Kerberos tickets
 - Environments where SimpleBind is restricted but NTLM is allowed
-- Quick credential testing without affecting Kerberos ticket cache
+- Quick credential testing
 
 **Limitations**:
-- Cannot use Kerberos authentication (NTLM only)
-- Some services may reject NTLM authentication
-- Requires valid credentials (no hash-based auth)
+- Not Kerberos (NTLM only); some environments disable NTLM
+- Password credentials only (`-Username`/`-Password` or `-Credential`) - no hash, key or ticket
+- The `-ForceNTLM` parameter exists only in the password parameter sets
 
 ---
 
@@ -303,9 +302,11 @@ Connect-adPEAS -Domain "contoso.com" -Certificate $pfxBase64 -CertificatePasswor
 - PKCS#12 format (.pfx or .p12)
 - Contains private key
 - Valid for Smart Card Logon or Client Authentication
-- UPN or other identity in Subject Alternative Name (SAN)
+- An identity in the Subject Alternative Name: a UPN SAN maps to that account, a DNS SAN maps to the computer account `host$`, and the Subject CN is the last resort. If the certificate carries several identities, pick one with `-Username <name>`.
 
-**No Fallback**: PKINIT requires Kerberos and cannot fall back to SimpleBind.
+**No Fallback**: PKINIT requires Kerberos and cannot fall back to SimpleBind. If the DC lacks PKINIT support (KDC error 62), use `-ForcePassTheCert` to authenticate the certificate over Schannel/LDAPS instead.
+
+**Errors adPEAS prints**: `Certificate load failed` (with password / private-key hints), KDC 77 (EKU must be Smart Card Logon or Client Authentication), KDC 62 (certificate not trusted / DC lacks PKINIT), KDC 66 (certificate does not match the principal), KDC 72 (certificate revoked).
 
 ### UnPAC-the-Hash (Automatic NT Hash Recovery)
 
@@ -479,7 +480,7 @@ Connect-adPEAS -Domain "contoso.com" -Ccache "BQQADAAd..."
 Connect-adPEAS -Domain "contoso.com" -UseWindowsAuth -UseLDAPS
 ```
 
-Force encrypted LDAP connection (port 636).
+Force encrypted LDAP connection (port 636). Server-certificate validation is governed by `-IgnoreSSLErrors`, which **defaults to `$true`** - validation is off unless you pass `-IgnoreSSLErrors:$false`. `-UseLDAPS` has no fallback to plain LDAP.
 
 ### Specific Domain Controller
 
@@ -495,7 +496,7 @@ Target a specific DC instead of auto-discovery.
 Connect-adPEAS -Domain "contoso.com" -UseWindowsAuth -DnsServer "10.0.0.1"
 ```
 
-Use custom DNS for name resolution (useful for non-domain-joined systems).
+Use custom DNS for name resolution (useful for non-domain-joined systems). `-DnsServer` steers **adPEAS's own** lookups only; once Kerberos tickets are imported, Windows still resolves the DC and domain through the system DNS when it uses the ticket. If that resolves wrongly (a VPN, a second adapter), the Kerberos bind fails with LDAP 82 - add `-PatchHostsFile` (needs admin, works together with `-DnsServer`) so Windows can match the DC's SPN, or fix the system DNS.
 
 ---
 
@@ -546,9 +547,22 @@ Connect-adPEAS -Domain "contoso.com" -Username "john.doe" -Password "pass" -Forc
 ### Scenario: Keep Existing Kerberos Tickets
 
 ```powershell
-# Use NTLM impersonation to avoid overwriting Kerberos tickets
+# Use an NTLM bind to avoid touching the Windows Kerberos ticket cache
 Connect-adPEAS -Domain "contoso.com" -Username "john.doe" -Password "pass" -ForceNTLM
 ```
+
+### Scenario: Cross-Domain Login
+
+```powershell
+# NetBIOS prefix differing from the target -> NTLM/SimpleBind (Kerberos is skipped,
+# the KDC cannot be discovered), reported as "Cross-domain authentication (NetBIOS)"
+Connect-adPEAS -Domain "contoso.com" -Username "OTHERDOM\user" -Password "pass"
+
+# An FQDN prefix or a UPN realm lets the TGT be fetched from the user's realm KDC
+Connect-adPEAS -Domain "contoso.com" -Username "user@otherdom.example" -Password "pass"
+```
+
+adPEAS does not chase cross-realm referrals; the error message lists the fixes (OS DNS that resolves both realms, an account in the target domain, or a password instead of a hash). A hash or key login, and `-ForceKerberos`, need an FQDN/UPN - they fail with a NetBIOS prefix.
 
 ### Scenario: Kerberos Required (Security Policy)
 
@@ -572,8 +586,10 @@ Shows:
 - Domain Controller
 - Authentication method
 - Protocol (LDAP/LDAPS)
-- Authenticated user
+- Authenticated user and its User SID
+- for a Kerberos session: the TGT encryption type, validity, clock skew and TGT status
 - NT-Hash (if recovered via UnPAC-the-Hash after PKINIT authentication)
+- under Windows auth, when the logon session's network credentials belong to another account (after `runas /netonly` or an outside pass-the-ticket): a `Local Identity:` row and `Identity Mismatch: DETECTED`
 
 ### Test Connection
 
