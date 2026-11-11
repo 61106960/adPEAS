@@ -17,6 +17,7 @@ Helper functions provide supporting functionality for core operations and securi
 | [Credential Decryption](#credential-decryption) | ConvertFrom-GPPPassword, ConvertFrom-VBE |
 | [Testing Functions](#testing-functions) | Invoke-Kerberoast, Invoke-ASREPRoast |
 | [ADCS Certificate Enrollment](#adcs-certificate-enrollment) | Request-ADCSCertificate |
+| [Credential and Ticket Operations](#credential-and-ticket-operations) | Invoke-DCSync, Invoke-PasswordSpray, Invoke-TicketForge, Invoke-ConstrainedDelegation, Invoke-RBCD |
 | [LAPS Utilities](#laps-utilities) | Get-LAPSGPOConfig, Get-OUPermissions |
 | [GPO Utilities](#gpo-utilities) | Get-GPOLinkage |
 | [Network Utilities](#network-utilities) | Invoke-PortScan, Invoke-SMBAccess, Resolve-adPEASName |
@@ -746,6 +747,88 @@ Request-ADCSCertificate -TemplateName "User" -Credential (Get-Credential)
 - Firewall blocks HTTP/HTTPS → COM/RPC tried (if DCOM allowed)
 - Only HTTP available → Automatic fallback from HTTPS to HTTP
 - No manual intervention needed - best method selected automatically
+
+---
+
+## Credential and Ticket Operations
+
+These functions carry out active, offensive operations for authorized testing (they also appear in `Get-adPEASHelp` under "Credential Attacks" and "Offensive Actions"). Documented here at reference level; see the function's own `Get-Help -Detailed` for full usage.
+
+### Invoke-DCSync
+
+Replicates Active Directory objects using the DRSUAPI protocol to extract credential material (requires the replication rights `Get-DangerousACLs` flags, DS-Replication-Get-Changes[-All]).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-Identity` | String | Account to replicate (default: `krbtgt`) |
+| `-JustNTHash` / `-JustAES` / `-JustLM` / `-JustCleartext` | Switch | Return only that credential form |
+| `-IncludeHistory` | Switch | Include password history |
+| `-AllAccounts` / `-UsersOnly` / `-ComputersOnly` / `-EnabledOnly` | Switch | Scope of accounts to replicate |
+| `-OutputFile` | String | Write the results to a file |
+| `-Domain` / `-Server` / `-Credential` | | Target and auth |
+
+### Invoke-PasswordSpray
+
+Kerberos-based password spray against the domain (AS-REQ per account), with throttling to respect lockout policy.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-UserList` | Object | Accounts to spray |
+| `-Auto` | Switch | Build the user list from the domain |
+| `-Password` / `-PasswordList` | String / Object | One password, or a list to try |
+| `-Delay` / `-Jitter` | Int | Seconds between attempts, and random jitter |
+| `-StopOnSuccess` | Switch | Stop at the first valid credential |
+| `-Force` | Switch | Skip the lockout-safety confirmation |
+| `-OutputFile` | String | Write results to a file |
+| `-Domain` / `-Server` / `-Credential` | | Target and auth |
+
+### Invoke-TicketForge
+
+Forges Kerberos tickets (Golden, Silver, Diamond) for testing.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-Mode` | String | `Golden`, `Silver` or `Diamond` |
+| `-UserName` / `-UserRID` | String / UInt32 | Principal to forge for (default `Administrator`) |
+| `-DomainSID` | String | Domain SID |
+| `-NTHash` / `-AES256Key` / `-AES128Key` | String | The signing key (krbtgt for Golden/Diamond, the service account for Silver) |
+| `-GroupRIDs` / `-ExtraSIDs` | UInt32[] / String[] | Group memberships and extra SIDs in the PAC |
+| `-ServicePrincipalName` / `-ServiceType` / `-TargetComputer` | | The service a Silver ticket targets (`CIFS\|HTTP\|LDAP\|HOST\|MSSQL\|WSMAN`) |
+| `-ValidityDays` | Int | Ticket lifetime |
+| `-OutputKirbi` / `-PTT` | String / Switch | Write a .kirbi, and/or inject into the session |
+| `-BaseUserTGT` / `-BaseUserTGTPath` / `-BaseUserCredential` / `-BaseUserName` / `-BaseUserNTHash` / `-BaseUserAES256Key` | | The real TGT a Diamond ticket is built from |
+| `-Domain` / `-Server` | | Target |
+
+### Invoke-ConstrainedDelegation
+
+Classic constrained-delegation abuse (S4U2Self + S4U2Proxy) from a service account that has `msDS-AllowedToDelegateTo` set.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-ServiceAccount` | String | The account that holds the delegation |
+| `-ImpersonateUser` | String | The user to impersonate |
+| `-TargetSPN` | String | The service to reach |
+| `-ServiceCredential` / `-ServicePassword` / `-ServiceNTHash` / `-ServiceAES256Key` / `-ServiceAES128Key` | | The service account's secret |
+| `-AlternateService` | String[] | Substitute the service class in the final ticket (e.g. LDAP -> CIFS) |
+| `-OutputKirbi` / `-PTT` | String / Switch | Write a .kirbi, and/or inject into the session |
+| `-Domain` / `-Server` | | Target |
+
+### Invoke-RBCD
+
+Resource-based constrained-delegation abuse. Manual mode uses a service account you control; auto mode creates a computer account (needs `MachineAccountQuota > 0`) and sets `msDS-AllowedToActOnBehalfOfOtherIdentity` on the target.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-TargetComputer` | String | Target computer (auto mode) |
+| `-ServiceAccount` | String | Controlled service account (manual mode) |
+| `-ImpersonateUser` | String | The user to impersonate |
+| `-TargetSPN` | String | The service to reach |
+| `-ServiceCredential` / `-ServicePassword` / `-ServiceNTHash` / `-ServiceAES256Key` / `-ServiceAES128Key` | | The service account's secret |
+| `-AlternateService` | String[] | Substitute the service class in the final ticket |
+| `-OutputKirbi` / `-PTT` | String / Switch | Write a .kirbi, and/or inject into the session |
+| `-Domain` / `-Server` | | Target |
+
+> `Invoke-S4U.ps1` defines `Invoke-ConstrainedDelegation` and `Invoke-RBCD`; there is no function named `Invoke-S4U`. `Request-ServiceTicket -S4U2Self`/`-S4U2Proxy` exposes the individual S4U steps for lower-level use.
 
 ---
 
