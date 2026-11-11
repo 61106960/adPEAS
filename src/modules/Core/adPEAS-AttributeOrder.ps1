@@ -416,7 +416,7 @@ $Script:PrimaryAttributes = @{
         'ServerSigning', 'ClientSigning', 'decidedBy'
     )
 
-    # And for the member computers, when no signing policy reaches them
+    # And for the member computers, when no policy that reaches them requires server signing
     EffectiveSMBSigningMembers = @(
         'ServerSigning', 'ClientSigning', 'decidedBy'
     )

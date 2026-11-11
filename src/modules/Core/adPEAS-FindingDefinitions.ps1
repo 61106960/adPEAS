@@ -7316,6 +7316,11 @@ Get-ADObject -SearchBase $schema `
         # finding, a word that only mentions a password is a hint. One pattern covered
         # both and coloured every mention red - the hint objects of that check carried a
         # red row, and a description saying "passwords" anywhere in the report did too.
+
+            # What a member computer gets when no policy that reaches it requires server
+            # signing - Get-SMBSigningStatus's member posture. Not one policy's silence but
+            # the state in force, the one an SMB relay needs, so a finding.
+            @{ Attribute = 'ServerSigning'; Pattern = '^Not required \('; Severity = 'Finding' }
         # The hint triggers exclude the assignment, so at most one of the two matches.
         # Every attribute the check reads, not description and info alone - see the lists
         # at the top of this file. The link and path attributes take the assignment only,

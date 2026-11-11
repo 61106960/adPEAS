@@ -1518,6 +1518,99 @@ function Resolve-GPOSettingPrecedence {
 
 <#
 .SYNOPSIS
+    Decides, setting by setting, which policy's value a member computer gets from the
+    domain root and its site.
+
+.DESCRIPTION
+    The member computers' counterpart of Resolve-GPOSettingPrecedence, for a computer in an
+    OU that links no policy of its own setting the value: what reaches it then is what is
+    linked at the domain root and on its site. Group Policy applies the site first and the
+    domain after it, so the domain wins - unless a link is enforced. Enforced links are
+    applied after all others, the one higher up last, so an enforced site link beats an
+    enforced domain link, and both beat every link that is not enforced. Within a container
+    the lower link order wins. The ranks are Get-GPODCPrecedence's.
+
+    A policy linked to an OU takes no part: it reaches the members in that OU only.
+
+    Not decided: inheritance blocked on the way to an OU, and which site a computer is in -
+    a link on any site is read as reaching members.
+
+.PARAMETER Finding
+    The GPO findings to rank, with the GUID in Name.
+
+.PARAMETER Setting
+    The settings to decide, each @{ Property = '<attribute>'; Label = '<words>' }.
+
+.PARAMETER Linkage
+    Get-GPOLinkage's map, keyed by upper-case GUID.
+
+.OUTPUTS
+    [hashtable] Property -> the winning finding, for every setting some policy configures.
+#>
+function Resolve-GPOMemberBaselinePrecedence {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Finding,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable[]]$Setting,
+
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [hashtable]$Linkage
+    )
+
+    $contest = @()
+    foreach ($policy in @(@($Finding) | Where-Object { $_ })) {
+        # Get-GPOLinkage's map is a PowerShell hashtable, which looks a key up whatever its
+        # case - a GPO whose GUID comes in lower case is found all the same.
+        $guid = [string]$policy.Name
+        if ($null -eq $Linkage -or -not $Linkage.ContainsKey($guid)) { continue }
+
+        # The policy's best link at the domain root or on a site.
+        $best = $null
+        foreach ($link in @($Linkage[$guid])) {
+            if (-not $link -or $link.IsDisabled) { continue }
+            $rank = $null
+            if ([string]$link.Scope -eq 'Site') {
+                $rank = $(if ($link.IsEnforced) { 0 } else { 70 })
+            } elseif ([string]$link.Scope -eq 'Domain') {
+                $rank = $(if ($link.IsEnforced) { 10 } else { 60 })
+            }
+            if ($null -eq $rank) { continue }
+            $order = $(if ($link.LinkOrder) { [int]$link.LinkOrder } else { 999 })
+            if ($null -eq $best -or $rank -lt $best.Rank -or ($rank -eq $best.Rank -and $order -lt $best.Order)) {
+                $best = @{ Rank = $rank; Order = $order }
+            }
+        }
+        if ($best) {
+            $contest += [PSCustomObject]@{ Policy = $policy; Rank = $best.Rank; Order = $best.Order }
+        }
+    }
+
+    # The display name only so that a tie the directory cannot produce does not come out by
+    # hashtable order.
+    $contest = @($contest | Sort-Object @{ Expression = { [int]$_.Rank } },
+                                        @{ Expression = { [int]$_.Order } },
+                                        @{ Expression = { [string]$_.Policy.DisplayName } })
+
+    $winners = @{}
+    foreach ($entry in $Setting) {
+        foreach ($candidate in $contest) {
+            if (Test-GPOSettingConfigured -Value $candidate.Policy.($entry.Property)) {
+                $winners[$entry.Property] = $candidate.Policy
+                break
+            }
+        }
+    }
+    return $winners
+}
+
+<#
+.SYNOPSIS
     Whether a decoded setting value says something, rather than "Not configured".
 
 .DESCRIPTION

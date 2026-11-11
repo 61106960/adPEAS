@@ -367,21 +367,24 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         SecureMessage = "The policies in force on the domain controllers require SMB signing on both the server and the client side."
     }
 
-    # The member computers' side, shown when every policy that sets SMB signing is linked
-    # to the Domain Controllers OU only - so no policy reaches a member server or client.
+    # The member computers' side, shown when no linked and enabled policy that reaches a
+    # member computer - through a link outside the Domain Controllers OU - requires server
+    # signing.
     'EffectiveSMBSigningMembers' = @{
         TitleFormat = "In force on member servers and clients"
         Module = "Domain"
         Category = "Domain"
         SectionTitle = "SMB Signing Configuration"
-        Summary = "The SMB signing values in force on member servers and clients when every signing policy is linked to the Domain Controllers OU only."
+        Summary = "The SMB signing values in force on member servers and clients when no policy that reaches them requires server signing."
         WhyItMatters = "A policy that requires signing on the domain controllers protects connections to the domain controllers. Member servers and clients then sign as their Windows version does by default: before Windows Server 2025 a server enables signing without requiring it, which is the state an SMB relay needs."
         WhatWeCheck = @(
-            "Whether any linked and enabled policy outside the Domain Controllers OU sets SMB signing"
-            "The Windows default the members fall back to, server side and client side"
+            "Whether a linked and enabled policy outside the Domain Controllers OU - at the domain root, on a site or on another OU - requires server signing"
+            "The values a member computer in an OU without a signing policy of its own gets: from the policies at the domain root and on its site, by precedence, or the Windows default"
+            "decidedBy lists each policy with the values it decides in brackets"
             "Not tested: the computers themselves - a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default"
+            "Not tested: inheritance blocked on an OU, and which site a computer is in"
         )
-        SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
+        SecureMessage = "A policy that reaches member servers and clients requires SMB server signing."
     }
 
     # A linked and enabled policy that weakens SMB signing, shown below the postures with

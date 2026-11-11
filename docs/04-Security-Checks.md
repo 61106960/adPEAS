@@ -224,11 +224,12 @@ Get-LDAPConfiguration
 
 ### Get-SMBSigningStatus
 
-**Purpose**: Checks SMB signing configuration on Domain Controllers.
+**Purpose**: Checks the SMB signing configuration the policies deploy, on the domain controllers and on member computers.
 
 **What it checks**:
 - SMB signing requirement on DCs
 - SMB signing enablement status
+- Member servers and clients: when no policy that reaches them - through a link at the domain root, on a site or on an OU other than the Domain Controllers OU - requires server signing, the check shows what they get instead (the Windows default, or what a policy at the domain root or on their site sets) as a finding. The domain controllers requiring signing does not change that: an SMB relay goes to the member server.
 
 **Security Impact**: Without SMB signing, attackers can perform SMB relay attacks to capture and relay authentication.
 

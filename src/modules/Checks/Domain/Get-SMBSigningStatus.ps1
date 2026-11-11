@@ -489,60 +489,71 @@ function Get-SMBSigningStatus {
                     Show-Object $posture -Class $postureClass
                 }
 
-                # Check if SMB Signing is only configured for Domain Controllers
-                # This means member servers and clients rely on OS defaults (which vary by version)
+                # The member computers' side. A policy reaches member servers and clients
+                # through a link outside the Domain Controllers OU - at the domain root, on a
+                # site or on another OU. When none of those requires server-side signing, a
+                # member server signs as its Windows version does by default, or as a
+                # weakening policy sets it: not required either way, which is the state an
+                # SMB relay needs - a finding, whatever the domain controllers require.
+                #
+                # This used to be decided only when every policy was linked to the Domain
+                # Controllers OU, and filed as a hint once the domain controllers required
+                # signing. Two things followed. A domain-wide policy that set client signing
+                # alone made the object disappear, although no member server was better off.
+                # And the section's card took the domain controllers' Secure - Secure
+                # outranks Hint - and showed blue over member servers open to a relay.
+                #
+                # Not without the linkage, and not when no policy reaches a machine at all:
+                # the headline above already says every machine is left on the default.
+                # The values are what a member computer in an OU without a signing policy of
+                # its own gets - from the domain root and its site, by precedence. A policy
+                # on an OU reaches some members only: one that weakens signing is named
+                # below, one that requires it keeps this object away.
+                #
                 # Over the policies that actually reach a machine. $gpoFindings is every
-                # policy that carries a signing value, dormant ones included, and both
-                # summaries below used to be computed from it: a disabled or unlinked GPO
-                # counted as an insecure configuration, and one single dormant policy
-                # outside the DC OU was enough to suppress the member-server warning.
-                # Same defect as the headline above, two blocks further down.
+                # policy that carries a signing value, dormant ones included: a disabled or
+                # unlinked GPO is not an insecure configuration, and it is not a covering one.
                 $reaching = @($split.Active)
                 $gpoLinkage = Get-GPOLinkage
-                $dcOnlyGPOs = @($reaching | Where-Object {
-                    # Normalize GUID to uppercase for hashtable lookup. Guarded, because a
-                    # bare index on an unresolved ($null) map emits an error record into the
-                    # host for every GPO in the list.
-                    $links = $null
-                    if ($null -ne $gpoLinkage) { $links = $gpoLinkage[$_.Name.ToUpper()] }
-                    if (-not $links) { return $false }
+                if ($null -ne $gpoLinkage -and $reaching.Count -gt 0) {
+                    $memberReaching = @($reaching | Where-Object {
+                        $memberLinks = $null
+                        if ($gpoLinkage.ContainsKey($_.Name.ToUpper())) { $memberLinks = $gpoLinkage[$_.Name.ToUpper()] }
+                        @(@($memberLinks) | Where-Object {
+                            $_ -and $_.LinkStatus -ne 'Disabled' -and "$($_.DistinguishedName)" -notmatch 'OU=Domain Controllers'
+                        }).Count -gt 0
+                    })
+                    $memberRequired = @($memberReaching | Where-Object { $_.ServerSigning -eq 'Required' })
 
-                    $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
-                    if ($activeLinks.Count -eq 0) { return $false }
-
-                    # Check if ALL active links are to Domain Controllers OU only
-                    $allLinksToDCOU = $true
-                    foreach ($link in $activeLinks) {
-                        if ($link.DistinguishedName -notmatch 'OU=Domain Controllers') {
-                            $allLinksToDCOU = $false
-                            break
+                    if ($memberRequired.Count -eq 0) {
+                        $memberWinners = Resolve-GPOMemberBaselinePrecedence -Finding $memberReaching -Setting $smbSettings -Linkage $gpoLinkage
+                        # The winner can only weaken: a policy reaching members that
+                        # requires server signing keeps this block from running.
+                        $memberServer = 'Not required (Windows default before Server 2025)'
+                        if ($memberWinners['ServerSigning']) {
+                            $memberServer = "Not required ($($memberWinners['ServerSigning'].ServerSigning) by policy)"
                         }
+                        $memberClient = 'Not configured'
+                        if ($memberWinners['ClientSigning']) {
+                            $memberClient = $memberWinners['ClientSigning'].ClientSigning
+                        }
+                        # Short; what is not read here is the card's to say.
+                        $memberSource = Get-GPOSettingPostureSource -Setting $smbSettings -Winner $memberWinners
+                        if (@($memberSource).Count -eq 1 -and [string]$memberSource -eq 'None') {
+                            $memberSource = 'None (nothing at the domain root or on a site sets signing)'
+                            if ($memberReaching.Count -eq 0) {
+                                $memberSource = 'None (signing is set on the DC OU only)'
+                            }
+                        }
+                        $memberPosture = [PSCustomObject]@{
+                            ServerSigning = $memberServer
+                            ClientSigning = $memberClient
+                            decidedBy     = $memberSource
+                        }
+                        $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
+                        Show-Line "In force on member servers and clients:" -Class Finding
+                        Show-Object $memberPosture -Class Finding
                     }
-                    return $allLinksToDCOU
-                })
-
-                # If ALL SMB Signing GPOs are DC-only, warn about member servers.
-                # Use Hint when the DC policy actually requires signing (partially secured).
-                # Keep Finding when signing is only Optional or Disabled on DCs.
-                #
-                # As the member computers' counterpart of the domain controller object
-                # above, not as a line: the sentence had no card behind it, so the HTML
-                # report showed it without the remediation the SMB signing card carries.
-                # The two values read the way the policy rows read an unset value outside
-                # the Domain Controllers OU, which is what the card's triggers answer.
-                if (@($dcOnlyGPOs).Count -gt 0 -and @($dcOnlyGPOs).Count -eq $reaching.Count) {
-                    $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
-                    $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
-                    $memberPosture = [PSCustomObject]@{
-                        ServerSigning = 'Not configured (not required before Server 2025)'
-                        ClientSigning = 'Not configured'
-                        # Short; why no policy reaches them, and what is not read here, is
-                        # the card's to say.
-                        decidedBy     = 'None (signing is set on the DC OU only)'
-                    }
-                    $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
-                    Show-Line "In force on member servers and clients:" -Class $dcOnlyClass
-                    Show-Object $memberPosture -Class $dcOnlyClass
                 }
 
                 # The policies that weaken signing where they reach: server signing Disabled
