@@ -219,6 +219,7 @@ $Script:PropertyGUIDs = @{
 	'gPCFunctionalityVersion'        = [GUID]'f30e3bc0-9ff0-11d1-b603-0000f80367c1'
 	'dNSHostName'                   = [GUID]'72e39547-7b18-11d1-adef-00c04fd8d5cd'
 	'msDS-ManagedPassword'           = [GUID]'e362ed86-b728-0842-b27d-2dea7a9df218'
+	'managedBy'                      = [GUID]'0296c120-40da-11d1-a9c0-0000f80367c1'
 	'ms-PKI-AccountCredentials'      = [GUID]'b8dfa744-31dc-4ef1-ac7c-84baf7ef9da7'
 	'ms-PKI-DPAPIMasterKeys'         = [GUID]'b3f93023-9239-4f7c-b99c-6745d87adbc2'
 	'ms-PKI-RoamingTimeStamp'        = [GUID]'6617e4ac-a2f1-43ab-b60c-11fbd1facf05'
@@ -1615,6 +1616,7 @@ function Compare-UserRightAssignment {
 	        if ($null -ne $entry.Optional[$s]) { $optional += @($entry.Optional[$s]) }
 	    }
 	}
+	$baseline = @($baseline | Select-Object -Unique)
 	$holders = @($HolderSID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 	if (-not $hasBaseline) {
 	    return @{
@@ -1636,6 +1638,13 @@ function Compare-UserRightAssignment {
 	    Name        = $entry.Name
 	    Why         = $entry.Why
 	}
+}
+$Script:LogonDenyRights = [ordered]@{
+	'SeDenyNetworkLogonRight'           = @{ Name = 'Deny access to this computer from the network';  Logon = 'network';        Property = 'DenyNetworkLogon' }
+	'SeDenyInteractiveLogonRight'       = @{ Name = 'Deny log on locally';                            Logon = 'local';          Property = 'DenyInteractiveLogon' }
+	'SeDenyRemoteInteractiveLogonRight' = @{ Name = 'Deny log on through Remote Desktop Services';    Logon = 'remote desktop'; Property = 'DenyRemoteInteractiveLogon' }
+	'SeDenyBatchLogonRight'             = @{ Name = 'Deny log on as a batch job';                     Logon = 'batch';          Property = 'DenyBatchLogon' }
+	'SeDenyServiceLogonRight'           = @{ Name = 'Deny log on as a service';                       Logon = 'service';        Property = 'DenyServiceLogon' }
 }
 $Script:DangerousRegistryKeys = @(
 	@{
@@ -3652,7 +3661,7 @@ $Script:PrimaryAttributes = @{
 	    'SchemaVersion',
 	    'ExtendedKeyUsage', 'CertificateNameFlagDisplay',
 	    'ManagerApprovalRequired',
-	    'RASignatureCount', 'RAApplicationPolicies',
+	    'RASignatureCount', 'RAApplicationPolicies', 'TemplateKeySettings',
 	    'EnrollmentPrincipals',
 	    'DangerousACEs',
 	    'IssuancePolicyGroupLinks'
@@ -3661,7 +3670,7 @@ $Script:PrimaryAttributes = @{
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
 	    'LDAPSigning', 'ChannelBinding', 'anonymousSamEnumeration', 'anonymousSidNameTranslation', 'ServerSigning', 'ClientSigning',
 	    'DangerousPermissions', 'SysvolPermissions', 'GPOOwner', 'DangerousSettings',
-	    'LinkedOUs', 'oneLinkAway', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
+	    'LinkedOUs', 'oneLinkAway', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus', 'affectedComputerCount', 'affectedComputersNote'
 	)
 	SMBSigning = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -3684,8 +3693,8 @@ $Script:PrimaryAttributes = @{
 	)
 	GPORegistrySetting = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'RegistryKey', 'ConfiguredValue',
-	    'VulnerabilityName', 'RiskReason',
-	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+	    'VulnerabilityName', 'RiskReason', 'itemDescription',
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
 	)
 	GPORegistryValue = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'RegistryValues'
@@ -3698,7 +3707,7 @@ $Script:PrimaryAttributes = @{
 	    'ApprovedDriverSource', 'ApprovedServerList',
 	    'SpoolerClientConnections', 'QueueSpecificFiles',
 	    'WebDriverDownload', 'HTTPPrinting', 'InstallDriversSecurityOption',
-	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
 	)
 	LAPSGPOConfig = @(
 	    'lapsGpoNotLinked',
@@ -3792,8 +3801,8 @@ $Script:PrimaryAttributes = @{
 	    'computerName', 'readableShares', 'notFullySearched'
 	)
 	ShareCredential = @(
-	    'CredentialType', 'FilePath', 'RegistryValue', 'UnattendSetting', 'VNCHost', 'VNCSetting',
-	    'UserName', 'accountInAD', 'Password', 'MatchedLine'
+	    'CredentialType', 'FilePath', 'PreferenceItem', 'PreferenceField', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'VNCHost', 'VNCSetting',
+	    'UserName', 'accountInAD', 'Password', 'MatchedLine', 'itemDescription'
 	)
 	OpenPorts = @(
 	    'hostName', 'ipAddress', 'openPorts'
@@ -3825,7 +3834,16 @@ $Script:PrimaryAttributes = @{
 	GPOUserRights = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'UserRight', 'UserRightName',
 	    'GrantedBeyondDefault', 'RemovedFromDefault',
-	    'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+	    'AppliesTo', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
+	)
+	GPOLogonRestriction = @(
+	    'GPOName', 'GPOGUID', 'GPOPath', 'AppliesTo',
+	    'DenyNetworkLogon', 'DenyInteractiveLogon', 'DenyRemoteInteractiveLogon', 'DenyBatchLogon', 'DenyServiceLogon',
+	    'LogonVerdict',
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
+	)
+	GPOUserRightValue = @(
+	    'GPOName', 'GPOGUID', 'GPOPath', 'UserRights'
 	)
 	MachineAccountQuota = @(
 	    'ms-DS-MachineAccountQuota', 'whoCanAddComputers', 'privilegeGrantedBy'
@@ -3838,16 +3856,16 @@ $Script:PrimaryAttributes = @{
 	)
 	GPOScheduledTask = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'TaskName', 'Command',
-	    'RunAs', 'Context', 'Action', 'Trigger', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+	    'RunAs', 'Context', 'Action', 'Trigger', 'TaskDescription', 'itemDescription', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
 	)
 	GPOScriptPath = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'ScriptType', 'ScriptPath', 'Parameters', 'FullCommand',
-	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+	    'ScriptLanguage', 'ExecutionContext', 'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
 	)
 	GPOLocalGroup = @(
 	    'GPOName', 'GPOGUID', 'GPOPath', 'TargetGroup', 'Mode',
-	    'MembersAdded', 'MembersRemoved', 'groupEmptied',
-	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'GPOStatus'
+	    'MembersAdded', 'MembersRemoved', 'groupEmptied', 'itemDescription',
+	    'LinkedOUs', 'reachesDomainControllers', 'wmiFilter', 'loopbackProcessing', 'gpoComment', 'GPOStatus'
 	)
 	AddComputerGPO = @(
 	    'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -3878,7 +3896,7 @@ $Script:PrimaryAttributes = @{
 	    'Group', 'Reason', 'Count', 'Policies'
 	)
 	GPPCredential = @(
-	    'CredentialType', 'GPOName', 'FilePath', 'RegistryValue', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
+	    'CredentialType', 'GPOName', 'FilePath', 'PreferenceItem', 'PreferenceField', 'RegistryValue', 'StoredForm', 'UnattendSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'itemDescription', 'LinkedOUs'
 	)
 	SYSVOLCredential = @(
 	    'CredentialType', 'GPOName', 'FilePath', 'VNCHost', 'VNCSetting', 'UserName', 'accountInAD', 'Password', 'MatchedLine', 'LinkedOUs'
@@ -4051,6 +4069,7 @@ $Script:StrictAttributeTypes = @(
 	'FineGrainedPasswordPolicy',
 	'BitLockerRecoveryKey',
 	'GPOUserRights',
+	'GPOLogonRestriction',
 	'LAPSCoverage',
 	'UnprotectedPrivilegedGroups',
 	'PrivilegedAccountsRead'
@@ -4061,6 +4080,7 @@ $Script:CardOnlyNotes = @(
 )
 $Script:StrictExtendedAttributes = @{
 	GPOUserRights = @('SourceFile')
+	GPOLogonRestriction = @('SourceFile')
 }
 $Script:AttributeLabels = @{
 	GPO            = @{ 'displayName' = 'GPOName'; 'Name' = 'GPOGUID'; 'gPCFileSysPath' = 'GPOPath' }
@@ -4638,7 +4658,7 @@ function Get-RenderModel {
 	}
 }
 $Script:ToolUrls = @{
-	"Hashcat"           = "https://github.com/hashcat/hashcat"
+	"hashcat"           = "https://github.com/hashcat/hashcat"
 	"John the Ripper"   = "https://github.com/openwall/john"
 	"Rubeus"            = "https://github.com/GhostPack/Rubeus"
 	"Mimikatz"          = "https://github.com/gentilkiwi/mimikatz"
@@ -4649,7 +4669,7 @@ $Script:ToolUrls = @{
 	"BloodHound"        = "https://github.com/SpecterOps/BloodHound"
 	"ADACLScanner"      = "https://github.com/canix1/ADACLScanner"
 	"ADRecon"           = "https://github.com/adrecon/ADRecon"
-	"PingCastle"        = "https://github.com/vletoux/pingcastle"
+	"PingCastle"        = "https://github.com/netwrix/pingcastle"
 	"ldapdomaindump"    = "https://github.com/dirkjanm/ldapdomaindump"
 	"windapsearch"      = "https://github.com/ropnop/windapsearch"
 	"DSInternals"       = "https://github.com/MichaelGrafnetter/DSInternals"
@@ -4665,7 +4685,7 @@ $Script:ToolUrls = @{
 	"Responder"         = "https://github.com/lgandx/Responder"
 	"Inveigh"           = "https://github.com/Kevin-Robertson/Inveigh"
 	"ntlmrelayx"        = "https://github.com/fortra/impacket"
-	"SharpGPOAbuse"     = "https://github.com/FSecureLABS/SharpGPOAbuse"
+	"SharpGPOAbuse"     = "https://github.com/ReversecLabs/SharpGPOAbuse"
 	"Get-GPPPassword"   = "https://github.com/PowerShellMafia/PowerSploit/blob/master/Exfiltration/Get-GPPPassword.ps1"
 	"gpp-decrypt"       = "https://github.com/t0thkr1s/gpp-decrypt"
 	"Whisker"           = "https://github.com/eladshamir/Whisker"
@@ -4688,10 +4708,56 @@ $Script:ToolUrls = @{
 	"Snaffler"          = "https://github.com/SnaffCon/Snaffler"
 	"trufflehog"        = "https://github.com/trufflesecurity/trufflehog"
 	"PXEThief"          = "https://github.com/MWR-CyberSec/PXEThief"
-	"PXEThiefy"         = "https://github.com/MWR-CyberSec/PXEThiefy"
-	"ConfigManBearPig"  = "https://github.com/youhavbeenp4wned/ConfigManBearPig"
+	"PXEThiefy"         = "https://github.com/csandker/pxethiefy"
+	"ConfigManBearPig"  = "https://github.com/SpecterOps/ConfigManBearPig"
 	"Neo4j"             = "https://github.com/neo4j/neo4j"
 	"PrivExchange"      = "https://github.com/dirkjanm/PrivExchange"
+	"NetExec"           = "https://github.com/Pennyw0rth/NetExec"
+	"enum4linux"        = "https://github.com/CiscoCXSecurity/enum4linux"
+	"Nmap"              = "https://github.com/nmap/nmap"
+	"nmap smtp-open-relay" = "https://nmap.org/nsedoc/scripts/smtp-open-relay.html"
+	"Metasploit"        = "https://github.com/rapid7/metasploit-framework"
+	"secretsdump.py"    = "https://github.com/fortra/impacket/blob/master/examples/secretsdump.py"
+	"lookupsid.py"      = "https://github.com/fortra/impacket/blob/master/examples/lookupsid.py"
+	"GetUserSPNs.py"    = "https://github.com/fortra/impacket/blob/master/examples/GetUserSPNs.py"
+	"dacledit.py"       = "https://github.com/fortra/impacket/blob/master/examples/dacledit.py"
+	"bloodyAD"          = "https://github.com/CravateRouge/bloodyAD"
+	"SharpSuccessor"    = "https://github.com/logangoins/SharpSuccessor"
+	"pre2k"             = "https://github.com/garrettfoster13/pre2k"
+	"RestrictedAdmin"   = "https://github.com/GhostPack/RestrictedAdmin"
+	"OneLogon"          = "https://github.com/rub-softsec/onelogon"
+	"DomainPasswordSpray" = "https://github.com/dafthack/DomainPasswordSpray"
+	"Spray"             = "https://github.com/Greenwolf/Spray"
+	"GodPotato"         = "https://github.com/BeichenDream/GodPotato"
+	"JuicyPotato"       = "https://github.com/ohpe/juicy-potato"
+	"RoguePotato"       = "https://github.com/antonioCoco/RoguePotato"
+	"PrintSpoofer"      = "https://github.com/itm4n/PrintSpoofer"
+	"SharpToken"        = "https://github.com/BeichenDream/SharpToken"
+	"Incognito"         = "https://github.com/ReversecLabs/incognito"
+	"EoPLoadDriver"     = "https://github.com/TarlogicSecurity/EoPLoadDriver"
+	"KDU (Kernel Driver Utility)" = "https://github.com/hfiref0x/KDU"
+	"SeBackupPrivilege" = "https://github.com/giuliano108/SeBackupPrivilege"
+	"SeRestoreAbuse"    = "https://github.com/xct/SeRestoreAbuse"
+	"RawCopy"           = "https://github.com/jschicht/RawCopy"
+	"System Informer"   = "https://github.com/winsiderss/systeminformer"
+	"ProcDump"          = "https://learn.microsoft.com/en-us/sysinternals/downloads/procdump"
+	"PsExec"            = "https://learn.microsoft.com/en-us/sysinternals/downloads/psexec"
+	"pypykatz"          = "https://github.com/skelsec/pypykatz"
+	"Mimikatz (vault::cred)" = "https://github.com/gentilkiwi/mimikatz"
+	"SharpDPAPI"        = "https://github.com/GhostPack/SharpDPAPI"
+	"dislocker"         = "https://github.com/Aorimn/dislocker"
+	"vncpwd"            = "https://github.com/jeroennijhof/vncpwd"
+	"ADFSDump"          = "https://github.com/mandiant/ADFSDump"
+	"ADFSpoof"          = "https://github.com/mandiant/ADFSpoof"
+	"MailSniper"        = "https://github.com/dafthack/MailSniper"
+	"Exchange Health Checker" = "https://github.com/microsoft/CSS-Exchange"
+	"swaks"             = "https://github.com/jetmore/swaks"
+	"Misconfiguration-Manager" = "https://github.com/subat0mik/Misconfiguration-Manager"
+	"SharpSCOM"         = "https://github.com/breakfix/SharpSCOM"
+	"PyWSUS"            = "https://github.com/GoSecure/pywsus"
+	"wsuks"             = "https://github.com/NeffIsBack/wsuks"
+	"PowerUpSQL"        = "https://github.com/NetSPI/PowerUpSQL"
+	"SharpPrintNightmare" = "https://github.com/cube0x0/CVE-2021-1675"
 }
 $Script:CredentialAssignmentPattern = '(?:pas(?:sw\S*|sord|vorto)|pwd|pw|\bpass|kennwort|\bparol[ae]?)\s*[=:]\s*(?!\*+(?:\s|$))(?!<[^>]+>)\S{3,}' +
 	'|[a-z][a-z0-9+.-]*://[^\s/:@]+:(?!\*+@)(?!<[^>]+>@)[^\s/@]+@'
@@ -4750,7 +4816,7 @@ $Script:FindingDefinitions = @{
 	        @{ Title = "Detecting Kerberoasting - Microsoft"; Url = "https://docs.microsoft.com/en-us/defender-for-identity/compromised-credentials-alerts" }
 	        @{ Title = "Kerberoasting Revisited - Harmj0y"; Url = "https://blog.harmj0y.net/redteaming/kerberoasting-revisited/" }
 	    )
-	    Tools = @("Rubeus", "Impacket", "PowerView", "Hashcat", "John the Ripper")
+	    Tools = @("Rubeus", "Impacket", "PowerView", "hashcat", "John the Ripper")
 	    MITRE = "T1558.003"
 	    Triggers = @(
 	        @{ Attribute = 'servicePrincipalName'; Custom = 'is_not_computer'; Severity = 'Finding' }
@@ -4796,7 +4862,7 @@ $Script:FindingDefinitions = @{
 	        @{ Title = "Kerberos Pre-Authentication - Microsoft"; Url = "https://learn.microsoft.com/en-us/defender-for-identity/security-posture-assessments/accounts" }
 	        @{ Title = "Roasting AS-REPs - Harmj0y"; Url = "https://blog.harmj0y.net/activedirectory/roasting-as-reps/" }
 	    )
-	    Tools = @("Rubeus", "Impacket", "Hashcat", "John the Ripper")
+	    Tools = @("Rubeus", "Impacket", "hashcat", "John the Ripper")
 	    MITRE = "T1558.004"
 	    Triggers = @(
 	        @{ Attribute = 'userAccountControl'; Pattern = 'DONT_REQ_PREAUTH'; Severity = 'Finding' }
@@ -4885,7 +4951,7 @@ $Script:FindingDefinitions = @{
 	        @{ Title = "AS-REP Roasting - HackTricks"; Url = "https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/asreproast.html" }
 	        @{ Title = "Managed Service Accounts - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/security/group-managed-service-accounts/group-managed-service-accounts-overview" }
 	    )
-	    Tools = @("Hashcat", "John the Ripper")
+	    Tools = @("hashcat", "John the Ripper")
 	    MITRE = "T1110.002"
 	    Triggers = @(
 	        @{ Attribute = 'KerberoastingHash'; Severity = 'Finding' }
@@ -6637,7 +6703,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        }
 	    )
 	    References = @(
-	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
 	        @{ Title = "Group Policy Object attributes - Microsoft"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
 	    )
 	    Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
@@ -6770,7 +6836,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        }
 	    )
 	    References = @(
-	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
 	        @{ Title = "Group Policy Basics - Part 3: Files"; Url = "https://learn.microsoft.com/en-us/archive/blogs/mempson/group-policy-basics-part-3-how-clients-process-gpos" }
 	        @{ Title = "MS-GPOL: Group Policy Protocol"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/" }
 	    )
@@ -6813,7 +6879,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        }
 	    )
 	    References = @(
-	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
 	        @{ Title = "Owner Rights - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-rights" }
 	    )
 	    Tools = @("SharpGPOAbuse", "PowerView", "ADACLScanner")
@@ -6902,7 +6968,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        }
 	    )
 	    References = @(
-	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/FSecureLABS/SharpGPOAbuse" }
+	        @{ Title = "SharpGPOAbuse"; Url = "https://github.com/ReversecLabs/SharpGPOAbuse" }
 	        @{ Title = "MS-GPOL: GPO Search"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpol/5c7ecdad-469f-4b30-94b3-450b7fff868f" }
 	    )
 	    Tools = @("SharpGPOAbuse")
@@ -7167,6 +7233,124 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	    )
 	    Tools = @("PowerView")
 	    MITRE = "T1003.003"
+	}
+	'RODC_DELEGATED_ADMIN' = @{
+	    Title = "Principal Outside Tier-0 Administers a Read-Only Domain Controller"
+	    Risk = "Finding"
+	    BaseScore = 40
+	    Description = "managedBy on the computer object of this read-only Domain Controller names a principal that is not Tier-0 - a user account, a group of the domain, an operator group - and the principal named there is an implicit member of the server's Administrators group, of that server and of no other (MS-ADTS 6.1.1.3.2). It is the delegated administrator a branch office promotion or Add-ADDSReadOnlyDomainControllerAccount -DelegatedAdministratorAccountName sets, meant for a site without a Domain Admin. Administrator on a read-only Domain Controller is more than administrator on a server: it reaches every secret the server has cached and the keys of its own krbtgt account, which signs the tickets it issues. Tier-0 principals are not marked - they administer every Domain Controller already. Whether the principal is meant to hold the right is not something the directory can say; a dedicated branch administration group may well be."
+	    Impact = @(
+	        "Whoever controls the principal - its password, a session where it is logged on, a delegated right to reset it or to change the group's members - is administrator on the read-only Domain Controller"
+	        "As administrator it extracts the password hashes of every account cached on the server"
+	        "With the keys of the server's krbtgt account it signs tickets for any account the server's password replication policy allows; a writable Domain Controller honours such a ticket, and answers a key list request for the account with its password hash"
+	        "Where that policy allows a privileged account - reported in this section when it does - that is the domain"
+	    )
+	    Attack = @(
+	        "1. Read managedBy of the read-only Domain Controller - any domain user may"
+	        "2. Take over the principal it names: spray or phish the account, reset its password with a delegated right, or add a member to the group"
+	        "3. Log on to the read-only Domain Controller as administrator and extract the cached secrets and the keys of its krbtgt account"
+	        "4. Use the cached hashes, or sign tickets for the accounts its password replication policy allows"
+	    )
+	    Remediation = @(
+	        "Check that the principal is meant to administer this read-only Domain Controller; clear managedBy where no delegated administrator is needed"
+	        "Name a dedicated group rather than a user account, and protect it as well as the server: whoever may reset its members' passwords or change its members administers the server"
+	        "Keep the password replication policy to the accounts of the branch office the server serves, so that its administrator reaches no more than those"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show whom managedBy names on each read-only Domain Controller"
+	            Command = "Get-ADDomainController -Filter * | Where-Object { `$_.IsReadOnly } | ForEach-Object { Get-ADComputer -Identity `$_.ComputerObjectDN -Properties managedBy } | Select-Object Name, managedBy"
+	        }
+	        @{
+	            Description = "Remove the delegated administrator of a read-only Domain Controller"
+	            Command = "Set-ADComputer -Identity 'RODC_NAME' -Clear managedBy"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Read-Only Domain Controller Object - MS-ADTS 6.1.1.3.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/73d11ea7-e634-453e-944d-559654cc91c5" }
+	        @{ Title = "Attribute managedBy - MS-ADA2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/48299dda-f25f-4f03-ab9e-1131f6eca51b" }
+	        @{ Title = "Add-ADDSReadOnlyDomainControllerAccount - Microsoft"; Url = "https://learn.microsoft.com/en-us/powershell/module/addsdeployment/add-addsreadonlydomaincontrolleraccount" }
+	        @{ Title = "At the Edge of Tier Zero: The Curious Case of the RODC - SpecterOps"; Url = "https://specterops.io/blog/2023/01/25/at-the-edge-of-tier-zero-the-curious-case-of-the-rodc/" }
+	    )
+	    Tools = @("Impacket", "Mimikatz", "Rubeus")
+	    MITRE = "T1003.003"
+	}
+	'RODC_ADMIN_BROAD_GROUP' = @{
+	    Title = "Broad Group Administers a Read-Only Domain Controller"
+	    Risk = "Finding"
+	    BaseScore = 70
+	    Description = "managedBy on the computer object of this read-only Domain Controller names a group that covers most or all of the domain - Domain Users, Domain Computers, Authenticated Users, Everyone - and the principal named there is an implicit member of the server's Administrators group (MS-ADTS 6.1.1.3.2). Every member of the group is administrator on a Domain Controller. Administrator there reaches every secret the server has cached and the keys of its own krbtgt account, which signs the tickets it issues."
+	    Impact = @(
+	        "Any domain account - one phished or sprayed password - is administrator on the read-only Domain Controller"
+	        "That reaches the password hashes of every account cached on the server"
+	        "With the keys of the server's krbtgt account any member signs tickets for every account the server's password replication policy allows, and a writable Domain Controller answers a key list request for such an account with its password hash"
+	    )
+	    Attack = @(
+	        "1. Read managedBy of the read-only Domain Controller - any domain user may"
+	        "2. Log on to the server with any account the group covers - it is administrator there"
+	        "3. Extract the cached secrets and the keys of the server's krbtgt account"
+	        "4. Use the cached hashes, or sign tickets for the accounts its password replication policy allows"
+	    )
+	    Remediation = @(
+	        "Replace the broad group in managedBy with a dedicated group of the branch office's administrators, or clear managedBy"
+	        "Treat what the server holds as exposed for as long as the setting stood: reset the passwords of the accounts whose secrets it has cached, and the password of its krbtgt account - the account msDS-KrbTgtLink names"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Name a dedicated group as the delegated administrator"
+	            Command = "Set-ADComputer -Identity 'RODC_NAME' -ManagedBy 'GROUP_NAME'"
+	        }
+	        @{
+	            Description = "Remove the delegated administrator"
+	            Command = "Set-ADComputer -Identity 'RODC_NAME' -Clear managedBy"
+	        }
+	        @{
+	            Description = "List the accounts whose secrets the server holds"
+	            Command = "Get-ADDomainControllerPasswordReplicationPolicyUsage -Identity 'RODC_NAME' -RevealedAccounts"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Read-Only Domain Controller Object - MS-ADTS 6.1.1.3.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/73d11ea7-e634-453e-944d-559654cc91c5" }
+	        @{ Title = "Attribute managedBy - MS-ADA2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/48299dda-f25f-4f03-ab9e-1131f6eca51b" }
+	        @{ Title = "At the Edge of Tier Zero: The Curious Case of the RODC - SpecterOps"; Url = "https://specterops.io/blog/2023/01/25/at-the-edge-of-tier-zero-the-curious-case-of-the-rodc/" }
+	    )
+	    Tools = @("Impacket", "Mimikatz", "Rubeus")
+	    MITRE = "T1003.003"
+	}
+	'RODC_MANAGEDBY_WRITE' = @{
+	    Title = "Principal Outside Tier-0 May Make Itself Administrator of a Read-Only Domain Controller"
+	    Risk = "Finding"
+	    BaseScore = 55
+	    Description = "The principals listed may write managedBy on the computer object of this read-only Domain Controller, and the principal named in managedBy is an implicit member of the server's Administrators group (MS-ADTS 6.1.1.3.2). Writing their own name there makes them administrator on a Domain Controller, without a change to any group. Counted: the owner, which may rewrite the DACL; GenericAll; GenericWrite or WriteProperty on every property; WriteProperty on managedBy itself; WriteDacl and WriteOwner, with which the write can be granted. managedBy belongs to no property set. An explicit Deny of the write is honoured, except against a holder that may rewrite the DACL. Tier-0 principals are not listed - they hold full control on a Domain Controller account by default; an operator group is listed."
+	    Impact = @(
+	        "The principal becomes administrator on the read-only Domain Controller by changing one attribute - no group that an audit of privileged memberships watches changes"
+	        "As administrator it reaches every secret cached on the server and the keys of its krbtgt account"
+	        "A write to every property also reaches the password replication policy on the same object (msDS-RevealOnDemandGroup, msDS-NeverRevealGroup): allowing a Domain Admin there and signing a ticket for it with the server's krbtgt key is the domain"
+	    )
+	    Attack = @(
+	        "1. Write the attacker's own account into managedBy of the read-only Domain Controller"
+	        "2. Once the change has replicated to the server, log on to it as administrator"
+	        "3. Extract the cached secrets and the keys of its krbtgt account"
+	        "4. With a write to every property as well: put a privileged account on the allow list, take its groups off the deny list, sign a ticket for it with the server's krbtgt key, and ask a writable Domain Controller for its password hash with a key list request"
+	    )
+	    Remediation = @(
+	        "Remove the right from the principals listed - on the computer object, or on the container it is inherited from"
+	        "Where the owner is listed, make Domain Admins the owner of the computer object"
+	        "Check that managedBy names the intended principal, and who changed it last (event 5136 for the computer object, with directory service changes audited)"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show the owner and the access rules that can write managedBy of a read-only Domain Controller"
+	            Command = "`$dn = (Get-ADComputer -Identity 'RODC_NAME').DistinguishedName; `$acl = Get-Acl -Path ('AD:' + `$dn); `$acl.Owner; `$acl.Access | Where-Object { `$_.ObjectType -eq [guid]'0296c120-40da-11d1-a9c0-0000f80367c1' -or `$_.ObjectType -eq [guid]::Empty } | Format-Table IdentityReference,ActiveDirectoryRights,ObjectType,AccessControlType,IsInherited -AutoSize"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "Read-Only Domain Controller Object - MS-ADTS 6.1.1.3.2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/73d11ea7-e634-453e-944d-559654cc91c5" }
+	        @{ Title = "Attribute managedBy - MS-ADA2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-ada2/48299dda-f25f-4f03-ab9e-1131f6eca51b" }
+	        @{ Title = "At the Edge of Tier Zero: The Curious Case of the RODC - SpecterOps"; Url = "https://specterops.io/blog/2023/01/25/at-the-edge-of-tier-zero-the-curious-case-of-the-rodc/" }
+	    )
+	    Tools = @("PowerView", "Impacket", "Mimikatz", "Rubeus")
+	    MITRE = "T1098"
 	}
 	'UNREGISTERED_DOMAIN_CONTROLLER' = @{
 	    Title = "Computer Account With the Domain Controller Role That Is Not a Domain Controller"
@@ -7534,7 +7718,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        @{ Title = "DCSync - BloodHound"; Url = "https://bloodhound.specterops.io/resources/edges/dc-sync" }
 	        @{ Title = "DS-Replication-Get-Changes-All - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/r-ds-replication-get-changes-all" }
 	    )
-	    Tools = @("Mimikatz", "Impacket secretsdump", "BloodHound")
+	    Tools = @("Mimikatz", "secretsdump.py", "BloodHound")
 	    MITRE = "T1003.006"
 	    Triggers = @(
 	        @{ Attribute = 'dangerousRights'; Pattern = 'DCSync|DS-Replication-Get-Changes'; ExcludePattern = 'short of DCSync'; Severity = 'Finding' }
@@ -8029,7 +8213,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
 	        @{ Title = "SPN Attribute - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-serviceprincipalname" }
 	        @{ Title = "Set-Acl - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/set-acl" }
 	    )
-	    Tools = @("Rubeus", "Impacket", "PowerView", "Hashcat")
+	    Tools = @("Rubeus", "Impacket", "PowerView", "hashcat")
 	    MITRE = "T1558.003"
 	    Triggers = @(
 	        @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(servicePrincipalName\)'; Severity = 'Finding' }
@@ -8179,7 +8363,7 @@ Set-Acl -Path "AD:\`$ou" -AclObject `$acl
 	        @{ Title = "Shadow Credentials: Abusing Key Trust Account Mapping for Account Takeover"; Url = "https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab" }
 	        @{ Title = "Key Credential Link - MS-ADTS"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/f3f01e95-6d0c-4fe6-8b43-d585167658fa" }
 	    )
-	    Tools = @("Whisker", "pyWhisker", "Certipy", "Rubeus")
+	    Tools = @("Whisker", "PyWhisker", "Certipy", "Rubeus")
 	    MITRE = "T1556"
 	    Triggers = @(
 	        @{ Attribute = 'dangerousRights'; Pattern = 'WriteProperty \(msDS-KeyCredentialLink\)'; Severity = 'Finding' }
@@ -10005,6 +10189,101 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	        @{ Attribute = 'ReadableToday'; Pattern = '^Unknown'; Severity = 'Hint' }
 	    )
 	}
+	'GPO_TIER0_LOGON_NOT_DENIED' = @{
+	    Title = "No Policy Keeps Domain Admins Off Member Computers"
+	    Risk = "Hint"
+	    BaseScore = 25
+	    Description = "No Group Policy that reaches member computers denies Domain Admins the local or Remote Desktop logon (Deny log on locally, Deny log on through Remote Desktop Services) - neither by naming the group nor a group Domain Admins is a member of. Windows denies only the Guest account by default, so a Domain Admin may sign in to every workstation and member server, and each sign-in leaves credential material on the machine: in LSASS, as a Kerberos ticket, as a cached logon. Whoever holds administrator rights on any one of those machines can take it. Microsoft's guidance for securing Active Directory is to deny Domain Admins these two logons, and the network, batch and service logon, in policies linked to the OUs of member servers and workstations. A machine's local policy is not visible here."
+	    Impact = @(
+	        "A Domain Admin who signs in to a workstation or member server - by habit, for a quick fix - leaves credentials behind that a local administrator of that machine can extract"
+	        "One compromised workstation is then one support call away from the domain"
+	    )
+	    Attack = @(
+	        "1. Gain administrator rights on any workstation or member server - a local privilege escalation, a reused local administrator password"
+	        "2. Wait for, or provoke, a Domain Admin sign-in to that machine - a support ticket, a scheduled task, a service"
+	        "3. Extract the Domain Admin's credentials from LSASS or the Kerberos ticket cache"
+	    )
+	    Remediation = @(
+	        "Add Domain Admins to Deny access to this computer from the network, Deny log on as a batch job, Deny log on as a service, Deny log on locally and Deny log on through Remote Desktop Services in a policy linked to every OU that holds workstations or member servers"
+	        "Keep the jump servers used to administer the domain controllers out of those OUs"
+	        "Administer member computers with accounts that are not Domain Admins"
+	    )
+	    References = @(
+	        @{ Title = "Appendix F: Securing Domain Admins Groups in Active Directory - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-f--securing-domain-admins-groups-in-active-directory" }
+	        @{ Title = "Deny access to this computer from the network - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/deny-access-to-this-computer-from-the-network" }
+	    )
+	    Tools = @("Mimikatz", "Rubeus")
+	    MITRE = "T1003.001"
+	}
+	'GPO_LOCAL_ADMIN_NETWORK_NOT_DENIED' = @{
+	    Title = "No Policy Denies Local Administrator Accounts the Network Logon"
+	    Risk = "Hint"
+	    BaseScore = 20
+	    Description = "No Group Policy that reaches member computers denies local administrator accounts the network logon (Deny access to this computer from the network) - not Local account and member of Administrators group (S-1-5-114), not Local account (S-1-5-113), not the local Administrator account by its name. Windows denies only the Guest account by default. Where several machines share a local administrator password - a cloned image, a password set by script - the password or its hash taken from one machine opens every other one over the network. Its own password on every machine, as Windows LAPS sets it, takes the reuse away; the deny right takes the network logon away whatever the password is."
+	    Impact = @(
+	        "A local administrator password or hash taken from one machine logs on to every machine that shares it, over SMB, WMI or WinRM"
+	        "Lateral movement across workstations and servers then needs no domain account"
+	    )
+	    Attack = @(
+	        "1. Extract the local administrator's NT hash from one machine's SAM"
+	        "2. Authenticate with it to other machines over the network (pass-the-hash)"
+	        "3. Repeat from every machine reached until a domain credential turns up"
+	    )
+	    Remediation = @(
+	        "Add Local account and member of Administrators group to Deny access to this computer from the network, and Local account to Deny log on through Remote Desktop Services, in a policy linked to the OUs of member servers and workstations"
+	        "Give every machine its own local administrator password with Windows LAPS"
+	    )
+	    References = @(
+	        @{ Title = "Appendix H: Securing Local Administrator Accounts and Groups - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-h--securing-local-administrator-accounts-and-groups" }
+	        @{ Title = "Deny access to this computer from the network - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/deny-access-to-this-computer-from-the-network" }
+	    )
+	    Tools = @("Impacket", "Mimikatz")
+	    MITRE = "T1550.002"
+	}
+	'GPO_LOGON_LOCKOUT' = @{
+	    Title = "Policy Denies a Logon to the Accounts That Need It"
+	    Risk = "Hint"
+	    BaseScore = 10
+	    Description = "This Group Policy denies a logon to a principal that covers most or all accounts - Everyone, Authenticated Users, Users, Domain Users, Domain Computers, NETWORK or INTERACTIVE - or denies Domain Admins a logon on the domain controllers it reaches. A deny right wins over every right that would allow the logon, so every account the principal covers loses that kind of logon on every machine in scope, administrators included; on a domain controller every Active Directory operation is a network logon. A configuration mistake rather than an exposure: it either breaks what the policy reaches, or the policy does not reach what its author assumes."
+	    Impact = @(
+	        "Every account the principal covers loses that kind of logon on every machine the policy reaches"
+	        "Denied on a domain controller, the network logon takes Active Directory itself away from those accounts"
+	    )
+	    Attack = @()
+	    Remediation = @(
+	        "Replace the broad group with the accounts that are meant to be denied - Guests, Local account, service accounts"
+	        "Link a policy that denies Domain Admins a logon to the OUs of member computers only, never to the Domain Controllers OU or the domain"
+	    )
+	    References = @(
+	        @{ Title = "Deny access to this computer from the network - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/deny-access-to-this-computer-from-the-network" }
+	    )
+	    Tools = @()
+	    MITRE = ""
+	    Triggers = @(
+	        @{ Attribute = 'LogonVerdict'; Pattern = '^Locks out '; Severity = 'Hint' }
+	    )
+	}
+	'GPO_LOGON_DENIAL_HARDENING' = @{
+	    Title = "Policy Keeps Privileged Credentials Off Member Computers"
+	    Risk = "Secure"
+	    BaseScore = 0
+	    Description = "This Group Policy denies Domain Admins, or local administrator accounts, a logon on the member computers it reaches. A deny right wins over every right that would allow the logon, so their credentials cannot be used there in that way and leave nothing behind for a local administrator to take. Not evaluated: which of several policies setting the same right wins on a machine - a policy of higher precedence that sets the right again without these principals replaces the list."
+	    Impact = @()
+	    Attack = @()
+	    Remediation = @(
+	        "No action required"
+	        "Check that the policy is linked to every OU that holds workstations and member servers, and that no policy of higher precedence sets the same right without these principals"
+	    )
+	    References = @(
+	        @{ Title = "Appendix F: Securing Domain Admins Groups in Active Directory - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-f--securing-domain-admins-groups-in-active-directory" }
+	        @{ Title = "Appendix H: Securing Local Administrator Accounts and Groups - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-h--securing-local-administrator-accounts-and-groups" }
+	    )
+	    Tools = @()
+	    MITRE = ""
+	    Triggers = @(
+	        @{ Attribute = 'LogonVerdict'; Pattern = '^Keeps '; Severity = 'Secure' }
+	    )
+	}
 	'GPO_USERRIGHT_SEDEBUG' = @{
 	    Title = "'Debug Programs' (SeDebugPrivilege) Granted Beyond the Windows Default via GPO"
 	    Risk = "Finding"
@@ -10084,7 +10363,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Access Token Manipulation - MITRE ATT&CK T1134"; Url = "https://attack.mitre.org/techniques/T1134/" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1134"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeCreateTokenPrivilege$'; Severity = 'Finding' }
@@ -10199,7 +10478,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "OS Credential Dumping: NTDS - MITRE ATT&CK T1003.003"; Url = "https://attack.mitre.org/techniques/T1003/003/" }
 	    )
-	    Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "PowerSploit SeBackupPrivilege module")
+	    Tools = @("robocopy /B", "diskshadow", "secretsdump.py", "SeBackupPrivilege")
 	    MITRE = "T1003.003"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeBackupPrivilege$'; Severity = 'Finding' }
@@ -10228,7 +10507,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Hijack Execution Flow: Services File Permissions Weakness - MITRE ATT&CK T1574.010"; Url = "https://attack.mitre.org/techniques/T1574/010/" }
 	    )
-	    Tools = @("SeRestoreAbuse", "PowerSploit SeRestorePrivilege module")
+	    Tools = @("SeRestoreAbuse")
 	    MITRE = "T1574.010"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeRestorePrivilege$'; Severity = 'Finding' }
@@ -10398,7 +10677,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Abuse Elevation Control Mechanism - MITRE ATT&CK T1548"; Url = "https://attack.mitre.org/techniques/T1548/" }
 	    )
-	    Tools = @("icacls (integrity level flags)", "Process Hacker")
+	    Tools = @("icacls (integrity level flags)", "System Informer")
 	    MITRE = "T1548"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeRelabelPrivilege$'; Severity = 'Finding' }
@@ -10482,7 +10761,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Valid Accounts: Local Accounts - MITRE ATT&CK T1078.003"; Url = "https://attack.mitre.org/techniques/T1078/003/" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1078.003"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeInteractiveLogonRight$'; Severity = 'Hint' }
@@ -10673,7 +10952,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Privilege Constants (Winnt.h) - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1134.001"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeDelegateSessionUserImpersonatePrivilege$'; Severity = 'Hint' }
@@ -10702,7 +10981,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Generate security audits - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/generate-security-audits" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1070.001"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeAuditPrivilege$'; Severity = 'Hint' }
@@ -10756,7 +11035,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Create global objects - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/create-global-objects" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1068"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeCreateGlobalPrivilege$'; Severity = 'Hint' }
@@ -10781,7 +11060,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Profile single process - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-single-process" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1057"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeProfileSingleProcessPrivilege$'; Severity = 'Hint' }
@@ -10806,7 +11085,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "Profile system performance - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/profile-system-performance" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1057"
 	    Triggers = @(
 	        @{ Attribute = 'UserRight'; Pattern = '^SeSystemProfilePrivilege$'; Severity = 'Hint' }
@@ -10832,7 +11111,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	    References = @(
 	        @{ Title = "User Rights Assignment - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/user-rights-assignment" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "-"
 	    Triggers = @(
 	        @{ Attribute = 'RemovedFromDefault'; Severity = 'Note' }
@@ -11034,6 +11313,7 @@ Get-ADObject -SearchBase $schema `
 	        @{ Attribute = 'ServerSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
 	        @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(DC default'; Severity = 'Note'; SeverityOnly = $true }
 	        @{ Attribute = 'ServerSigning'; Pattern = '^Not configured \(not required'; Severity = 'Hint' }
+	        @{ Attribute = 'ServerSigning'; Pattern = '^Not required \('; Severity = 'Finding' }
 	        @{ Attribute = 'ClientSigning'; Pattern = '^Disabled$'; Severity = 'Finding' }
 	        @{ Attribute = 'ClientSigning'; Pattern = '^(Optional|Not Configured|Not Required)$'; Severity = 'Hint' }
 	    )
@@ -11434,7 +11714,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Title = "VNC Password Readable"
 	    Risk = "Finding"
 	    BaseScore = 50
-	    Description = "A VNC password is stored where it can be read here: in a VNC viewer's connection file (.vnc), the .ini of UltraVNC or TightVNC, or a registry value a Group Policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC. VNC keeps it DES-encrypted with a key that is the same in every installation and part of the published source code, so the stored value is the password - shown decrypted here. A VNC password is at most eight characters and is not tied to an account: whoever has it connects to every VNC server that uses it."
+	    Description = "A VNC password is stored where it can be read here: in a VNC viewer's connection file (.vnc), the .ini of UltraVNC or TightVNC, or a registry value a Group Policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC. VNC keeps it DES-encrypted with a key that is the same in every installation and part of the published source code, so the stored value is the password - shown decrypted here. The reason that form exists: the classic VNC authentication is a DES operation keyed with the password itself, so the server has to be able to read it back. One 8-byte block carries a password of up to eight characters, and a longer one is stored as several blocks encrypted the same way. A VNC password is not tied to an account: whoever has it connects to every VNC server that uses it."
 	    Impact = @(
 	        "Screen and keyboard of every VNC server the password opens - with a full-access password, the session of whoever is signed in there"
 	        "Readable by whoever can read the share the file or policy sits on - in SYSVOL or NETLOGON, every authenticated user"
@@ -11442,7 +11722,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    )
 	    Attack = @(
 	        "1. Read the .vnc file, the .ini or the policy from the share"
-	        "2. Decrypt the 16 hex digits with the fixed VNC DES key"
+	        "2. Decrypt every 16 hex digits of the value with the fixed VNC DES key"
 	        "3. Connect to the host the file names, or to any VNC server that shares the password"
 	    )
 	    Remediation = @(
@@ -11464,6 +11744,42 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    MITRE = "T1552.001"
 	    Triggers = @(
 	        @{ Attribute = 'credentialType'; Pattern = '^VNC Password$'; Severity = 'Finding' }
+	    )
+	}
+	'CREDENTIAL_VNC_PASSWORD_HASH' = @{
+	    Title = "VNC Password Deployed in a Form That Cannot Be Reversed"
+	    Risk = "Hint"
+	    BaseScore = 15
+	    Description = "A Group Policy deploys a VNC password as a registry value, and the stored value is not the form that can be read back. RealVNC Server stores the password as a salted hash - PBKDF2, 20000 rounds by default - from 6.11.0 onwards wherever its own encryption is enabled. Its RSA/AES security types carry the password inside the encrypted channel, so the server checks the password against the hash instead of having to read the password back out of its own configuration, which is what the classic DES-keyed challenge required. That makes the stored value useless on its own: it is not a credential, holding it authenticates nobody, and with the layout undocumented there is nothing to crack it with either. What the value does say is worth reading: the machines the policy reaches run a VNC server, they authenticate against a shared VNC password rather than a Windows account, and every one of them has the same password."
+	    Impact = @(
+	        "No password is recovered from the value itself - this is what it is, not what it opens"
+	        "Names the machines that run a VNC server with password authentication, to every authenticated user who reads SYSVOL"
+	        "One password for all of them: whoever learns it anywhere else reaches every machine in the policy's scope"
+	    )
+	    Attack = @(
+	        "1. Read the policy from SYSVOL to learn which machines run a VNC server"
+	        "2. Find those servers on the network (TCP 5900 upwards) and look for a password that can be read back - an older server that still stores the reversible form, a viewer's connection file with a saved password, or a host where the registry can be read"
+	        "3. Use what recovers there against every machine the policy reaches, because they share the password"
+	    )
+	    Remediation = @(
+	        "Authenticate VNC against the Windows account (RealVNC system authentication, UltraVNC MS-Logon) instead of one shared VNC password"
+	        "Do not deploy a VNC password by Group Policy: the policy itself tells every authenticated user which machines run a VNC server and that they share one password"
+	        "Keep the VNC server's own encryption enabled - that is what makes the stored form irreversible, and turning it off converts the password back to the reversible one"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Read the VNC values a policy deploys, to see which form each one is stored in"
+	            Command = "Get-ChildItem -Path '\\domain.com\SYSVOL\domain.com\Policies' -Recurse -Include 'Registry.xml' -ErrorAction SilentlyContinue | Select-String -Pattern 'VNC' -SimpleMatch | Select-Object Path, Line"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "VNC Password storage in RealVNC Server"; Url = "https://help.realvnc.com/hc/en-us/articles/6661259023389" }
+	        @{ Title = "Unsecured Credentials: Credentials In Files - MITRE"; Url = "https://attack.mitre.org/techniques/T1552/001/" }
+	    )
+	    Tools = @("Snaffler", "Manual SYSVOL search")
+	    MITRE = "T1552.001"
+	    Triggers = @(
+	        @{ Attribute = 'credentialType'; Pattern = '^VNC Password Hash$'; Severity = 'Hint' }
 	    )
 	}
 	'CREDENTIAL_NET_USE' = @{
@@ -11572,7 +11888,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	    Tools = @("Snaffler", "trufflehog", "grep", "Manual review")
 	    MITRE = "T1552.001"
 	    Triggers = @(
-	        @{ Attribute = 'credentialType'; Pattern = 'Password|Credential|PSExec|Schtasks|Cmdkey|SecureString|API key'; ExcludePattern = '\(needs review\)'; Severity = 'Finding' }
+	        @{ Attribute = 'credentialType'; Pattern = 'Password|Credential|PSExec|Schtasks|Cmdkey|SecureString|API key'; ExcludePattern = '\(needs review\)|^VNC Password'; Severity = 'Finding' }
 	        @{ Attribute = 'matchedLine'; Custom = 'credential_not_needs_review'; Severity = 'Finding' }
 	    )
 	}
@@ -11950,7 +12266,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Title = "Kerberos Policy - Microsoft Learn"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/kerberos-policy" }
 	        @{ Title = "Maximum lifetime for user ticket"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/maximum-lifetime-for-user-ticket" }
 	    )
-	    Tools = @("Rubeus", "mimikatz")
+	    Tools = @("Rubeus", "Mimikatz")
 	    MITRE = "T1550.003"
 	    Triggers = @(
 	        @{ Attribute = 'ticketLifetime'; Pattern = '^EXTENDED'; Severity = 'Hint' }
@@ -12001,7 +12317,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Title = "Kerberos KDC usage of RC4 - CVE-2026-20833"; Url = "https://support.microsoft.com/en-us/servicing/os/windows/2025/11/how-to-manage-kerberos-kdc-usage-of-rc4-for-service-account-ticket-issuance-changes-related-to-cve-2" }
 	        @{ Title = "Decrypting the Selection of Supported Kerberos Encryption Types"; Url = "https://techcommunity.microsoft.com/t5/core-infrastructure-and-security/decrypting-the-selection-of-supported-kerberos-encryption-types/ba-p/1628797" }
 	    )
-	    Tools = @("Rubeus", "Hashcat")
+	    Tools = @("Rubeus", "hashcat")
 	    MITRE = "T1558"
 	    Triggers = @(
 	        @{ Attribute = 'trustEncryptionTypes'; Pattern = '^(?!.*AES)'; Severity = 'Hint' }
@@ -12172,7 +12488,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Title = "Trust Attributes - MS-ADTS 6.1.6.7.9"; Url = "https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/e9a2d23c-c31e-4a6f-88a0-6646571e5720" }
 	        @{ Title = "Security Considerations for Trusts"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-considerations-for-trusts" }
 	    )
-	    Tools = @("netdom", "Get-ADTrust", "mimikatz")
+	    Tools = @("netdom", "Get-ADTrust", "Mimikatz")
 	    MITRE = "T1134.005"
 	    Triggers = @(
 	        @{ Attribute = 'isTreatAsExternal'; Pattern = '^True$'; Custom = 'is_not_within_forest_trust'; Severity = 'Finding' }
@@ -12199,7 +12515,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Title = "Securing Domain Controllers Against Attack - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/securing-domain-controllers-against-attack" }
 	        @{ Title = "Enterprise access model - Microsoft"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "-"
 	    Triggers = @(
 	        @{ Attribute = 'domainControllerCount'; Severity = 'Hint' }
@@ -12282,7 +12598,7 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
 	        @{ Title = "Overview of Windows Server Upgrades"; Url = "https://learn.microsoft.com/en-us/windows-server/get-started/upgrade-overview" }
 	        @{ Title = "Perform an In-Place Upgrade of Windows Server"; Url = "https://learn.microsoft.com/en-us/windows-server/get-started/perform-in-place-upgrade" }
 	    )
-	    Tools = @("nmap", "Metasploit", "BlueKeep scanner")
+	    Tools = @("Nmap", "Metasploit", "BlueKeep scanner")
 	    MITRE = "T1210"
 	    Triggers = @(
 	        @{ Attribute = 'eolDate'; Severity = 'Finding' }
@@ -14759,7 +15075,7 @@ foreach ($name in 'ms-PKI-AccountCredentials', 'ms-PKI-DPAPIMasterKeys') {
 	        @{ Title = "Confidential attributes (searchFlags fCONFIDENTIAL)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-searchflags" }
 	        @{ Title = "CVE-2022-30170 - Credential Roaming elevation of privilege"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-30170" }
 	    )
-	    Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+	    Tools = @("adPEAS", "SharpDPAPI", "Mimikatz")
 	    MITRE = "T1552.004"
 	    Triggers = @(
 	        @{ Attribute = 'RoamedMaterial'; Severity = 'Hint' }
@@ -14818,7 +15134,7 @@ Get-ADUser <targetuser> -Properties msPKIAccountCredentials, msPKIDPAPIMasterKey
 	        @{ Title = "Confidential attributes (searchFlags fCONFIDENTIAL)"; Url = "https://learn.microsoft.com/en-us/windows/win32/adschema/a-searchflags" }
 	        @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
 	    )
-	    Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+	    Tools = @("adPEAS", "SharpDPAPI", "Mimikatz")
 	    MITRE = "T1552.004"
 	    Triggers = @(
 	        @{ Attribute = 'ReadableBy'; Pattern = '^Any authenticated user'; Severity = 'Finding' }
@@ -14883,7 +15199,7 @@ Set-Acl -Path "AD:\<container DN>" -AclObject $acl
 	        @{ Title = "Credential Roaming (Microsoft Learn)"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/credential-roaming" }
 	        @{ Title = "Confidential attributes - READ_PROPERTY plus CONTROL_ACCESS"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/mark-attribute-as-confidential" }
 	    )
-	    Tools = @("adPEAS", "SharpDPAPI", "mimikatz")
+	    Tools = @("adPEAS", "SharpDPAPI", "Mimikatz")
 	    MITRE = "T1552.004"
 	    Triggers = @(
 	        @{ Attribute = 'dangerousRights'; Pattern = 'ms-PKI-'; Severity = 'Finding' }
@@ -15109,6 +15425,48 @@ foreach ($oid in $linkedOIDs) {
 	    Triggers = @(
 	        @{ Attribute = 'CACertWeakSignature'; Pattern = '.'; Severity = 'Finding' }
 	        @{ Attribute = 'CACertSignatureAlgorithm'; Pattern = '(?i)sha1|md5|md2'; Severity = 'Finding' }
+	    )
+	}
+	'ADCS_TEMPLATE_OUTDATED_ALGORITHM' = @{
+	    Title = "Certificate Template Prescribes an Outdated Algorithm"
+	    Risk = "Hint"
+	    BaseScore = 20
+	    Description = "A schema version 4 certificate template tells the enrolling client which algorithms to use, and one of them is outdated. The settings live in msPKI-RA-Application-Policies, which for such a template holds name-type-value triplets rather than the policy OIDs its name suggests (MS-CRTD syntax option 2), so they are easy to miss. Two of them matter. msPKI-Hash-Algorithm is the hash the client signs its request with: that signature is the proof that the requester holds the private key belonging to the public key in the request, and a hash open to collisions is as much proof as the hash is worth. msPKI-Symmetric-Algorithm and msPKI-Symmetric-Key-Length are used where the template archives the private key: the client encrypts the key with that algorithm before sending it to the CA, so the algorithm is the whole protection of a private key in transit and in the CA's archive. Note what this is not: the algorithm the CA signs the issued certificate with is the CA's own setting, not the template's."
+	    Impact = @(
+	        "Where the template archives private keys, every key enrolled through it is wrapped with the named algorithm - a 56-bit or RC2 wrapper is recoverable, and the archived key belongs to the subject, not to the CA"
+	        "A request signed with MD5 or SHA1 carries a proof of possession only as strong as that hash"
+	        "The setting reaches every enrollment from this template, and a template is usually a copy of an older one - the same value tends to sit on several"
+	    )
+	    Attack = @(
+	        "1. Read the template from the Configuration partition, which every authenticated user may do, and note the algorithms it prescribes"
+	        "2. Where key archival is on and the symmetric algorithm is weak, obtain an enrollment request - from the network, from the CA's request queue, or from its key archive - and unwrap the private key offline"
+	        "3. Use the recovered private key with the certificate that was issued for it, as the subject it was issued to"
+	    )
+	    Remediation = @(
+	        "In certtmpl.msc, Cryptography tab of the template: set the request hash to SHA256 or stronger"
+	        "Where the template archives the subject's key, choose AES-256 for the archival algorithm instead of a 3DES or DES default"
+	        "Re-enroll the certificates issued from the template whose private key was archived under the weak algorithm - changing the template does not re-protect a key already in the archive"
+	        "Check the templates this one was copied from and copied to: the setting travels with the copy"
+	    )
+	    RemediationCommands = @(
+	        @{
+	            Description = "Show every setting of the template, the cryptography ones included"
+	            Command = "certutil -v -template TEMPLATE_NAME"
+	        }
+	        @{
+	            Description = "Read the raw attribute the settings are stored in"
+	            Command = "Get-ADObject -SearchBase (`"CN=Certificate Templates,CN=Public Key Services,CN=Services,`" + (Get-ADRootDSE).configurationNamingContext) -LDAPFilter '(cn=TEMPLATE_NAME)' -Properties 'msPKI-RA-Application-Policies','msPKI-Template-Schema-Version' | Select-Object -ExpandProperty 'msPKI-RA-Application-Policies'"
+	        }
+	    )
+	    References = @(
+	        @{ Title = "MS-CRTD: msPKI-RA-Application-Policies, Syntax Option 2"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-crtd/c55ec697-be3f-4117-8316-8895e4399237" }
+	        @{ Title = "MS-WCCE: how the client uses these properties"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wcce/b083a3c4-f57e-4925-b3f8-3dba81dae946" }
+	        @{ Title = "Request Handling and key archival - Microsoft"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc732007(v=ws.10)" }
+	    )
+	    Tools = @("certutil", "Certify", "Certipy")
+	    MITRE = "T1552.004"
+	    Triggers = @(
+	        @{ Attribute = 'TemplateKeySettings'; Severity = 'Hint' }
 	    )
 	}
 	'ADCS_CA_SHORT_KEY' = @{
@@ -15772,7 +16130,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Network access: Allow anonymous SID/Name translation"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-allow-anonymous-sidname-translation" }
 	    )
-	    Tools = @("impacket-lookupsid", "rpcclient")
+	    Tools = @("lookupsid.py", "rpcclient")
 	    MITRE = "T1087.002"
 	    Triggers = @(
 	        @{ Attribute = 'anonymousSidNameTranslation'; Pattern = '^Allowed$'; Severity = 'Hint' }
@@ -16196,7 +16554,7 @@ $acl.Access | Where-Object {
 	        @{ Title = "Protected Users Security Group"; Url = "https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group" }
 	        @{ Title = "Securing Privileged Access - Tier model"; Url = "https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-access-model" }
 	    )
-	    Tools = @("BloodHound", "mimikatz", "Rubeus")
+	    Tools = @("BloodHound", "Mimikatz", "Rubeus")
 	    MITRE = "T1003.001"
 	    Triggers = @(
 	        @{ Attribute = 'tier0Groups'; Custom = 'tier0_unprotected'; Severity = 'Finding' }
@@ -17673,7 +18031,7 @@ $acl.Access | Where-Object {
 	        @{ Title = "MS-KILE 2.2.7: Supported Encryption Types Bit Flags"; Url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kile/6cfc7b50-11ed-4b4d-846d-6f08f0812919" }
 	        @{ Title = "Decrypting the Selection of Supported Kerberos Encryption Types"; Url = "https://techcommunity.microsoft.com/blog/askds/decrypting-the-selection-of-supported-kerberos-encryption-types/1628797" }
 	    )
-	    Tools = @("Rubeus", "Impacket GetUserSPNs.py", "hashcat")
+	    Tools = @("Rubeus", "GetUserSPNs.py", "hashcat")
 	    MITRE = "T1558.003"
 	    Triggers = @(
 	        @{ Attribute = 'msDS-SupportedEncryptionTypes'; Custom = 'enc_rc4_without_aes'; Severity = 'Finding' }
@@ -17795,7 +18153,7 @@ $acl.Access | Where-Object {
 	        @{ Title = "Abusing Active Directory ACLs/ACEs"; Url = "https://www.ired.team/offensive-security-experiments/active-directory-kerberos-abuse/abusing-active-directory-acls-aces" }
 	        @{ Title = "DACL Abuse - The Hacker Recipes"; Url = "https://www.thehacker.recipes/ad/movement/dacl/" }
 	    )
-	    Tools = @("BloodHound", "PowerView", "Impacket dacledit.py", "Defender for Identity")
+	    Tools = @("BloodHound", "PowerView", "dacledit.py", "Defender for Identity")
 	    MITRE = "T1078.002"
 	    Triggers = @(
 	        @{ Attribute = 'dangerousRights'; Custom = 'dangerous_rights_expected'; Severity = 'Hint'; SeverityOnly = $true }
@@ -17891,7 +18249,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Group Policy overview - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/group-policy/group-policy-overview" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "-"
 	}
 	'GPO_TASK_FIELD_SEVERITY' = @{
@@ -18156,7 +18514,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Do not store LAN Manager hash value"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-do-not-store-lan-manager-hash-value-on-next-password-change" }
 	    )
-	    Tools = @("secretsdump", "hashcat")
+	    Tools = @("secretsdump.py", "hashcat")
 	    MITRE = "T1003.002"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'LM hash storage'; Severity = 'Finding' }
@@ -18184,7 +18542,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Pass-the-Hash is Dead: LocalAccountTokenFilterPolicy"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
 	    )
-	    Tools = @("CrackMapExec", "impacket")
+	    Tools = @("NetExec", "Impacket")
 	    MITRE = "T1550.002"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Remote UAC token filtering'; Severity = 'Finding' }
@@ -18238,7 +18596,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "UAC and remote restrictions"; Url = "https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/user-account-control-and-remote-restriction" }
 	    )
-	    Tools = @("CrackMapExec")
+	    Tools = @("NetExec")
 	    MITRE = "T1548.002"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'User Account Control'; Severity = 'Finding' }
@@ -18321,7 +18679,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Disabling LSA/Defender defences"; Url = "https://research.splunk.com/endpoint/45cd08f8-a2c9-4f4e-baab-e1a0c624b0ab/" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1562.001"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Microsoft Defender Antivirus disabled'; Severity = 'Hint' }
@@ -18398,7 +18756,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "LocalAccountTokenFilterPolicy / FilterAdministratorToken"; Url = "https://blog.harmj0y.net/redteaming/pass-the-hash-is-dead-long-live-localaccounttokenfilterpolicy/" }
 	    )
-	    Tools = @("CrackMapExec")
+	    Tools = @("NetExec")
 	    MITRE = "T1550.002"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'RID-500'; Severity = 'Hint' }
@@ -18423,7 +18781,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "CVE-2018-0886 CredSSP"; Url = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2018-0886" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1557"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'CredSSP encryption oracle'; Severity = 'Hint' }
@@ -18448,7 +18806,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Domain member: Disable machine account password changes"; Url = "https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/domain-member-disable-machine-account-password-changes" }
 	    )
-	    Tools = @("Mimikatz", "impacket")
+	    Tools = @("Mimikatz", "Impacket")
 	    MITRE = "T1558.002"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Machine account password rotation'; Severity = 'Hint' }
@@ -18504,7 +18862,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Network Level Authentication for Remote Desktop Services connections"; Url = "https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1021.001"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Network Level Authentication'; Severity = 'Finding' }
@@ -18531,7 +18889,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Require use of specific security layer for remote (RDP) connections"; Url = "https://admx.newyard.nl/gpo/require-use-of-specific-security-layer-for-remote-rdp-connections/" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1557"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP Security Layer'; Severity = 'Finding' }
@@ -18556,7 +18914,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Set client connection encryption level"; Url = "https://admx.newyard.nl/gpo/require-use-of-specific-security-layer-for-remote-rdp-connections/" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1557"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'RDP encryption level'; Severity = 'Hint' }
@@ -18582,7 +18940,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Windows Firewall Group Policy settings"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/embedded/jj963363(v=winembedded.81)" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1562.004"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Windows Firewall disabled'; Severity = 'Hint' }
@@ -18608,7 +18966,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Policy CSP - LanmanWorkstation"; Url = "https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-lanmanworkstation" }
 	    )
-	    Tools = @("-")
+	    Tools = @()
 	    MITRE = "T1557.001"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = 'Insecure guest logon'; Severity = 'Hint' }
@@ -19055,7 +19413,7 @@ $acl.Access | Where-Object {
 	    References = @(
 	        @{ Title = "Interactive logon: Number of previous logons to cache"; Url = "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available" }
 	    )
-	    Tools = @("Mimikatz", "secretsdump", "hashcat")
+	    Tools = @("Mimikatz", "secretsdump.py", "hashcat")
 	    MITRE = "T1003.005"
 	    Triggers = @(
 	        @{ Attribute = 'VulnerabilityName'; Pattern = '^More cached domain logons than the Windows default'; Severity = 'Hint' }
@@ -19324,7 +19682,7 @@ $acl.Access | Where-Object {
 	        @{ Title = "Disable RegisterSpoolerRemoteRpcEndPoint"; Url = "https://github.com/rdboboia/disable-RegisterSpoolerRemoteRpcEndPoint" }
 	        @{ Title = "A Practical Guide to PrintNightmare"; Url = "https://itm4n.github.io/printnightmare-exploitation/" }
 	    )
-	    Tools = @("SpoolSample", "PetitPotam", "printerbug.py")
+	    Tools = @("SpoolSample", "PetitPotam", "PrinterBug.py")
 	    MITRE = "T1187"
 	    Triggers = @(
 	        @{ Attribute = 'SpoolerClientConnections'; Pattern = '^Accepted'; Severity = 'Hint' }
@@ -22234,14 +22592,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    Module = "Domain"
 	    Category = "Domain"
 	    SectionTitle = "SMB Signing Configuration"
-	    Summary = "The SMB signing values in force on member servers and clients when every signing policy is linked to the Domain Controllers OU only."
+	    Summary = "The SMB signing values in force on member servers and clients when no policy that reaches them requires server signing."
 	    WhyItMatters = "A policy that requires signing on the domain controllers protects connections to the domain controllers. Member servers and clients then sign as their Windows version does by default: before Windows Server 2025 a server enables signing without requiring it, which is the state an SMB relay needs."
 	    WhatWeCheck = @(
-	        "Whether any linked and enabled policy outside the Domain Controllers OU sets SMB signing"
-	        "The Windows default the members fall back to, server side and client side"
+	        "Whether a linked and enabled policy outside the Domain Controllers OU - at the domain root, on a site or on another OU - requires server signing"
+	        "The values a member computer in an OU without a signing policy of its own gets: from the policies at the domain root and on its site, by precedence, or the Windows default"
+	        "decidedBy lists each policy with the values it decides in brackets"
 	        "Not tested: the computers themselves - a value set locally or left behind by a former policy is not visible here, and Windows 11 24H2 and Windows Server 2025 require signing by default"
+	        "Not tested: inheritance blocked on an OU, and which site a computer is in"
 	    )
-	    SecureMessage = "A policy that reaches member servers and clients sets SMB signing for them."
+	    SecureMessage = "A policy that reaches member servers and clients requires SMB server signing."
 	}
 	'SMBSigningWeakened' = @{
 	    TitleFormat = "SMB Signing Weakened: {Name}"
@@ -22661,6 +23021,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Template ACLs allowing modification (ESC4)"
 	        "Schema version and security extension inclusion (ESC9, ESC15)"
 	        "Issuance policies linked to AD groups (ESC13)"
+	        "The algorithms a schema version 4 template prescribes to the enrolling client, where one of them is outdated"
 	    )
 	    SecureMessage = "No vulnerable certificate templates found. All templates restrict enrollment to privileged users and do not allow dangerous configurations like enrollee-supplied SANs."
 	}
@@ -22859,14 +23220,16 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    Module = "Accounts"
 	    Category = "Accounts"
 	    SectionTitle = "RODC Password Replication Policy"
-	    Summary = "Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of."
-	    WhyItMatters = "A read-only Domain Controller stands where physical security is weakest, and every password it caches can be taken from it. Its password replication policy decides which accounts it may cache; a privileged account allowed there is a privileged account outside the Tier-0 boundary."
+	    Summary = "Checks which privileged accounts a read-only Domain Controller may cache, or has cached, the password of, and who administers it or may make itself its administrator."
+	    WhyItMatters = "A read-only Domain Controller stands where physical security is weakest, and every password it caches can be taken from it. Its password replication policy decides which accounts it may cache; a privileged account allowed there is a privileged account outside the Tier-0 boundary. Its administrator holds what it caches and the keys of its krbtgt account, and managedBy on its computer object makes a principal that administrator without any group membership."
 	    WhatWeCheck = @(
 	        "Each read-only Domain Controller's allow list (msDS-RevealOnDemandGroup) and deny list (msDS-NeverRevealGroup) against the token of every privileged account, primary group included - deny wins"
 	        "The privileged accounts whose secrets it has received already (msDS-RevealedUsers)"
 	        "Whether the Denied RODC Password Replication Group is still on its deny list"
+	        "managedBy on its computer object: the principal named there is an implicit member of its Administrators group - reported when it is outside Tier-0, a broad group as such"
+	        "Who may write that managedBy: the owner, GenericAll, GenericWrite, a write of every property or of managedBy, WriteDacl and WriteOwner, outside Tier-0 - an explicit Deny of the write is honoured, an operator group is reported"
 	    )
-	    SecureMessage = "No read-only Domain Controller may cache the password of a privileged account, and none holds one."
+	    SecureMessage = "No read-only Domain Controller may cache the password of a privileged account or holds one, and none is administered by a principal outside Tier-0 or lets one make itself its administrator."
 	    PrimaryFindingId = 'RODC_PRIVILEGED_PASSWORD_ALLOWED'
 	}
 	'PasswordNotRequired' = @{
@@ -23292,8 +23655,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Groups.xml, ScheduledTasks.xml, and similar GPP files"
 	        "cpassword attributes and their decryption"
 	        "AutoAdminLogon credentials in Registry.xml"
+	        "The free text of every preference item - the Description on its Common tab, a scheduled task's own description, and the description a local user or group item sets - read with the patterns of a script line"
 	        "String registry values named like a password - Password, ProxyPassword, Pwd - in Registry.xml and in the Administrative Template file Registry.pol"
-	        "VNC passwords a policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC, decrypted (one DES key shared by every VNC installation)"
+	        "VNC passwords a policy deploys for RealVNC, TightVNC, TigerVNC or UltraVNC, decrypted (one DES key shared by every VNC installation) - and what the value is when it is a form that cannot be reversed"
 	    )
 	    SecureMessage = "No credentials were found in Group Policy Preference files. GPP password storage (cpassword) is not used in this domain."
 	}
@@ -23309,6 +23673,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "net use commands with passwords"
 	        "Configuration files with sensitive data"
 	        "VNC viewer connection files (.vnc) and VNC .ini files, with the password decrypted"
+	        "The comment of a policy (GPO.cmt) and the comments on its settings (comment.cmtx), which every domain user can read"
 	    )
 	    SecureMessage = "No credentials or sensitive information were found in SYSVOL/NETLOGON scripts and configuration files."
 	}
@@ -23506,6 +23871,38 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    SecureMessage = "Every user right assigned via GPO matches the Windows default. No policy grants a privilege beyond the set Windows ships."
 	    PrimaryFindingId = 'GPO_USERRIGHT_SEDEBUG'
 	}
+	'GPOLogonRestriction' = @{
+	    TitleFormat = "GPO Logon Restrictions: {GPOName}"
+	    Module = "Rights"
+	    Category = "Rights"
+	    SectionTitle = "Logons Denied via GPO"
+	    Summary = "Reports which logons Group Policy denies, to whom and on which machines, and whether any policy keeps Domain Admins and local administrator accounts off member computers."
+	    WhyItMatters = "A deny logon right takes one kind of logon away and wins over every right that would allow it. Denying Domain Admins the logon on workstations and member servers keeps their credentials off the machines an attacker reaches first; denying local administrator accounts the network logon stops one machine's local password from opening the next. Neither is the Windows default, which denies the Guest account alone. Denying a broad group instead locks out everyone it covers."
+	    WhatWeCheck = @(
+	        "Deny access to this computer from the network, Deny log on locally, Deny log on through Remote Desktop Services, Deny log on as a batch job and Deny log on as a service in GptTmpl.inf of every GPO"
+	        "Domain Admins - or a group Domain Admins is a member of - denied a logon on member computers"
+	        "Local account and member of Administrators group, Local account, and the local Administrator account by its name, denied on member computers"
+	        "A broad group denied, and Domain Admins denied on domain controllers - a lockout"
+	        "Whether any policy that applies denies Domain Admins the local or Remote Desktop logon, and local administrator accounts the network logon, on member computers"
+	        "Not evaluated: which of several policies setting the same right wins on a machine, and a machine's local policy"
+	    )
+	    SecureMessage = "Policies keep Domain Admins and local administrator accounts off member computers, and none locks out a broad group."
+	    PrimaryFindingId = 'GPO_TIER0_LOGON_NOT_DENIED'
+	}
+	'GPOUserRightValue' = @{
+	    TitleFormat = "GPO User Rights Not Judged: {GPOName}"
+	    Module = "Rights"
+	    Category = "Rights"
+	    SectionTitle = "User Rights via GPO That Depart From the Windows Default"
+	    Summary = "Lists the user rights a policy file assigns that Get-GPOUserRightsAssignment does not judge (-IncludeUnknown)."
+	    WhyItMatters = "The comparison against the Windows defaults covers the rights that are a step to escalation or lateral movement. Rights outside that table - Access this computer from the network, Increase scheduling priority and the like - are assigned by policies as well. Listed here as they are, so that what the table does not cover can still be read."
+	    WhatWeCheck = @(
+	        "Every right in GptTmpl.inf [Privilege Rights] that the table of the check does not name"
+	        "Not the five deny rights - Get-GPOLogonRestrictions reads those"
+	        "Not judged: the assignments are listed as they are, without a severity"
+	    )
+	    SecureMessage = "No user right outside the list of the check is assigned."
+	}
 	'MachineAccountQuota' = @{
 	    TitleFormat = "Machine Account Quota Configuration"
 	    Module = "Rights"
@@ -23571,8 +23968,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	    Summary = "Finds computers running an end-of-life Microsoft operating system."
 	    WhyItMatters = "EOL systems no longer receive security updates. They have known, unpatched vulnerabilities that attackers can exploit for initial access or lateral movement."
 	    WhatWeCheck = @(
-	        "Windows XP, Vista, 7, 8/8.1, 10 and 11, Server 2003 through 2022"
+	        "Windows XP, Vista, 7, 8/8.1, 10 and 11, Server 2003 through 2025"
 	        "Windows 11 per release, from the build in operatingSystemVersion, with the earlier end date for Home and Pro and the later one for Enterprise and Education"
+	        "The long-term servicing editions per release and per edition, because an IoT Enterprise LTSC device is supported for ten years where the Enterprise LTSC of the same release has five"
 	        "The general support end separately from the end of the paid Extended Security Updates window, because a machine between the two is patched only if that extension was bought"
 	        "Last logon timestamp to filter active vs stale"
 	    )
@@ -23689,6 +24087,8 @@ $Script:ObjectTypeDefinitions = [ordered]@{
 	        "Whether a path lies in a directory where every user may change or add files by Windows default"
 	        "UNC paths, whose share decides what the task runs - who may write the share is not read"
 	        "cmd.exe /c lines with an unquoted program path, which cmd.exe splits at the first space"
+	        "When each task runs: every trigger with its time, interval, weekdays, months, repetition, delay and end - for both file formats, the times of a v1 task in UTC as the format stores them"
+	        "An immediate task, and a task registered by the policy, runs again at every Group Policy refresh - unless the item is set to apply once"
 	        "Not tested: the permissions on the hosts themselves, and who may write the share a UNC path names"
 	    )
 	    SecureMessage = "No vulnerable GPO scheduled tasks found. No task starts code from a UNC path or from a directory that ordinary users can write by Windows default."
@@ -24002,7 +24402,12 @@ $Script:WindowsLifecycle = @{
 	'Windows 10 LTSB 2016' = @{ ExtendedEnd = '2026-10-13' }
 	'Windows 10 LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }
 	'Windows 10 LTSC 2021' = @{ ExtendedEnd = '2027-01-12' }
-	'Windows 11 LTSC 2024' = @{ ExtendedEnd = '2029-10-09' }
+	'Windows 10 IoT LTSB 2015' = @{ ExtendedEnd = '2025-10-14' }
+	'Windows 10 IoT LTSB 2016' = @{ ExtendedEnd = '2026-10-13' }
+	'Windows 10 IoT LTSC 2019' = @{ ExtendedEnd = '2029-01-09' }
+	'Windows 10 IoT LTSC 2021' = @{ ExtendedEnd = '2032-01-13' }
+	'Windows 11 LTSC 2024'     = @{ ExtendedEnd = '2029-10-09' }
+	'Windows 11 IoT LTSC 2024' = @{ ExtendedEnd = '2034-10-10' }
 	'Windows Server 2003'    = @{ ExtendedEnd = '2015-07-14' }
 	'Windows Server 2008'    = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
 	'Windows Server 2008 R2' = @{ ExtendedEnd = '2020-01-14'; ESUEnd = '2023-01-10' }
@@ -24077,10 +24482,12 @@ function Get-NormalizedOSName {
 	            if ($OSVersion -match '\((\d+)\)') {
 	                $buildNumber = [int]$Matches[1]
 	            }
-	            if ($buildNumber -ge 17763 -and $buildNumber -lt 19044) { return 'Windows 10 LTSC 2019' }
-	            if ($buildNumber -ge 19044) { return 'Windows 10 LTSC 2021' }
-	            if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return 'Windows 10 LTSB 2016' }
-	            if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return 'Windows 10 LTSB 2015' }
+	            $iotPart = ''
+	            if ($OSName -match 'IoT') { $iotPart = 'IoT ' }
+	            if ($buildNumber -ge 17763 -and $buildNumber -lt 19044) { return "Windows 10 ${iotPart}LTSC 2019" }
+	            if ($buildNumber -ge 19044) { return "Windows 10 ${iotPart}LTSC 2021" }
+	            if ($buildNumber -ge 14393 -and $buildNumber -lt 17763) { return "Windows 10 ${iotPart}LTSB 2016" }
+	            if ($buildNumber -ge 10240 -and $buildNumber -lt 14393) { return "Windows 10 ${iotPart}LTSB 2015" }
 	        }
 	        return 'Windows 10'
 	    }
@@ -24088,7 +24495,11 @@ function Get-NormalizedOSName {
 	        $buildNumber = 0
 	        if ($OSVersion -match '\((\d+)\)') { $buildNumber = [int]$Matches[1] }
 	        if ($OSName -match 'LTSC') {
-	            if ($buildNumber -eq 26100) { return 'Windows 11 LTSC 2024' }
+	            $iotPart = ''
+	            if ($OSName -match 'IoT') { $iotPart = 'IoT ' }
+	            if ($buildNumber -eq 26100 -or $buildNumber -eq 26200 -or $buildNumber -eq 26300) {
+	                return "Windows 11 ${iotPart}LTSC 2024"
+	            }
 	            return 'Windows 11'
 	        }
 	        if ($Script:Windows11Builds.ContainsKey($buildNumber)) {
@@ -25208,6 +25619,7 @@ function Show-ConnectionError {
 	        "PermissionError",
 	        "DomainError",
 	        "KerberosError",
+	        "KerberosTicketError",
 	        "NTLMDisabledError",
 	        "TicketImportError",
 	        "GenericError"
@@ -25472,8 +25884,26 @@ function Show-ConnectionError {
 	            elseif ($effectiveDetails) {
 	                $detailsArray += $effectiveDetails
 	            }
-	            Show-Message -Type Error -Title "Authentication failed: Invalid credentials" -Details $detailsArray
+	            $kerberosTitle = if ($null -ne $ErrorCode -and $ErrorCodeType -eq "Kerberos") {
+	                "Authentication failed: Invalid credentials"
+	            } else {
+	                "Kerberos authentication failed"
+	            }
+	            Show-Message -Type Error -Title $kerberosTitle -Details $detailsArray
 	            $ThrowMessage = "Authentication failed"
+	        }
+	        "KerberosTicketError" {
+	            $detailsArray = @()
+	            if ($effectiveDetails) {
+	                $detailsArray += $effectiveDetails
+	            }
+	            $hints = @()
+	            if ($ErrorCode -eq 82) {
+	                $hints += "Windows looks up the domain controller and the domain through the system DNS."
+	                $hints += "A VPN or a second network adapter with its own DNS server can answer that lookup instead."
+	            }
+	            Show-Message -Type Error -Title "Kerberos ticket not usable" -Details $detailsArray -Hints $hints
+	            $ThrowMessage = "Kerberos ticket not usable"
 	        }
 	        "NTLMDisabledError" {
 	            $detailsArray = @("Windows SSPI negotiation failed - NTLM unavailable and Kerberos not possible")
@@ -25724,6 +26154,8 @@ function Connect-LDAP {
 	    [Parameter(Mandatory=$false)]
 	    [switch]$ForceNTLM,
 	    [Parameter(Mandatory=$false)]
+	    [switch]$KerberosOnly,
+	    [Parameter(Mandatory=$false)]
 	    [switch]$SuppressErrorDisplay
 	)
 	begin {
@@ -25789,11 +26221,23 @@ function Connect-LDAP {
 	        if ($ldapErrorCode -eq 81 -and $BindSucceeded) {
 	            $errorType = "GenericError"
 	        }
+	        $ticketDetails = $null
+	        if ($KerberosOnly -and -not $BindSucceeded -and $ldapErrorCode -in @(49, 82)) {
+	            $errorType = "KerberosTicketError"
+	            $ticketDetails = if ($ldapErrorCode -eq 82) {
+	                "Reason: Windows did not use the Kerberos ticket for the LDAP bind (LDAP error 82)."
+	            } else {
+	                "Reason: The domain controller rejected the Kerberos ticket (LDAP error 49)."
+	            }
+	        }
 	        if (-not $AsGlobalCatalog) { $Script:ConnectionState = $errorType }
 	        if (-not $SuppressErrorDisplay) {
 	            if ($null -ne $ldapErrorCode) {
 	                $extraDetails = $null
-	                if ($ldapErrorCode -eq 81 -and $BindSucceeded) {
+	                if ($ticketDetails) {
+	                    $extraDetails = $ticketDetails
+	                }
+	                elseif ($ldapErrorCode -eq 81 -and $BindSucceeded) {
 	                    $extraDetails = "Bind() succeeded but the server did not respond to the search request. The LDAP server may not fully support authenticated queries."
 	                }
 	                elseif ($ldapErrorCode -eq 82 -and $BindSucceeded) {
@@ -26022,6 +26466,8 @@ function Connect-LDAP {
 	                }
 	                $LdapProtocolConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Basic
 	                $LdapProtocolConn.Credential = New-Object System.Net.NetworkCredential($UserName, $Password)
+	            } elseif ($KerberosOnly) {
+	                $LdapProtocolConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Kerberos
 	            } else {
 	                $LdapProtocolConn.AuthType = [System.DirectoryServices.Protocols.AuthType]::Negotiate
 	            }
@@ -27037,7 +27483,7 @@ function Connect-adPEAS {
 	                            else {
 	                                if ($null -ne $KdcErrorCode) {
 	                                    Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KdcErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
-	                                } else {
+	                                } elseif (-not (Test-TicketErrorAlreadyShown -ErrorMessage $ErrorMessage)) {
 	                                    Show-ConnectionError -ErrorType "KerberosError" -Details $ErrorMessage -NoThrow
 	                                }
 	                            }
@@ -27369,6 +27815,7 @@ function Connect-adPEAS {
 	                if ($UseLDAPS) { $ConnParams['UseLDAPS'] = $true }
 	                $ConnParams['IgnoreSSLErrors'] = $IgnoreSSLErrors
 	                $ConnParams['TimeoutSeconds'] = $TimeoutSeconds
+	                $ConnParams['KerberosOnly'] = $true
 	                $Connection = Connect-LDAP @ConnParams
 	                if (-not $Connection) {
 	                    return $null
@@ -27538,10 +27985,11 @@ function Connect-adPEAS {
 	                    $KerberosError = "Skipped (ForceSimpleBind)"
 	                }
 	                if (-not $KerberosAuthSuccess) {
+	                    $ticketErrorShown = Test-TicketErrorAlreadyShown -ErrorMessage $KerberosError
 	                    $Script:ConnectionState = "HashAuthFailed"
 	                    if ($null -ne $KerberosErrorCode) {
 	                        Show-ConnectionError -ErrorType "KerberosError" -ErrorCode $KerberosErrorCode -ErrorCodeType "Kerberos" -AuthMethod $AuthMethod -NoThrow
-	                    } else {
+	                    } elseif (-not $ticketErrorShown) {
 	                        Show-ConnectionError -ErrorType "KerberosError" -Details $KerberosError -NoThrow
 	                    }
 	                    return $null
@@ -27574,6 +28022,7 @@ function Connect-adPEAS {
 	                    if ($UseLDAPS) { $ConnParams['UseLDAPS'] = $true }
 	                    $ConnParams['IgnoreSSLErrors'] = $IgnoreSSLErrors
 	                    $ConnParams['TimeoutSeconds'] = $TimeoutSeconds
+	                    $ConnParams['KerberosOnly'] = $true
 	                    $Connection = Connect-LDAP @ConnParams
 	                    if ($Connection) {
 	                        $Script:AuthInfo.Method = 'Kerberos'
@@ -27787,6 +28236,16 @@ function Connect-adPEAS {
 	    }
 	}
 }
+function Test-TicketErrorAlreadyShown {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowEmptyString()]
+	    [string]$ErrorMessage
+	)
+	return ($Script:ConnectionState -eq 'KerberosTicketError' -and
+	        $ErrorMessage -match 'ticket not usable on this system')
+}
 function Disconnect-adPEAS {
 	[CmdletBinding()]
 	param(
@@ -27918,6 +28377,7 @@ function Clear-SessionState {
 	$Script:AuthInfo = $null
 	$Script:NTLMTokenHandle = [IntPtr]::Zero
 	$Script:SchemaClassNameCache = $null
+	$Script:WriteAccessSchemaCache = $null
 	$Script:AnonymousAccessEnabled = $null
 	$Script:AnonymousAccessDetails = $null
 	$Script:AnonymousAccessTested = $null
@@ -28004,6 +28464,7 @@ function Clear-SessionState {
 	$Script:GPOFilterPrincipalCache = $null
 	$Script:GPOWmiFilterMap = $null
 	$Script:GPOLoopbackMap = $null
+	$Script:GPOCommentMap = $null
 	$Script:KerberoastCredParams = $null
 	$Script:UseInMemoryMethod = $null
 	$Script:LastProgressUpdate = $null
@@ -28362,8 +28823,9 @@ function ConvertFrom-LDAPAttribute {
 	        return $ConvertedProperties
 	    }
 	    if ($PropName -iin @("msPKI-RA-Application-Policies", "msPKI-RA-Policies")) {
+	        $parsedRA = ConvertFrom-RAApplicationPolicy -Value $PropValue
 	        $raNames = @()
-	        foreach ($raValue in @($PropValue)) {
+	        foreach ($raValue in @($parsedRA.Policies)) {
 	            $raString = [string]$raValue
 	            if ($raString -match '^\d+(\.\d+)+$') {
 	                $raNames += (ConvertFrom-OID -OID $raString -IncludeOID)
@@ -28375,6 +28837,9 @@ function ConvertFrom-LDAPAttribute {
 	            $ConvertedProperties[$PropName] = $raNames[0]
 	        } elseif ($raNames.Count -gt 1) {
 	            $ConvertedProperties[$PropName] = $raNames
+	        }
+	        if ($parsedRA.Notable) {
+	            $ConvertedProperties['TemplateKeySettings'] = $parsedRA.Notable
 	        }
 	        return $ConvertedProperties
 	    }
@@ -30182,6 +30647,850 @@ function Get-ObjectACL {
 	        return $null
 	    }
 	}
+}
+$Script:WriteAccessInterestingAttributes = [ordered]@{
+	'member'                                   = @('group')
+	'servicePrincipalName'                     = @('user')
+	'msDS-KeyCredentialLink'                   = @('user')
+	'msDS-AllowedToActOnBehalfOfOtherIdentity' = @('computer')
+	'msDS-AllowedToDelegateTo'                 = @('user')
+	'userAccountControl'                       = @('user')
+	'altSecurityIdentities'                    = @('user')
+	'userPrincipalName'                        = @('user')
+	'dNSHostName'                              = @('computer')
+	'scriptPath'                               = @('user')
+	'profilePath'                              = @('user')
+	'homeDirectory'                            = @('user')
+	'managedBy'                                = @('computer', 'group')
+	'msDS-RevealOnDemandGroup'                 = @('computer')
+	'msDS-NeverRevealGroup'                    = @('computer')
+	'msDS-GroupMSAMembership'                  = @('msDS-GroupManagedServiceAccount')
+	'msDS-ManagedAccountPrecededByLink'        = @('msDS-DelegatedManagedServiceAccount')
+	'msDS-DelegatedMSAState'                   = @('msDS-DelegatedManagedServiceAccount')
+	'gPLink'                                   = @('organizationalUnit', 'domainDNS', 'site')
+	'gPOptions'                                = @('organizationalUnit', 'domainDNS', 'site')
+	'gPCFileSysPath'                           = @('groupPolicyContainer')
+	'gPCMachineExtensionNames'                 = @('groupPolicyContainer')
+	'gPCUserExtensionNames'                    = @('groupPolicyContainer')
+	'ms-DS-MachineAccountQuota'                = @('domainDNS')
+	'msPKI-Certificate-Name-Flag'              = @('pKICertificateTemplate')
+	'msPKI-Enrollment-Flag'                    = @('pKICertificateTemplate')
+	'msPKI-RA-Signature'                       = @('pKICertificateTemplate')
+	'pKIExtendedKeyUsage'                      = @('pKICertificateTemplate')
+	'msPKI-Certificate-Application-Policy'     = @('pKICertificateTemplate')
+	'certificateTemplates'                     = @('pKIEnrollmentService')
+	'cACertificate'                            = @('certificationAuthority')
+	'dnsRecord'                                = @('dnsNode')
+}
+$Script:WriteAccessInterestingExtendedRights = [ordered]@{
+	'User-Force-Change-Password'                 = @('user')
+	'DS-Replication-Get-Changes'                 = @('domainDNS')
+	'DS-Replication-Get-Changes-All'             = @('domainDNS')
+	'DS-Replication-Get-Changes-In-Filtered-Set' = @('domainDNS')
+}
+$Script:WriteAccessValidatedWriteClasses = @{
+	'Self-Membership'                          = @('group')
+	'Validated-SPN'                            = @('computer')
+	'Validated-DNS-Host-Name'                  = @('computer')
+	'Validated-MS-DS-Additional-DNS-Host-Name' = @('computer')
+	'DS-Validated-Write-Computer'              = @('computer')
+}
+$Script:WriteAccessInterestingClasses = @(
+	'user', 'computer', 'group', 'inetOrgPerson', 'msDS-ManagedServiceAccount',
+	'msDS-GroupManagedServiceAccount', 'msDS-DelegatedManagedServiceAccount',
+	'groupPolicyContainer', 'dnsNode', 'pKICertificateTemplate'
+)
+$Script:WriteAccessBits = [ordered]@{
+	CreateChild   = 0x1L
+	DeleteChild   = 0x2L
+	Self          = 0x8L
+	WriteProperty = 0x20L
+	DeleteTree    = 0x40L
+	ExtendedRight = 0x100L
+	Delete        = 0x10000L
+	WriteDacl     = 0x40000L
+	WriteOwner    = 0x80000L
+}
+function Get-DomainWriteAccess {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false, Position=0)]
+	    [string]$Identity,
+	    [Parameter(Mandatory=$false)]
+	    [string[]]$SearchBase,
+	    [Parameter(Mandatory=$false)]
+	    [string]$LDAPFilter = '(objectClass=*)',
+	    [Parameter(Mandatory=$false)]
+	    [switch]$All,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential
+	)
+	process {
+	    $CredParams = @{}
+	    if ($PSBoundParameters.ContainsKey('Domain')) { $CredParams['Domain'] = $Domain }
+	    if ($PSBoundParameters.ContainsKey('Server')) { $CredParams['Server'] = $Server }
+	    if ($PSBoundParameters.ContainsKey('Credential')) { $CredParams['Credential'] = $Credential }
+	    if (-not (Ensure-LDAPConnection @CredParams)) { return }
+	    $boundMode = -not $PSBoundParameters.ContainsKey('Identity')
+	    $token = Get-WriteAccessToken -Identity $Identity -Bound:$boundMode -CredParams $CredParams
+	    if (-not $token) { return }
+	    $schema = Get-WriteAccessSchema -CredParams $CredParams
+	    $bases = @($SearchBase | Where-Object { $_ })
+	    if ($bases.Count -eq 0) {
+	        $bases = @([string]$Script:LDAPContext.DomainDN)
+	        if ($Script:LDAPContext.ConfigurationNamingContext) {
+	            $bases += "CN=Public Key Services,CN=Services,$($Script:LDAPContext.ConfigurationNamingContext)"
+	        }
+	    }
+	    $properties = @('distinguishedName', 'name', 'sAMAccountName', 'objectClass', 'objectSid', 'nTSecurityDescriptor')
+	    if ($boundMode) {
+	        $properties += @('allowedAttributesEffective', 'allowedChildClassesEffective', 'sDRightsEffective')
+	    }
+	    $read = 0
+	    $unreadable = 0
+	    $unreadableCovered = 0
+	    $unconfirmed = 0
+	    $reported = 0
+	    $confirmedRows = 0
+	    $directoryRows = 0
+	    $effectiveSeen = $false
+	    $nameBySID = @{}
+	    foreach ($base in $bases) {
+	        $objects = @()
+	        try {
+	            $objects = @(Get-DomainObject -SearchBase $base -LDAPFilter $LDAPFilter -Properties $properties -Raw @CredParams)
+	        } catch {
+	            Write-Warning "[Get-DomainWriteAccess] $base could not be searched: $_"
+	            continue
+	        }
+	        foreach ($object in $objects) {
+	            if (-not $object -or -not $object.distinguishedName) { continue }
+	            $read++
+	            $result = Get-WriteAccessObjectRight -Object $object -Token $token -Schema $schema -All:$All
+	            $rows = @($result.Rows)
+	            $covered = $false
+	            if ($boundMode) {
+	                $checked = Resolve-WriteAccessEffective -Object $object -Rows $rows -SelfOnly $result.SelfOnly -Classes $result.Classes `
+	                    -Schema $schema -CredParams $CredParams -All:$All
+	                if ($checked.Available) { $effectiveSeen = $true; $covered = $true }
+	                $unconfirmed += $checked.Unconfirmed
+	                $rows = @($checked.Rows)
+	            }
+	            if (-not $result.Readable) {
+	                $unreadable++
+	                if ($covered) { $unreadableCovered++ }
+	            }
+	            if ($rows.Count -eq 0) { continue }
+	            $dn = [string]$object.distinguishedName
+	            $objectName = [string]$object.sAMAccountName
+	            if (-not $objectName) { $objectName = [string]$object.name }
+	            if (-not $objectName -and $dn -match '^[^=]+=((?:\\.|[^,])+)') { $objectName = $Matches[1] }
+	            $classes = @($result.Classes)
+	            $objectClass = ''
+	            if ($classes.Count -gt 0) { $objectClass = [string]$classes[-1] }
+	            foreach ($row in $rows) {
+	                $via = @()
+	                foreach ($sid in @($row.Via)) {
+	                    if ($sid -eq '(directory)') { $via += $sid; continue }
+	                    if (-not $nameBySID.ContainsKey($sid)) {
+	                        $resolved = $null
+	                        try { $resolved = ConvertFrom-SID -SID $sid } catch { }
+	                        $nameBySID[$sid] = $(if ($resolved) { [string]$resolved } else { $sid })
+	                    }
+	                    $via += $nameBySID[$sid]
+	                }
+	                $reported++
+	                if ($row.Source -eq 'ACL, directory') { $confirmedRows++ }
+	                elseif ($row.Source -eq 'directory') { $directoryRows++ }
+	                [PSCustomObject]@{
+	                    Object            = $objectName
+	                    ObjectClass       = $objectClass
+	                    Right             = $row.Right
+	                    Target            = $row.Target
+	                    Via               = (@($via | Select-Object -Unique) -join ', ')
+	                    Source            = $row.Source
+	                    DistinguishedName = $dn
+	                }
+	            }
+	        }
+	    }
+	    if ($unreadable -gt 0) {
+	        $coverage = 'they were not evaluated'
+	        if ($unreadableCovered -eq $unreadable) { $coverage = "only the directory's answer covers them" }
+	        elseif ($unreadableCovered -gt 0) { $coverage = "the directory's answer covers $unreadableCovered of them, the rest were not evaluated" }
+	        Write-Warning "[Get-DomainWriteAccess] The ACL of $unreadable object(s) could not be read - $coverage (-Verbose names them)"
+	    }
+	    if ($boundMode -and -not $effectiveSeen) {
+	        Write-Warning "[Get-DomainWriteAccess] The directory returned no effective rights - the result rests on the ACL evaluation alone"
+	    }
+	    if ($unconfirmed -gt 0) {
+	        Write-Warning "[Get-DomainWriteAccess] $unconfirmed right(s) the ACL evaluation found were not confirmed by the directory and were left out (-Verbose names them)"
+	    }
+	    $summary = "[Get-DomainWriteAccess] $read object(s) read, $unreadable without a readable ACL; $reported right(s) reported"
+	    if ($boundMode) {
+	        $summary += " - $confirmedRows confirmed by the directory, $directoryRows from the directory alone, $unconfirmed left out as unconfirmed"
+	    }
+	}
+}
+function Get-WriteAccessObjectRight {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] $Object,
+	    [Parameter(Mandatory=$true)] $Token,
+	    [Parameter(Mandatory=$true)] $Schema,
+	    [Parameter(Mandatory=$false)] [switch]$All
+	)
+	$classes = @(@($Object.objectClass) | Where-Object { $_ } | ForEach-Object { [string]$_ })
+	$result = [PSCustomObject]@{ Readable = $false; Rows = @(); SelfOnly = @(); Classes = $classes }
+	$parsed = $null
+	if ($Object.nTSecurityDescriptor) {
+	    try { $parsed = ConvertTo-AccessRules -SecurityDescriptorBytes $Object.nTSecurityDescriptor } catch { $parsed = $null }
+	}
+	if (-not $parsed) { return $result }
+	$result.Readable = $true
+	$rootGuid = ''
+	if ($classes.Count -gt 0 -and $Schema.ClassGuidByName.ContainsKey($classes[-1])) {
+	    $rootGuid = [string]$Schema.ClassGuidByName[$classes[-1]]
+	}
+	$objectSid = ConvertTo-WriteAccessSid -Value $Object.objectSid
+	$isSelf = [bool]($objectSid -and $objectSid -eq $Token.SID)
+	$ownerSid = [string]$parsed.OwnerSID
+	$isOwner = [bool]($ownerSid -and $Token.SIDs.Contains($ownerSid))
+	$writeMask = 0L
+	foreach ($bit in $Script:WriteAccessBits.Values) { $writeMask = $writeMask -bor $bit }
+	$rules = New-Object System.Collections.ArrayList
+	$ownerRightsAce = $false
+	$index = 0
+	foreach ($ace in @($parsed.AccessRules)) {
+	    $index++
+	    if (-not $ace -or ([string]$ace.PropagationFlags) -match 'InheritOnly') { continue }
+	    $sid = [string]$ace.IdentityReference.Value
+	    if ($sid -eq 'S-1-3-4') { $ownerRightsAce = $true }
+	    $applies = $Token.SIDs.Contains($sid) -or ($isSelf -and $sid -eq 'S-1-5-10') -or ($isOwner -and $sid -eq 'S-1-3-4')
+	    if (-not $applies) { continue }
+	    $mask = [long](ConvertTo-ExpandedADRightsValue -Rights $ace.ActiveDirectoryRights)
+	    if (($mask -band $writeMask) -eq 0) { continue }
+	    $objectType = ''
+	    if ($ace.ObjectType -and $ace.ObjectType -ne [Guid]::Empty) { $objectType = $ace.ObjectType.ToString().ToLower() }
+	    [void]$rules.Add([PSCustomObject]@{
+	        Index = $index; Sid = $sid; Type = [string]$ace.AccessControlType; Mask = $mask; ObjectType = $objectType
+	    })
+	}
+	$ownerImplicit = $isOwner -and -not $ownerRightsAce
+	if ($rules.Count -eq 0 -and -not $ownerImplicit) { return $result }
+	$whole = @{}
+	foreach ($name in $Script:WriteAccessBits.Keys) {
+	    $decision = Get-WriteAccessDecision -Rules $rules -Bit $Script:WriteAccessBits[$name] -Node '' -Parent '' -Root $rootGuid
+	    if ($decision -and $decision.Type -eq 'Allow') { $whole[$name] = $decision }
+	}
+	$rows = New-Object System.Collections.ArrayList
+	if ($ownerImplicit) {
+	    [void]$rows.Add((New-WriteAccessRow -Right 'Owner' -Kind 'Whole' -Via @($ownerSid)))
+	}
+	$fullControl = $whole.ContainsKey('WriteDacl') -or $ownerImplicit
+	foreach ($name in @('CreateChild', 'Self', 'WriteProperty', 'ExtendedRight', 'WriteOwner')) {
+	    if (-not $whole.ContainsKey($name)) { $fullControl = $false }
+	}
+	if ($fullControl) {
+	    $except = Get-WriteAccessException -Rules $rules -Whole $whole -Bits @('WriteProperty', 'Self', 'ExtendedRight', 'CreateChild') -Root $rootGuid -Schema $Schema
+	    $target = Format-WriteAccessExcept -Text '' -Except $except
+	    $missing = @(@('DeleteChild', 'DeleteTree', 'Delete') | Where-Object { -not $whole.ContainsKey($_) })
+	    if ($missing.Count -gt 0) {
+	        $without = "without $($missing -join ', ')"
+	        $target = if ($target) { "$without; $target" } else { $without }
+	    }
+	    [void]$rows.Add((New-WriteAccessRow -Right 'GenericAll' -Kind 'Whole' -Target $target -Via @($whole.Values | ForEach-Object { $_.Sid })))
+	} else {
+	    if ($whole.ContainsKey('WriteDacl')) {
+	        [void]$rows.Add((New-WriteAccessRow -Right 'WriteDacl' -Kind 'Whole' -Via @($whole['WriteDacl'].Sid)))
+	    }
+	    if ($whole.ContainsKey('WriteOwner')) {
+	        [void]$rows.Add((New-WriteAccessRow -Right 'WriteOwner' -Kind 'Whole' -Via @($whole['WriteOwner'].Sid)))
+	    }
+	    $everyProperty = $whole.ContainsKey('WriteProperty')
+	    $everyValidated = $whole.ContainsKey('Self')
+	    if ($everyProperty -and $everyValidated) {
+	        $except = Get-WriteAccessException -Rules $rules -Whole $whole -Bits @('WriteProperty', 'Self') -Root $rootGuid -Schema $Schema
+	        [void]$rows.Add((New-WriteAccessRow -Right 'GenericWrite' -Kind 'Whole' -Target (Format-WriteAccessExcept -Text '' -Except $except) `
+	            -Via @($whole['WriteProperty'].Sid, $whole['Self'].Sid)))
+	    } elseif ($everyProperty) {
+	        $except = Get-WriteAccessException -Rules $rules -Whole $whole -Bits @('WriteProperty') -Root $rootGuid -Schema $Schema
+	        [void]$rows.Add((New-WriteAccessRow -Right 'WriteProperty' -Kind 'Whole' -Target (Format-WriteAccessExcept -Text '(every property)' -Except $except) `
+	            -Via @($whole['WriteProperty'].Sid)))
+	    } elseif ($everyValidated) {
+	        $except = Get-WriteAccessException -Rules $rules -Whole $whole -Bits @('Self') -Root $rootGuid -Schema $Schema
+	        [void]$rows.Add((New-WriteAccessRow -Right 'ValidatedWrite' -Kind 'Whole' -Target (Format-WriteAccessExcept -Text '(every validated write)' -Except $except) `
+	            -Via @($whole['Self'].Sid)))
+	    }
+	    if ($whole.ContainsKey('ExtendedRight')) {
+	        $except = Get-WriteAccessException -Rules $rules -Whole $whole -Bits @('ExtendedRight') -Root $rootGuid -Schema $Schema
+	        [void]$rows.Add((New-WriteAccessRow -Right 'ExtendedRight' -Kind 'Whole' -Target (Format-WriteAccessExcept -Text '(all extended rights)' -Except $except) `
+	            -Via @($whole['ExtendedRight'].Sid)))
+	    }
+	    if ($whole.ContainsKey('CreateChild')) {
+	        $except = Get-WriteAccessException -Rules $rules -Whole $whole -Bits @('CreateChild') -Root $rootGuid -Schema $Schema
+	        [void]$rows.Add((New-WriteAccessRow -Right 'CreateChild' -Kind 'Whole' -Target (Format-WriteAccessExcept -Text '(every class)' -Except $except) `
+	            -Via @($whole['CreateChild'].Sid)))
+	    }
+	    foreach ($candidate in @(Get-WriteAccessCandidate -Rules $rules -Whole $whole -Classes $classes -Schema $Schema -All:$All)) {
+	        $decision = Get-WriteAccessDecision -Rules $rules -Bit $candidate.Bit -Node $candidate.Guid -Parent $candidate.Parent -Root $rootGuid
+	        if (-not $decision -or $decision.Type -ne 'Allow') { continue }
+	        if (-not $decision.ObjectType -or $decision.ObjectType -eq $rootGuid) { continue }
+	        $target = $candidate.Name
+	        if ($candidate.Parent -and $candidate.Parent -ne $candidate.Guid -and $decision.ObjectType -eq $candidate.Parent) {
+	            $target = "$target ($(Get-WriteAccessNodeName -Guid $candidate.Parent -Kind 'PropertySet' -Schema $Schema))"
+	        }
+	        [void]$rows.Add((New-WriteAccessRow -Right $candidate.Right -Kind $candidate.Kind -Name $candidate.Name `
+	            -NodeGuid $candidate.Guid -Target $target -Via @($decision.Sid)))
+	    }
+	}
+	$kept = New-Object System.Collections.ArrayList
+	$selfOnly = @()
+	foreach ($row in $rows) {
+	    if (@($row.Via | Where-Object { $_ -ne 'S-1-5-10' }).Count -eq 0) {
+	        $selfOnly += "$($row.Right):$($row.Name)"
+	        if (-not $All) { continue }
+	    }
+	    [void]$kept.Add($row)
+	}
+	$result.Rows = @($kept)
+	$result.SelfOnly = $selfOnly
+	return $result
+}
+function Get-WriteAccessDecision {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] [AllowEmptyCollection()] $Rules,
+	    [Parameter(Mandatory=$true)] [long]$Bit,
+	    [Parameter(Mandatory=$false)] [string]$Node = '',
+	    [Parameter(Mandatory=$false)] [string]$Parent = '',
+	    [Parameter(Mandatory=$false)] [string]$Root = ''
+	)
+	foreach ($rule in $Rules) {
+	    if (($rule.Mask -band $Bit) -eq 0) { continue }
+	    $objectType = $rule.ObjectType
+	    if ($objectType) {
+	        $reaches = ($Root -and $objectType -eq $Root) -or ($Node -and $objectType -eq $Node) -or ($Parent -and $objectType -eq $Parent)
+	        if (-not $reaches) { continue }
+	    }
+	    return $rule
+	}
+	return $null
+}
+function Get-WriteAccessException {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] [AllowEmptyCollection()] $Rules,
+	    [Parameter(Mandatory=$true)] [hashtable]$Whole,
+	    [Parameter(Mandatory=$true)] [string[]]$Bits,
+	    [Parameter(Mandatory=$false)] [string]$Root = '',
+	    [Parameter(Mandatory=$true)] $Schema
+	)
+	$kindByBit = @{ WriteProperty = 'Attribute'; Self = 'ValidatedWrite'; ExtendedRight = 'ExtendedRight'; CreateChild = 'Class' }
+	$names = @()
+	foreach ($bitName in $Bits) {
+	    if (-not $Whole.ContainsKey($bitName)) { continue }
+	    $bit = $Script:WriteAccessBits[$bitName]
+	    $before = $Whole[$bitName].Index
+	    foreach ($rule in $Rules) {
+	        if ($rule.Index -ge $before) { break }
+	        if ($rule.Type -ne 'Deny' -or -not $rule.ObjectType -or $rule.ObjectType -eq $Root) { continue }
+	        if (($rule.Mask -band $bit) -eq 0) { continue }
+	        $names += Get-WriteAccessNodeName -Guid $rule.ObjectType -Kind $kindByBit[$bitName] -Schema $Schema
+	    }
+	}
+	return @($names | Select-Object -Unique)
+}
+function Format-WriteAccessExcept {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Text = '',
+	    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$Except = @()
+	)
+	$names = @($Except | Where-Object { $_ })
+	if ($names.Count -eq 0) { return $Text }
+	$suffix = "except $($names -join ', ')"
+	if ($Text) { return "$Text $suffix" }
+	return $suffix
+}
+function New-WriteAccessRow {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] [string]$Right,
+	    [Parameter(Mandatory=$true)] [string]$Kind,
+	    [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Target = '',
+	    [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Name = '',
+	    [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$NodeGuid = '',
+	    [Parameter(Mandatory=$true)] [AllowEmptyCollection()] [string[]]$Via,
+	    [Parameter(Mandatory=$false)] [string]$Source = 'ACL'
+	)
+	[PSCustomObject]@{
+	    Right    = $Right
+	    Target   = $Target
+	    Kind     = $Kind
+	    Name     = $Name
+	    NodeGuid = $NodeGuid
+	    Via      = @($Via | Where-Object { $_ } | Select-Object -Unique)
+	    Source   = $Source
+	}
+}
+function Test-WriteAccessClass {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$Classes = @(),
+	    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$Wanted = @()
+	)
+	if (@($Wanted).Count -eq 0) { return $true }
+	foreach ($class in $Wanted) {
+	    if ($Classes -contains $class) { return $true }
+	}
+	return $false
+}
+function Get-WriteAccessCandidate {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] [AllowEmptyCollection()] $Rules,
+	    [Parameter(Mandatory=$true)] [hashtable]$Whole,
+	    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$Classes = @(),
+	    [Parameter(Mandatory=$true)] $Schema,
+	    [Parameter(Mandatory=$false)] [switch]$All
+	)
+	$seen = @{}
+	$list = New-Object System.Collections.ArrayList
+	$named = @($Rules | Where-Object { $_.Type -eq 'Allow' -and $_.ObjectType })
+	$add = {
+	    param($Right, $Kind, $Bit, $Guid, $Parent, $Name)
+	    $key = "$Bit|$Guid"
+	    if (-not $Guid -or $seen.ContainsKey($key)) { return }
+	    $seen[$key] = $true
+	    [void]$list.Add([PSCustomObject]@{ Right = $Right; Kind = $Kind; Bit = [long]$Bit; Guid = [string]$Guid; Parent = [string]$Parent; Name = [string]$Name })
+	}
+	if (-not $Whole.ContainsKey('WriteProperty')) {
+	    foreach ($name in $Script:WriteAccessInterestingAttributes.Keys) {
+	        if (-not (Test-WriteAccessClass -Classes $Classes -Wanted $Script:WriteAccessInterestingAttributes[$name])) { continue }
+	        $guid = $Schema.AttributeGuidByName[$name]
+	        & $add 'WriteProperty' 'Attribute' 0x20 $guid $Schema.PropertySetByAttribute[[string]$guid] $name
+	    }
+	    foreach ($rule in @($named | Where-Object { ($_.Mask -band 0x20) -ne 0 })) {
+	        $guid = $rule.ObjectType
+	        if ($Schema.AttributeNameByGuid.ContainsKey($guid)) {
+	            if ($All) {
+	                & $add 'WriteProperty' 'Attribute' 0x20 $guid $Schema.PropertySetByAttribute[$guid] $Schema.AttributeNameByGuid[$guid]
+	            }
+	        } elseif ($All -or (-not $Schema.FromDirectory -and $Schema.PropertySetNameByGuid.ContainsKey($guid))) {
+	            & $add 'WriteProperty' 'PropertySet' 0x20 $guid '' (Get-WriteAccessNodeName -Guid $guid -Kind 'PropertySet' -Schema $Schema)
+	        }
+	    }
+	}
+	if (-not $Whole.ContainsKey('Self')) {
+	    foreach ($rule in @($named | Where-Object { ($_.Mask -band 0x8) -ne 0 })) {
+	        $name = Get-WriteAccessNodeName -Guid $rule.ObjectType -Kind 'ValidatedWrite' -Schema $Schema
+	        if (-not $All -and $Script:WriteAccessValidatedWriteClasses.ContainsKey($name) -and
+	            -not (Test-WriteAccessClass -Classes $Classes -Wanted $Script:WriteAccessValidatedWriteClasses[$name])) { continue }
+	        & $add 'ValidatedWrite' 'ValidatedWrite' 0x8 $rule.ObjectType '' $name
+	    }
+	}
+	if (-not $Whole.ContainsKey('ExtendedRight')) {
+	    foreach ($name in $Script:WriteAccessInterestingExtendedRights.Keys) {
+	        if (-not (Test-WriteAccessClass -Classes $Classes -Wanted $Script:WriteAccessInterestingExtendedRights[$name])) { continue }
+	        & $add 'ExtendedRight' 'ExtendedRight' 0x100 $Schema.ExtendedRightGuidByName[$name] '' $name
+	    }
+	    if ($All) {
+	        foreach ($rule in @($named | Where-Object { ($_.Mask -band 0x100) -ne 0 })) {
+	            & $add 'ExtendedRight' 'ExtendedRight' 0x100 $rule.ObjectType '' (Get-WriteAccessNodeName -Guid $rule.ObjectType -Kind 'ExtendedRight' -Schema $Schema)
+	        }
+	    }
+	}
+	if (-not $Whole.ContainsKey('CreateChild')) {
+	    foreach ($name in $Script:WriteAccessInterestingClasses) {
+	        & $add 'CreateChild' 'Class' 0x1 $Schema.ClassGuidByName[$name] '' $name
+	    }
+	    if ($All) {
+	        foreach ($rule in @($named | Where-Object { ($_.Mask -band 0x1) -ne 0 })) {
+	            & $add 'CreateChild' 'Class' 0x1 $rule.ObjectType '' (Get-WriteAccessNodeName -Guid $rule.ObjectType -Kind 'Class' -Schema $Schema)
+	        }
+	    }
+	}
+	return @($list)
+}
+function Get-WriteAccessNodeName {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$true)] [AllowEmptyString()] [string]$Guid,
+	    [Parameter(Mandatory=$true)] [string]$Kind,
+	    [Parameter(Mandatory=$true)] $Schema
+	)
+	$order = switch ($Kind) {
+	    'Attribute'      { @('AttributeNameByGuid', 'PropertySetNameByGuid') }
+	    'PropertySet'    { @('PropertySetNameByGuid', 'AttributeNameByGuid') }
+	    'ValidatedWrite' { @('ValidatedWriteNameByGuid', 'ExtendedRightNameByGuid') }
+	    'ExtendedRight'  { @('ExtendedRightNameByGuid', 'AttributeNameByGuid', 'PropertySetNameByGuid') }
+	    'Class'          { @('ClassNameByGuid') }
+	    default          { @() }
+	}
+	foreach ($map in $order) {
+	    if ($Schema.$map.ContainsKey($Guid)) { return [string]$Schema.$map[$Guid] }
+	}
+	return $Guid
+}
+function Resolve-WriteAccessEffective {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] $Object,
+	    [Parameter(Mandatory=$true)] [AllowEmptyCollection()] $Rows,
+	    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] $SelfOnly = @(),
+	    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$Classes = @(),
+	    [Parameter(Mandatory=$true)] $Schema,
+	    [Parameter(Mandatory=$false)] [hashtable]$CredParams = @{},
+	    [Parameter(Mandatory=$false)] [switch]$All
+	)
+	$result = [PSCustomObject]@{ Rows = @($Rows); Unconfirmed = 0; Available = $false }
+	$structure = $null
+	if (-not $Object.PSObject.Properties['sDRightsEffective']) { return $result }
+	$result.Available = $true
+	$sdRights = 0
+	try { $sdRights = [int]([string](@($Object.sDRightsEffective)[0])) } catch { $sdRights = 0 }
+	$attributes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	foreach ($value in @($Object.allowedAttributesEffective)) { if ($value) { [void]$attributes.Add([string]$value) } }
+	$childClasses = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	foreach ($value in @($Object.allowedChildClassesEffective)) { if ($value) { [void]$childClasses.Add([string]$value) } }
+	$selfOnlyKeys = @{}
+	foreach ($key in @($SelfOnly)) { if ($key) { $selfOnlyKeys[[string]$key] = $true } }
+	$kept = New-Object System.Collections.ArrayList
+	foreach ($row in @($Rows)) {
+	    $confirmed = $null
+	    switch ($row.Right) {
+	        'GenericAll'    { $confirmed = (($sdRights -band 5) -eq 5) }
+	        'WriteDacl'     { $confirmed = (($sdRights -band 4) -ne 0) }
+	        'WriteOwner'    { $confirmed = (($sdRights -band 1) -ne 0) }
+	        'Owner'         { $confirmed = (($sdRights -band 4) -ne 0) }
+	        'GenericWrite'  { $confirmed = ($attributes.Count -gt 0) }
+	        'WriteProperty' {
+	            if ($row.Kind -eq 'Attribute') { $confirmed = $attributes.Contains([string]$row.Name) }
+	            else { $confirmed = ($attributes.Count -gt 0) }
+	        }
+	        'CreateChild'   {
+	            if ($row.Kind -eq 'Class') { $confirmed = $childClasses.Contains([string]$row.Name) }
+	            else { $confirmed = ($childClasses.Count -gt 0) }
+	        }
+	    }
+	    if ($null -eq $confirmed) { [void]$kept.Add($row); continue }
+	    if ($confirmed) {
+	        $row.Source = 'ACL, directory'
+	        [void]$kept.Add($row)
+	    } else {
+	        if ($null -eq $structure) { $structure = Get-WriteAccessStructure -DistinguishedName ([string]$Object.distinguishedName) -CredParams $CredParams }
+	        if (-not (Test-WriteAccessHeld -Row $row -Structure $structure -Schema $Schema)) {
+	            continue
+	        }
+	        $result.Unconfirmed++
+	    }
+	}
+	$rights = @($kept | ForEach-Object { $_.Right })
+	$everyProperty = @($kept | Where-Object { $_.Right -eq 'GenericAll' -or $_.Right -eq 'GenericWrite' -or ($_.Right -eq 'WriteProperty' -and $_.Kind -eq 'Whole') }).Count -gt 0
+	$everyClass = @($kept | Where-Object { $_.Right -eq 'GenericAll' -or ($_.Right -eq 'CreateChild' -and $_.Kind -eq 'Whole') }).Count -gt 0
+	if (($sdRights -band 4) -and @($rights | Where-Object { @('GenericAll', 'WriteDacl', 'Owner') -contains $_ }).Count -eq 0 -and
+	    ($All -or -not $selfOnlyKeys.ContainsKey('WriteDacl:'))) {
+	    [void]$kept.Add((New-WriteAccessRow -Right 'WriteDacl' -Kind 'Whole' -Via @('(directory)') -Source 'directory'))
+	}
+	if (($sdRights -band 1) -and @($rights | Where-Object { @('GenericAll', 'WriteOwner') -contains $_ }).Count -eq 0 -and
+	    ($All -or -not $selfOnlyKeys.ContainsKey('WriteOwner:'))) {
+	    [void]$kept.Add((New-WriteAccessRow -Right 'WriteOwner' -Kind 'Whole' -Via @('(directory)') -Source 'directory'))
+	}
+	if (-not $everyProperty) {
+	    foreach ($attribute in @($attributes)) {
+	        if (-not $All) {
+	            if (-not $Script:WriteAccessInterestingAttributes.Contains($attribute)) { continue }
+	            if (-not (Test-WriteAccessClass -Classes $Classes -Wanted $Script:WriteAccessInterestingAttributes[$attribute])) { continue }
+	            if ($selfOnlyKeys.ContainsKey("WriteProperty:$attribute")) { continue }
+	        }
+	        $set = ''
+	        $attributeGuid = $Schema.AttributeGuidByName[$attribute]
+	        if ($attributeGuid) { $set = [string]$Schema.PropertySetByAttribute[[string]$attributeGuid] }
+	        $explained = @($kept | Where-Object {
+	            $_.Right -eq 'WriteProperty' -and (($_.Kind -eq 'Attribute' -and $_.Name -eq $attribute) -or ($set -and $_.Kind -eq 'PropertySet' -and $_.NodeGuid -eq $set))
+	        }).Count -gt 0
+	        if ($explained) { continue }
+	        [void]$kept.Add((New-WriteAccessRow -Right 'WriteProperty' -Kind 'Attribute' -Name $attribute -Target $attribute -Via @('(directory)') -Source 'directory'))
+	    }
+	}
+	if (-not $everyClass) {
+	    foreach ($class in @($childClasses)) {
+	        if (-not $All) {
+	            if ($Script:WriteAccessInterestingClasses -notcontains $class) { continue }
+	            if ($selfOnlyKeys.ContainsKey("CreateChild:$class")) { continue }
+	        }
+	        if (@($kept | Where-Object { $_.Right -eq 'CreateChild' -and $_.Kind -eq 'Class' -and $_.Name -eq $class }).Count -gt 0) { continue }
+	        [void]$kept.Add((New-WriteAccessRow -Right 'CreateChild' -Kind 'Class' -Name $class -Target $class -Via @('(directory)') -Source 'directory'))
+	    }
+	}
+	$result.Rows = @($kept)
+	return $result
+}
+function Get-WriteAccessToken {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Identity,
+	    [Parameter(Mandatory=$false)] [switch]$Bound,
+	    [Parameter(Mandatory=$false)] [hashtable]$CredParams = @{}
+	)
+	if ($Bound) {
+	    $Identity = ''
+	    foreach ($key in @('AuthenticatedUserDN', 'AuthenticatedUserSID', 'AuthenticatedUserSAM', 'AuthenticatedUserUPN', 'Username')) {
+	        if (-not $Script:LDAPContext -or -not $Script:LDAPContext[$key]) { continue }
+	        $value = [string]$Script:LDAPContext[$key]
+	        if ($value.StartsWith('[')) { continue }
+	        $Identity = $value
+	        break
+	    }
+	    if (-not $Identity) {
+	        Write-Warning "[Get-DomainWriteAccess] The account adPEAS is bound as is not known - name it with -Identity"
+	        return $null
+	    }
+	}
+	if (-not $Identity) {
+	    Write-Warning "[Get-DomainWriteAccess] No identity given"
+	    return $null
+	}
+	$properties = @('objectSid', 'distinguishedName', 'sAMAccountName', 'name', 'primaryGroupID', 'sIDHistory', 'objectClass')
+	$found = @(Get-DomainObject -Identity $Identity -Properties $properties @CredParams | Where-Object { $_ -and $_.objectSid })
+	if ($found.Count -eq 0 -and $Identity -match '^[^\\=@]+@[^@]+$') {
+	    $upn = Escape-LDAPFilterValue -Value $Identity
+	    $found = @(Get-DomainObject -LDAPFilter "(userPrincipalName=$upn)" -Properties $properties @CredParams | Where-Object { $_ -and $_.objectSid })
+	}
+	if ($found.Count -gt 1) {
+	    $exact = @($found | Where-Object { [string]$_.sAMAccountName -eq $Identity })
+	    if ($exact.Count -eq 1) { $found = $exact }
+	}
+	if ($found.Count -eq 0) {
+	    Write-Warning "[Get-DomainWriteAccess] '$Identity' was not found"
+	    return $null
+	}
+	if ($found.Count -gt 1) {
+	    Write-Warning "[Get-DomainWriteAccess] '$Identity' matches $($found.Count) objects - name it by DN or SID"
+	    return $null
+	}
+	$principal = $found[0]
+	$sid = [string]$principal.objectSid
+	$sids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	[void]$sids.Add($sid)
+	foreach ($historySid in @($principal.sIDHistory)) { if ($historySid) { [void]$sids.Add([string]$historySid) } }
+	foreach ($groupSid in @(Get-RecursiveGroupMembership -IdentitySID $sid -IdentityDN ([string]$principal.distinguishedName))) {
+	    if ($groupSid) { [void]$sids.Add([string]$groupSid) }
+	}
+	if ($principal.primaryGroupID -and $sid -match '^(S-1-5-21-\d+-\d+-\d+)-\d+$') {
+	    $primaryGroupSid = "$($Matches[1])-$($principal.primaryGroupID)"
+	    [void]$sids.Add($primaryGroupSid)
+	    foreach ($groupSid in @(Get-RecursiveGroupMembership -IdentitySID $primaryGroupSid)) {
+	        if ($groupSid) { [void]$sids.Add([string]$groupSid) }
+	    }
+	}
+	foreach ($wellKnown in @('S-1-1-0', 'S-1-5-11', 'S-1-5-15')) {
+	    [void]$sids.Add($wellKnown)
+	    foreach ($groupSid in @(Get-RecursiveGroupMembership -IdentitySID $wellKnown)) {
+	        if ($groupSid) { [void]$sids.Add([string]$groupSid) }
+	    }
+	}
+	$name = [string]$principal.sAMAccountName
+	if (-not $name) { $name = [string]$principal.name }
+	return [PSCustomObject]@{
+	    SID               = $sid
+	    DistinguishedName = [string]$principal.distinguishedName
+	    Name              = $name
+	    SIDs              = $sids
+	}
+}
+function Get-WriteAccessSchema {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)] [hashtable]$CredParams = @{}
+	)
+	if ($null -ne $Script:WriteAccessSchemaCache) { return $Script:WriteAccessSchemaCache }
+	$schema = [PSCustomObject]@{
+	    AttributeNameByGuid      = @{}
+	    AttributeGuidByName      = @{}
+	    PropertySetByAttribute   = @{}
+	    ClassNameByGuid          = @{}
+	    ClassGuidByName          = @{}
+	    PropertySetNameByGuid    = @{}
+	    ValidatedWriteNameByGuid = @{}
+	    ExtendedRightNameByGuid  = @{}
+	    ExtendedRightGuidByName  = @{}
+	    FromDirectory            = $false
+	}
+	foreach ($entry in $Script:PropertyGUIDs.GetEnumerator()) {
+	    $guid = $entry.Value.ToString().ToLower()
+	    $schema.AttributeNameByGuid[$guid] = $entry.Key
+	    $schema.AttributeGuidByName[$entry.Key] = $guid
+	}
+	foreach ($entry in $Script:SchemaClassGUIDs.GetEnumerator()) {
+	    $guid = $entry.Value.ToString().ToLower()
+	    $schema.ClassNameByGuid[$guid] = $entry.Key
+	    $schema.ClassGuidByName[$entry.Key] = $guid
+	}
+	foreach ($entry in $Script:PropertySetGUIDs.GetEnumerator()) {
+	    $schema.PropertySetNameByGuid[$entry.Value.ToString().ToLower()] = $entry.Key
+	}
+	foreach ($entry in $Script:ValidatedWriteGUIDs.GetEnumerator()) {
+	    $schema.ValidatedWriteNameByGuid[$entry.Value.ToString().ToLower()] = $entry.Key
+	}
+	foreach ($entry in $Script:ExtendedRightsGUIDs.GetEnumerator()) {
+	    $guid = ([string]$entry.Key).ToLower()
+	    $schema.ExtendedRightNameByGuid[$guid] = $entry.Value
+	    if (-not $schema.ExtendedRightGuidByName.ContainsKey($entry.Value)) { $schema.ExtendedRightGuidByName[$entry.Value] = $guid }
+	}
+	$configDN = ''
+	$schemaDN = ''
+	if ($Script:LDAPContext) {
+	    $configDN = [string]$Script:LDAPContext.ConfigurationNamingContext
+	    $schemaDN = [string]$Script:LDAPContext.SchemaNamingContext
+	}
+	if (-not $schemaDN -and $configDN) { $schemaDN = "CN=Schema,$configDN" }
+	try {
+	    if ($schemaDN) {
+	        $attributes = @(Get-DomainObject -LDAPFilter '(objectClass=attributeSchema)' -SearchBase $schemaDN `
+	            -Properties 'lDAPDisplayName', 'schemaIDGUID', 'attributeSecurityGUID' -Raw @CredParams)
+	        foreach ($attribute in $attributes) {
+	            $guid = ConvertTo-WriteAccessGuid -Value $attribute.schemaIDGUID
+	            $name = [string]$attribute.lDAPDisplayName
+	            if (-not $guid -or -not $name) { continue }
+	            $schema.AttributeNameByGuid[$guid] = $name
+	            $schema.AttributeGuidByName[$name] = $guid
+	            $set = ConvertTo-WriteAccessGuid -Value $attribute.attributeSecurityGUID
+	            if ($set) { $schema.PropertySetByAttribute[$guid] = $set }
+	        }
+	        $classes = @(Get-DomainObject -LDAPFilter '(objectClass=classSchema)' -SearchBase $schemaDN `
+	            -Properties 'lDAPDisplayName', 'schemaIDGUID' -Raw @CredParams)
+	        foreach ($class in $classes) {
+	            $guid = ConvertTo-WriteAccessGuid -Value $class.schemaIDGUID
+	            $name = [string]$class.lDAPDisplayName
+	            if (-not $guid -or -not $name) { continue }
+	            $schema.ClassNameByGuid[$guid] = $name
+	            $schema.ClassGuidByName[$name] = $guid
+	        }
+	        $schema.FromDirectory = ($attributes.Count -gt 0)
+	    }
+	} catch {
+	}
+	try {
+	    if ($configDN) {
+	        $rights = @(Get-DomainObject -LDAPFilter '(objectClass=controlAccessRight)' -SearchBase "CN=Extended-Rights,$configDN" `
+	            -Properties 'name', 'rightsGuid', 'validAccesses' @CredParams)
+	        foreach ($right in $rights) {
+	            $guid = ConvertTo-WriteAccessGuid -Value $right.rightsGuid
+	            $name = [string]$right.name
+	            if (-not $guid -or -not $name) { continue }
+	            $validAccesses = 0
+	            try { $validAccesses = [int]([string](@($right.validAccesses)[0])) } catch { $validAccesses = 0 }
+	            if ($validAccesses -band 0x100) {
+	                $schema.ExtendedRightNameByGuid[$guid] = $name
+	                $schema.ExtendedRightGuidByName[$name] = $guid
+	            }
+	            if ($validAccesses -band 0x8) { $schema.ValidatedWriteNameByGuid[$guid] = $name }
+	            if ($validAccesses -band 0x30) { $schema.PropertySetNameByGuid[$guid] = $name }
+	        }
+	    }
+	} catch {
+	}
+	if (-not $schema.FromDirectory) {
+	    Write-Warning "[Get-DomainWriteAccess] The schema could not be read - a write through a property set is named by the set, not by its attributes"
+	}
+	$Script:WriteAccessSchemaCache = $schema
+	return $schema
+}
+function ConvertTo-WriteAccessGuid {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowNull()] $Value
+	)
+	if ($null -eq $Value) { return '' }
+	if ($Value -is [array] -and $Value -isnot [byte[]]) {
+	    if ($Value.Count -eq 1) { $Value = $Value[0] }
+	    elseif ($Value.Count -eq 16) { $Value = [byte[]]@($Value) }
+	}
+	try {
+	    if ($Value -is [byte[]]) {
+	        if ($Value.Length -ne 16) { return '' }
+	        return ([Guid]::new($Value)).ToString()
+	    }
+	    $text = ([string]$Value).Trim('{', '}')
+	    $parsed = [Guid]::Empty
+	    if ([Guid]::TryParse($text, [ref]$parsed)) { return $parsed.ToString() }
+	    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Value)
+	    if ($bytes.Length -eq 16) { return ([Guid]::new($bytes)).ToString() }
+	} catch {
+	}
+	return ''
+}
+function ConvertTo-WriteAccessSid {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowNull()] $Value
+	)
+	if ($null -eq $Value) { return '' }
+	try {
+	    if ($Value -is [byte[]]) { return (New-Object System.Security.Principal.SecurityIdentifier($Value, 0)).Value }
+	    $text = [string]$Value
+	    if ($text -match '^S-1-') { return $text }
+	} catch {
+	}
+	return ''
+}
+function Get-WriteAccessStructure {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] [string]$DistinguishedName,
+	    [Parameter(Mandatory=$false)] [hashtable]$CredParams = @{}
+	)
+	$structure = [PSCustomObject]@{
+	    Read       = $false
+	    Attributes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	    Classes    = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	}
+	try {
+	    $object = @(Get-DomainObject -SearchBase $DistinguishedName -Scope Base -LDAPFilter '(objectClass=*)' `
+	        -Properties 'allowedAttributes', 'allowedChildClasses' -Raw @CredParams)[0]
+	    if ($object) {
+	        foreach ($value in @($object.allowedAttributes)) { if ($value) { [void]$structure.Attributes.Add([string]$value) } }
+	        foreach ($value in @($object.allowedChildClasses)) { if ($value) { [void]$structure.Classes.Add([string]$value) } }
+	        $structure.Read = ($structure.Attributes.Count -gt 0)
+	    }
+	} catch {
+	}
+	return $structure
+}
+function Test-WriteAccessHeld {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory=$true)] $Row,
+	    [Parameter(Mandatory=$true)] $Structure,
+	    [Parameter(Mandatory=$true)] $Schema
+	)
+	if (-not $Structure.Read) { return $true }
+	switch ($Row.Kind) {
+	    'Attribute' { return $Structure.Attributes.Contains([string]$Row.Name) }
+	    'Class'     { return $Structure.Classes.Contains([string]$Row.Name) }
+	    'PropertySet' {
+	        if (-not $Schema.FromDirectory) { return $true }
+	        foreach ($entry in $Schema.PropertySetByAttribute.GetEnumerator()) {
+	            if ($entry.Value -ne $Row.NodeGuid) { continue }
+	            $name = $Schema.AttributeNameByGuid[$entry.Key]
+	            if ($name -and $Structure.Attributes.Contains([string]$name)) { return $true }
+	        }
+	        return $false
+	    }
+	}
+	return $true
 }
 function Set-DomainObject {
 	[CmdletBinding(DefaultParameterSetName='SetAttributes')]
@@ -39436,6 +40745,9 @@ function Get-GCConnection {
 	    if (-not $useNegotiate -and $Script:LDAPCredential) {
 	        $ConnectParams['Credential'] = $Script:LDAPCredential
 	    }
+	    if ($kerbUsed -and -not $winAuth) {
+	        $ConnectParams['KerberosOnly'] = $true
+	    }
 	}
 	foreach ($GCTarget in $targets) {
 	    $ConnectParams['Server'] = $GCTarget
@@ -41109,14 +42421,17 @@ function ConvertFrom-VNCPassword {
 	    [byte[]]$Bytes
 	)
 	if ($PSCmdlet.ParameterSetName -eq 'Hex') {
-	    $digits = $Hex -replace '[\s,]', ''
-	    if ($digits -notmatch '^([0-9A-Fa-f]{16}|[0-9A-Fa-f]{18})$') { return $null }
-	    $Bytes = New-Object byte[] ($digits.Length / 2)
-	    for ($i = 0; $i -lt $Bytes.Length; $i++) {
-	        $Bytes[$i] = [Convert]::ToByte($digits.Substring($i * 2, 2), 16)
-	    }
+	    $Bytes = ConvertFrom-VNCHex -Hex $Hex
 	}
 	if ($null -eq $Bytes -or $Bytes.Length -lt 8) { return $null }
+	$blockBytes = 0
+	if (($Bytes.Length % 8) -eq 0) {
+	    $blockBytes = $Bytes.Length
+	} elseif ($Bytes.Length -eq 9) {
+	    $blockBytes = 8
+	} else {
+	    return $null
+	}
 	$des = $null
 	$plain = $null
 	try {
@@ -41124,15 +42439,63 @@ function ConvertFrom-VNCPassword {
 	    $des.Mode = [System.Security.Cryptography.CipherMode]::ECB
 	    $des.Padding = [System.Security.Cryptography.PaddingMode]::None
 	    $key = [byte[]](0xE8, 0x4A, 0xD6, 0x60, 0xC4, 0x72, 0x1A, 0xE0)
-	    $plain = $des.CreateDecryptor($key, $null).TransformFinalBlock($Bytes, 0, 8)
+	    $plain = $des.CreateDecryptor($key, $null).TransformFinalBlock($Bytes, 0, $blockBytes)
 	} catch {
 	    return $null
 	} finally {
 	    if ($des) { $des.Dispose() }
 	}
-	$length = 8
+	$length = $plain.Length
 	while ($length -gt 0 -and $plain[$length - 1] -eq 0) { $length-- }
+	if ($length -eq 0) { return $null }
+	for ($i = 0; $i -lt $length; $i++) {
+	    $byte = $plain[$i]
+	    if ($byte -lt 0x20 -or $byte -eq 0x7F -or ($byte -ge 0x80 -and $byte -lt 0xA0)) {
+	        return $null
+	    }
+	}
 	return [System.Text.Encoding]::GetEncoding(28591).GetString($plain, 0, $length)
+}
+function ConvertFrom-VNCHex {
+	[CmdletBinding()]
+	[OutputType([byte[]])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyString()]
+	    [string]$Hex
+	)
+	$digits = $Hex -replace '[\s,]', ''
+	if ($digits -notmatch '^[0-9A-Fa-f]+$' -or ($digits.Length % 2) -ne 0) { return $null }
+	$bytes = New-Object byte[] ($digits.Length / 2)
+	for ($i = 0; $i -lt $bytes.Length; $i++) {
+	    $bytes[$i] = [Convert]::ToByte($digits.Substring($i * 2, 2), 16)
+	}
+	return ,$bytes
+}
+function Get-VNCPasswordForm {
+	[CmdletBinding(DefaultParameterSetName = 'Hex')]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true, ParameterSetName = 'Hex')]
+	    [AllowEmptyString()]
+	    [string]$Hex,
+	    [Parameter(Mandatory = $true, ParameterSetName = 'Bytes')]
+	    [AllowEmptyCollection()]
+	    [byte[]]$Bytes
+	)
+	if ($PSCmdlet.ParameterSetName -eq 'Hex') {
+	    $digits = $Hex -replace '[\s,]', ''
+	    if ($digits.Length -eq 0) { return $null }
+	    $Bytes = ConvertFrom-VNCHex -Hex $digits
+	    if ($null -eq $Bytes) { return "$($digits.Length) characters - not a hex byte string" }
+	}
+	if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return $null }
+	if ($Bytes.Length -lt 8) { return "$($Bytes.Length) bytes - shorter than one DES block" }
+	if (($Bytes.Length % 8) -ne 0 -and $Bytes.Length -ne 9) {
+	    return "$($Bytes.Length) bytes - no whole DES block, not the reversible form"
+	}
+	if ($null -ne (ConvertFrom-VNCPassword -Bytes $Bytes)) { return $null }
+	return "$($Bytes.Length) bytes - decrypts to noise, not the reversible form"
 }
 function Test-VNCPasswordRecord {
 	[CmdletBinding()]
@@ -41144,6 +42507,58 @@ function Test-VNCPasswordRecord {
 	$key = ([string]$Record.Key -replace '^\\+', '').TrimEnd('\')
 	return ($key -match '(?i)(^|\\)(RealVNC|TightVNC|TigerVNC|ORL)(\\|$)' -and
 	    [string]$Record.ValueName -match '(?i)^(Password|PasswordViewOnly|ControlPassword|passwd|passwd2)$')
+}
+function ConvertFrom-RAApplicationPolicy {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false, Position = 0)]
+	    [AllowNull()]
+	    [AllowEmptyCollection()]
+	    $Value
+	)
+	$policies = New-Object System.Collections.ArrayList
+	$settings = New-Object System.Collections.Specialized.OrderedDictionary
+	foreach ($entry in @($Value)) {
+	    $text = [string]$entry
+	    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+	    if ($text -match '(?i)`(DWORD|PZPWSTR)`') {
+	        $parts = $text.Split('`')
+	        for ($i = 0; ($i + 2) -lt $parts.Count; $i += 3) {
+	            $name = $parts[$i].Trim()
+	            $type = $parts[$i + 1].Trim()
+	            $data = $parts[$i + 2]
+	            if (-not $name) { continue }
+	            if (@('DWORD', 'PZPWSTR') -notcontains $type) { continue }
+	            if ($name -ieq 'msPKI-RA-Application-Policies') {
+	                foreach ($oid in ([string]$data -split ',')) {
+	                    if ($oid.Trim()) { [void]$policies.Add($oid.Trim()) }
+	                }
+	                continue
+	            }
+	            $settings[$name] = $data
+	        }
+	        continue
+	    }
+	    [void]$policies.Add($text.Trim())
+	}
+	$notable = New-Object System.Collections.ArrayList
+	$hashAlgorithm = [string]$settings['msPKI-Hash-Algorithm']
+	if ($hashAlgorithm -match '(?i)^(MD2|MD4|MD5|SHA-?1)$') {
+	    [void]$notable.Add("request hash $hashAlgorithm")
+	}
+	$symmetricAlgorithm = [string]$settings['msPKI-Symmetric-Algorithm']
+	if ($symmetricAlgorithm -match '(?i)^(DES|RC2|RC4)$') {
+	    [void]$notable.Add("symmetric $symmetricAlgorithm")
+	}
+	$symmetricLength = [string]$settings['msPKI-Symmetric-Key-Length']
+	if ($symmetricLength -match '^\d+$' -and [int]$symmetricLength -lt 112) {
+	    [void]$notable.Add("symmetric key $symmetricLength bit")
+	}
+	return [PSCustomObject]@{
+	    Policies = @($policies)
+	    Settings = $settings
+	    Notable  = if ($notable.Count -gt 0) { ($notable -join ', ') } else { $null }
+	}
 }
 function ConvertFrom-VBE {
 	[CmdletBinding()]
@@ -50391,9 +51806,9 @@ function Request-ServiceTicket {
 	        } elseif ($DowngradeToRC4) {
 	            $etypeList += New-ASN1Integer -Value 23
 	        } else {
-	            $etypeList += New-ASN1Integer -Value 23
-	            $etypeList += New-ASN1Integer -Value 17
 	            $etypeList += New-ASN1Integer -Value 18
+	            $etypeList += New-ASN1Integer -Value 17
+	            $etypeList += New-ASN1Integer -Value 23
 	        }
 	        $reqBodyContent = @()
 	        $reqBodyContent += New-ASN1ContextTag -Tag 0 -Data $kdcOptions
@@ -53447,6 +54862,7 @@ function Invoke-KerberosAuthFlow {
 	        }
 	        if ($UseLDAPS) { $ConnParams['UseLDAPS'] = $true }
 	        $ConnParams['IgnoreSSLErrors'] = $IgnoreSSLErrors
+	        $ConnParams['KerberosOnly'] = $true
 	        $Connection = Connect-LDAP @ConnParams
 	        if ($Connection) {
 	            if ($Connection.AuthenticatedUser -and $Connection.AuthenticatedUser -notmatch '^\[') {
@@ -53647,6 +55063,7 @@ function Parse-RegistryXml {
 	            ValueString = $valueString
 	            Action      = $action.ToUpper()
 	            Disabled    = ([string]$node.disabled -eq '1')
+	            Description = [string]$node.GetAttribute('desc')
 	        }
 	    }
 	} catch {
@@ -55303,6 +56720,56 @@ function Resolve-GPOSettingPrecedence {
 	}
 	return $winners
 }
+function Resolve-GPOMemberBaselinePrecedence {
+	[CmdletBinding()]
+	[OutputType([hashtable])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $Finding,
+	    [Parameter(Mandatory=$true)]
+	    [hashtable[]]$Setting,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    [hashtable]$Linkage
+	)
+	$contest = @()
+	foreach ($policy in @(@($Finding) | Where-Object { $_ })) {
+	    $guid = [string]$policy.Name
+	    if ($null -eq $Linkage -or -not $Linkage.ContainsKey($guid)) { continue }
+	    $best = $null
+	    foreach ($link in @($Linkage[$guid])) {
+	        if (-not $link -or $link.IsDisabled) { continue }
+	        $rank = $null
+	        if ([string]$link.Scope -eq 'Site') {
+	            $rank = $(if ($link.IsEnforced) { 0 } else { 70 })
+	        } elseif ([string]$link.Scope -eq 'Domain') {
+	            $rank = $(if ($link.IsEnforced) { 10 } else { 60 })
+	        }
+	        if ($null -eq $rank) { continue }
+	        $order = $(if ($link.LinkOrder) { [int]$link.LinkOrder } else { 999 })
+	        if ($null -eq $best -or $rank -lt $best.Rank -or ($rank -eq $best.Rank -and $order -lt $best.Order)) {
+	            $best = @{ Rank = $rank; Order = $order }
+	        }
+	    }
+	    if ($best) {
+	        $contest += [PSCustomObject]@{ Policy = $policy; Rank = $best.Rank; Order = $best.Order }
+	    }
+	}
+	$contest = @($contest | Sort-Object @{ Expression = { [int]$_.Rank } },
+	                                    @{ Expression = { [int]$_.Order } },
+	                                    @{ Expression = { [string]$_.Policy.DisplayName } })
+	$winners = @{}
+	foreach ($entry in $Setting) {
+	    foreach ($candidate in $contest) {
+	        if (Test-GPOSettingConfigured -Value $candidate.Policy.($entry.Property)) {
+	            $winners[$entry.Property] = $candidate.Policy
+	            break
+	        }
+	    }
+	}
+	return $winners
+}
 function Test-GPOSettingConfigured {
 	[CmdletBinding()]
 	[OutputType([bool])]
@@ -55744,6 +57211,81 @@ function Get-GPOLoopbackMode {
 	if ($Script:GPOLoopbackMap.ContainsKey($lookupKey)) { return $Script:GPOLoopbackMap[$lookupKey] }
 	return $null
 }
+function ConvertFrom-GPOCommentBytes {
+	[CmdletBinding()]
+	[OutputType([string[]])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyCollection()]
+	    [byte[]]$Bytes
+	)
+	$length = $Bytes.Length
+	$text = if ($length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+	    [System.Text.Encoding]::UTF8.GetString($Bytes, 3, $length - 3)
+	} elseif ($length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+	    [System.Text.Encoding]::Unicode.GetString($Bytes, 2, $length - 2)
+	} elseif ($length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+	    [System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $length - 2)
+	} elseif (($length % 2) -eq 0) {
+	    [System.Text.Encoding]::Unicode.GetString($Bytes)
+	} else {
+	    [System.Text.Encoding]::Default.GetString($Bytes)
+	}
+	$lines = @(($text.TrimEnd([char]0) -split '\r?\n') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+	return $lines
+}
+function Get-GPOComment {
+	[CmdletBinding()]
+	[OutputType([string[]])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$GPOGUID
+	)
+	if ([string]::IsNullOrWhiteSpace($GPOGUID)) { return }
+	if ($null -eq $Script:GPOCommentMap) {
+	    $built = $null
+	    try {
+	        $built = Invoke-SMBAccess -Description 'Reading the comments of the GPOs' -ScriptBlock {
+	            $comments = @{}
+	            foreach ($cmtFile in @(Get-CachedSYSVOLFiles -Filter 'GPO.cmt')) {
+	                $folder = $cmtFile.Directory
+	                if ($null -eq $folder -or $null -eq $folder.Parent -or $folder.Parent.Name -ine 'Policies') { continue }
+	                try {
+	                    $lines = @(ConvertFrom-GPOCommentBytes -Bytes ([System.IO.File]::ReadAllBytes($cmtFile.FullName)))
+	                    if ($lines.Count -gt 0) { $comments[$folder.Name] = $lines }
+	                } catch {
+	                }
+	            }
+	            $comments
+	        }
+	    } catch {
+	    }
+	    if ($built -is [hashtable]) {
+	        $Script:GPOCommentMap = $built
+	    } else {
+	        $Script:GPOCommentMap = @{}
+	    }
+	}
+	$lookupKey = $GPOGUID.Trim()
+	if ($lookupKey -notmatch '^\{') { $lookupKey = "{$lookupKey}" }
+	if ($Script:GPOCommentMap.ContainsKey($lookupKey)) { return @($Script:GPOCommentMap[$lookupKey]) }
+	return
+}
+function ConvertTo-GPOTextRow {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Text
+	)
+	$lines = @(([string]$Text -split '\r?\n') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+	if ($lines.Count -eq 0) { return }
+	if ($lines.Count -eq 1) { return $lines[0] }
+	return ,[string[]]$lines
+}
 function Add-GPOConditionRow {
 	[CmdletBinding()]
 	param(
@@ -55758,6 +57300,57 @@ function Add-GPOConditionRow {
 	if ($wmiFilter) { $Object | Add-Member -NotePropertyName 'wmiFilter' -NotePropertyValue $wmiFilter -Force }
 	$loopback = Get-GPOLoopbackMode -GPOGUID $GPOGUID
 	if ($loopback) { $Object | Add-Member -NotePropertyName 'loopbackProcessing' -NotePropertyValue $loopback -Force }
+	$comment = @(Get-GPOComment -GPOGUID $GPOGUID)
+	if ($comment.Count -eq 1) {
+	    $Object | Add-Member -NotePropertyName 'gpoComment' -NotePropertyValue $comment[0] -Force
+	} elseif ($comment.Count -gt 1) {
+	    $Object | Add-Member -NotePropertyName 'gpoComment' -NotePropertyValue $comment -Force
+	}
+}
+function Get-GPOMachineScope {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowEmptyString()]
+	    [string]$GPOGUID,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    $ActiveLink,
+	    [Parameter(Mandatory=$false)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$DomainControllersOU
+	)
+	$links = @($ActiveLink | Where-Object { $_ })
+	$isDomainWide = @($links | Where-Object { $_.Scope -eq 'Domain' }).Count -gt 0
+	$linkedOUs = @($links | ForEach-Object { $_.DistinguishedName })
+	$reachesDC = (([string]$GPOGUID).ToUpper() -eq '{6AC1786C-016F-11D2-945F-00C04FB984F9}') -or $isDomainWide
+	$reachesMember = $isDomainWide -or ($linkedOUs.Count -eq 0)
+	foreach ($linkDN in $linkedOUs) {
+	    if ($DomainControllersOU -and "$linkDN".EndsWith($DomainControllersOU, [System.StringComparison]::OrdinalIgnoreCase)) {
+	        $reachesDC = $true
+	    } else {
+	        $reachesMember = $true
+	    }
+	}
+	if (-not $reachesDC -and -not $reachesMember) { $reachesMember = $true }
+	$scopes = @()
+	if ($reachesMember) { $scopes += 'Member' }
+	if ($reachesDC)     { $scopes += 'DC' }
+	$text = if ($reachesDC -and $reachesMember) {
+	    'Domain Controllers and member computers'
+	} elseif ($reachesDC) {
+	    'Domain Controllers'
+	} else {
+	    'Member computers'
+	}
+	return [PSCustomObject]@{
+	    ReachesDC     = $reachesDC
+	    ReachesMember = $reachesMember
+	    Scopes        = $scopes
+	    Text          = $text
+	}
 }
 function Get-DomainControllerGPOContext {
 	[CmdletBinding()]
@@ -59121,6 +60714,7 @@ function Get-adPEASIdentityCompleterRegistrations {
 	    @{ Command = 'Set-DomainGPO';           Parameter = 'Identity';     ObjectTypes = @('GPOs') }
 	    @{ Command = 'Set-DomainObject';        Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
 	    @{ Command = 'Move-DomainObject';       Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
+	    @{ Command = 'Get-DomainWriteAccess';   Parameter = 'Identity';     ObjectTypes = @('Users', 'Computers', 'Groups') }
 	    @{ Command = 'Request-ADCSCertificate'; Parameter = 'TemplateName'; ObjectTypes = @('Templates') }
 	)
 }
@@ -59303,6 +60897,7 @@ function Get-adPEASContainerCompleterRegistrations {
 	    @{ Command = 'Get-CertificateTemplate'; Parameter = 'SearchBase' }
 	    @{ Command = 'Set-DomainObject';        Parameter = 'SearchBase' }
 	    @{ Command = 'Invoke-LDAPSearch';       Parameter = 'SearchBase' }
+	    @{ Command = 'Get-DomainWriteAccess';   Parameter = 'SearchBase' }
 	    @{ Command = 'New-DomainUser';          Parameter = 'OrganizationalUnit' }
 	    @{ Command = 'New-DomainComputer';      Parameter = 'OrganizationalUnit' }
 	    @{ Command = 'New-DomainGroup';         Parameter = 'OrganizationalUnit' }
@@ -69871,32 +71466,41 @@ function Get-SMBSigningStatus {
 	            }
 	            $reaching = @($split.Active)
 	            $gpoLinkage = Get-GPOLinkage
-	            $dcOnlyGPOs = @($reaching | Where-Object {
-	                $links = $null
-	                if ($null -ne $gpoLinkage) { $links = $gpoLinkage[$_.Name.ToUpper()] }
-	                if (-not $links) { return $false }
-	                $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
-	                if ($activeLinks.Count -eq 0) { return $false }
-	                $allLinksToDCOU = $true
-	                foreach ($link in $activeLinks) {
-	                    if ($link.DistinguishedName -notmatch 'OU=Domain Controllers') {
-	                        $allLinksToDCOU = $false
-	                        break
+	            if ($null -ne $gpoLinkage -and $reaching.Count -gt 0) {
+	                $memberReaching = @($reaching | Where-Object {
+	                    $memberLinks = $null
+	                    if ($gpoLinkage.ContainsKey($_.Name.ToUpper())) { $memberLinks = $gpoLinkage[$_.Name.ToUpper()] }
+	                    @(@($memberLinks) | Where-Object {
+	                        $_ -and $_.LinkStatus -ne 'Disabled' -and "$($_.DistinguishedName)" -notmatch 'OU=Domain Controllers'
+	                    }).Count -gt 0
+	                })
+	                $memberRequired = @($memberReaching | Where-Object { $_.ServerSigning -eq 'Required' })
+	                if ($memberRequired.Count -eq 0) {
+	                    $memberWinners = Resolve-GPOMemberBaselinePrecedence -Finding $memberReaching -Setting $smbSettings -Linkage $gpoLinkage
+	                    $memberServer = 'Not required (Windows default before Server 2025)'
+	                    if ($memberWinners['ServerSigning']) {
+	                        $memberServer = "Not required ($($memberWinners['ServerSigning'].ServerSigning) by policy)"
 	                    }
+	                    $memberClient = 'Not configured'
+	                    if ($memberWinners['ClientSigning']) {
+	                        $memberClient = $memberWinners['ClientSigning'].ClientSigning
+	                    }
+	                    $memberSource = Get-GPOSettingPostureSource -Setting $smbSettings -Winner $memberWinners
+	                    if (@($memberSource).Count -eq 1 -and [string]$memberSource -eq 'None') {
+	                        $memberSource = 'None (nothing at the domain root or on a site sets signing)'
+	                        if ($memberReaching.Count -eq 0) {
+	                            $memberSource = 'None (signing is set on the DC OU only)'
+	                        }
+	                    }
+	                    $memberPosture = [PSCustomObject]@{
+	                        ServerSigning = $memberServer
+	                        ClientSigning = $memberClient
+	                        decidedBy     = $memberSource
+	                    }
+	                    $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
+	                    Show-Line "In force on member servers and clients:" -Class Finding
+	                    Show-Object $memberPosture -Class Finding
 	                }
-	                return $allLinksToDCOU
-	            })
-	            if (@($dcOnlyGPOs).Count -gt 0 -and @($dcOnlyGPOs).Count -eq $reaching.Count) {
-	                $hasRequiredSigning = @($dcOnlyGPOs | Where-Object { $_.ServerSigning -eq 'Required' }).Count -gt 0
-	                $dcOnlyClass = if ($hasRequiredSigning) { 'Hint' } else { 'Finding' }
-	                $memberPosture = [PSCustomObject]@{
-	                    ServerSigning = 'Not configured (not required before Server 2025)'
-	                    ClientSigning = 'Not configured'
-	                    decidedBy     = 'None (signing is set on the DC OU only)'
-	                }
-	                $memberPosture | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'EffectiveSMBSigningMembers' -Force
-	                Show-Line "In force on member servers and clients:" -Class $dcOnlyClass
-	                Show-Object $memberPosture -Class $dcOnlyClass
 	            }
 	            $weakeningGPOs = @($reaching | Where-Object {
 	                $_.ServerSigning -in @('Disabled', 'Optional') -or $_.ClientSigning -eq 'Disabled'
@@ -71872,7 +73476,7 @@ function Get-AuthenticationPolicySilos {
 	            return
 	        }
 	        if ($silos.Count -eq 0 -and $policies.Count -eq 0) {
-	            Show-Line "No authentication policy silo and no authentication policy is configured"
+	            Show-Line "No authentication policy silo and no authentication policy is configured" -Class Note
 	            return
 	        }
 	        $builtinAdminDN = $null
@@ -71988,7 +73592,7 @@ function Get-AuthenticationPolicySilos {
 	            Show-Line "Found $($silos.Count) authentication policy silo(s):" -Class (Get-AuthNHeadlineClass -Class $siloClasses)
 	            for ($i = 0; $i -lt $silos.Count; $i++) { Show-Object $silos[$i] -Class $siloClasses[$i] }
 	        } else {
-	            Show-Line "No authentication policy silo is configured"
+	            Show-Line "No authentication policy silo is configured" -Class Note
 	        }
 	        if ($policies.Count -gt 0) {
 	            Show-Line "Found $($policies.Count) authentication policy(ies):" -Class (Get-AuthNHeadlineClass -Class $policyClasses)
@@ -72257,7 +73861,7 @@ function Get-RODCPasswordReplication {
 	        if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
 	            return
 	        }
-	        Show-SubHeader "Checking the password replication policy of read-only Domain Controllers..." -ObjectType "RODCPasswordReplication"
+	        Show-SubHeader "Checking the password replication policy and the administrators of read-only Domain Controllers..." -ObjectType "RODCPasswordReplication"
 	        $rodcs = @(Get-DomainComputer -DomainController @PSBoundParameters | Test-AccountActivity -IsEnabled |
 	            Where-Object { @($_.userAccountControl) -contains 'PARTIAL_SECRETS_ACCOUNT' })
 	        if ($rodcs.Count -eq 0) {
@@ -72284,11 +73888,13 @@ function Get-RODCPasswordReplication {
 	            }
 	        }
 	        $sidByDN = @{}
+	        $nameByDN = @{}
 	        foreach ($rodc in $rodcs) {
-	            foreach ($dn in (@($rodc.'msDS-RevealOnDemandGroup') + @($rodc.'msDS-NeverRevealGroup'))) {
+	            foreach ($dn in (@($rodc.'msDS-RevealOnDemandGroup') + @($rodc.'msDS-NeverRevealGroup') + @($rodc.managedBy))) {
 	                if (-not $dn -or $sidByDN.ContainsKey([string]$dn)) { continue }
-	                $listed = @(Get-DomainObject -Identity ([string]$dn) -Properties 'objectSid' @PSBoundParameters)[0]
+	                $listed = @(Get-DomainObject -Identity ([string]$dn) -Properties 'objectSid', 'sAMAccountName' @PSBoundParameters)[0]
 	                $sidByDN[[string]$dn] = if ($listed -and $listed.objectSid) { [string]$listed.objectSid } else { $null }
+	                $nameByDN[[string]$dn] = if ($listed -and $listed.sAMAccountName) { [string]$listed.sAMAccountName } else { $null }
 	            }
 	        }
 	        $deniedGroupSID = "$($Script:LDAPContext.DomainSID)-572"
@@ -72332,8 +73938,45 @@ function Get-RODCPasswordReplication {
 	                $issues++
 	                Show-Line "$rodcName - $unresolvedDenied member(s) of its deny list could not be resolved and were not counted" -Class Note
 	            }
+	            $managedByDN = [string]$rodc.managedBy
+	            if ($managedByDN) {
+	                $adminSID = $sidByDN[$managedByDN]
+	                if (-not $adminSID) {
+	                    $issues++
+	                    Show-Line "$rodcName - its managedBy could not be resolved, so its administrator was not checked: $managedByDN" -Class Note
+	                } else {
+	                    $adminName = $nameByDN[$managedByDN]
+	                    if (-not $adminName) { $adminName = ConvertFrom-SID -SID $adminSID }
+	                    if (Test-IsBroadTrustee -SID $adminSID) {
+	                        $issues++
+	                        Show-Line "$rodcName - managedBy makes $adminName, a broad group, an administrator of it" -Class Finding -FindingId 'RODC_ADMIN_BROAD_GROUP'
+	                    } elseif ((Test-IsPrivileged -Identity $adminSID).Category -ne 'Privileged') {
+	                        $issues++
+	                        Show-Line "$rodcName - managedBy makes $adminName an administrator of it" -Class Finding -FindingId 'RODC_DELEGATED_ADMIN'
+	                    }
+	                }
+	            }
+	            $aclResult = $null
+	            try {
+	                $aclResult = Get-ObjectACL -DistinguishedName ([string]$rodc.distinguishedName) @PSBoundParameters
+	            } catch {
+	            }
+	            if (-not $aclResult) {
+	                $issues++
+	                Show-Line "$rodcName - its ACL could not be read, so who may write its managedBy was not checked" -Class Note
+	            } else {
+	                $writerEntries = @()
+	                foreach ($writer in @(Get-RODCManagedByWriter -ACL $aclResult -ObjectSID ([string]$rodc.objectSid))) {
+	                    if ((Test-IsPrivileged -Identity $writer.SID).Category -eq 'Privileged') { continue }
+	                    $writerEntries += "$($writer.Name) ($(@($writer.Rights) -join '/'))"
+	                }
+	                if ($writerEntries.Count -gt 0) {
+	                    $issues++
+	                    Show-Line "$rodcName - $($writerEntries.Count) principal(s) outside Tier-0 may write its managedBy and make themselves its administrator: $(Format-RODCAccountList $writerEntries)" -Class Finding -FindingId 'RODC_MANAGEDBY_WRITE'
+	                }
+	            }
 	            if ($issues -eq 0) {
-	                Show-Line "$rodcName - no privileged account may have its password cached, and none has" -Class Secure
+	                Show-Line "$rodcName - no privileged account may have its password cached, none has, and only Tier-0 controls who administers it" -Class Secure
 	            }
 	        }
 	    } catch {
@@ -72352,6 +73995,75 @@ function Format-RODCAccountList {
 	$shown = @($sorted | Select-Object -First 20) -join ', '
 	if ($sorted.Count -gt 20) { $shown = "$shown, ... and $($sorted.Count - 20) more" }
 	return $shown
+}
+function Get-RODCManagedByWriter {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)]
+	    [AllowNull()]
+	    $ACL,
+	    [Parameter(Mandatory=$false)]
+	    [string]$ObjectSID
+	)
+	if (-not $ACL) { return }
+	$managedByGuid = '0296c120-40da-11d1-a9c0-0000f80367c1'
+	$noGuid = '00000000-0000-0000-0000-000000000000'
+	$notReported = @($Script:SelfModificationSIDs)
+	if ($ObjectSID) { $notReported += $ObjectSID }
+	$writeDenied = @{}
+	foreach ($ace in @($ACL.ACEs)) {
+	    if (-not $ace -or [string]$ace.AccessControlType -ne 'Deny' -or $ace.IsInherited) { continue }
+	    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+	    $objectType = [string]$ace.ObjectType
+	    $scoped = $objectType -and $objectType -ne $noGuid
+	    if ($scoped -and $objectType -ine $managedByGuid) { continue }
+	    if (@($ace.RightsRaw) -contains 'WriteProperty') { $writeDenied[[string]$ace.TrusteeSID] = $true }
+	}
+	$rightsBySID = [ordered]@{}
+	$nameBySID = @{}
+	$ownerSID = [string]$ACL.OwnerSID
+	if ($ownerSID -and $notReported -notcontains $ownerSID) {
+	    $rightsBySID[$ownerSID] = @('Owner')
+	    $nameBySID[$ownerSID] = $(if ($ACL.Owner) { [string]$ACL.Owner } else { $ownerSID })
+	}
+	foreach ($ace in @($ACL.ACEs)) {
+	    if (-not $ace -or [string]$ace.AccessControlType -ne 'Allow') { continue }
+	    if (-not (Test-ACEAppliesToSelf -ACE $ace)) { continue }
+	    $sid = [string]$ace.TrusteeSID
+	    if (-not $sid -or $notReported -contains $sid) { continue }
+	    $rights = @($ace.RightsRaw)
+	    $objectType = [string]$ace.ObjectType
+	    $scoped = $objectType -and $objectType -ne $noGuid
+	    $isDenied = $writeDenied.ContainsKey($sid)
+	    $granted = @()
+	    if (-not $scoped) {
+	        if ($rights -contains 'GenericAll') {
+	            $granted += 'GenericAll'
+	        } else {
+	            if (-not $isDenied) {
+	                if ($rights -contains 'GenericWrite') { $granted += 'GenericWrite' }
+	                elseif ($rights -contains 'WriteProperty') { $granted += 'WriteProperty' }
+	            }
+	            if ($rights -contains 'WriteDacl') { $granted += 'WriteDacl' }
+	            if ($rights -contains 'WriteOwner') { $granted += 'WriteOwner' }
+	        }
+	    } elseif ($objectType -ieq $managedByGuid -and $rights -contains 'WriteProperty' -and -not $isDenied) {
+	        $granted += 'WriteProperty managedBy'
+	    }
+	    if ($granted.Count -eq 0) { continue }
+	    if (-not $rightsBySID.Contains($sid)) {
+	        $rightsBySID[$sid] = @()
+	        $nameBySID[$sid] = $(if ($ace.Trustee) { [string]$ace.Trustee } else { $sid })
+	    }
+	    $rightsBySID[$sid] = @($rightsBySID[$sid]) + $granted
+	}
+	foreach ($sid in @($rightsBySID.Keys)) {
+	    [PSCustomObject]@{
+	        SID    = $sid
+	        Name   = $nameBySID[$sid]
+	        Rights = @($rightsBySID[$sid] | Select-Object -Unique)
+	    }
+	}
 }
 function Get-InactiveAdminAccounts {
 	[CmdletBinding()]
@@ -72570,7 +74282,6 @@ function Get-AdminReversibleEncryption {
 	            $totalAccounts = $vulnerableAccounts.Count
 	            Show-Line "Found $totalAccounts account(s) with reversible password encryption:" -Class Finding
 	            $currentIndex = 0
-	            $privilegedCount = 0
 	            foreach ($user in $vulnerableAccounts) {
 	                $currentIndex++
 	                if ($totalAccounts -gt $Script:ProgressThreshold) {
@@ -72578,7 +74289,6 @@ function Get-AdminReversibleEncryption {
 	                }
 	                $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
 	                if ($privileged -and $privileged.IsPrivileged) {
-	                    $privilegedCount++
 	                    $user | Add-Member -NotePropertyName 'PrivilegedAccount' `
 	                        -NotePropertyValue $privileged.Reason -Force
 	                }
@@ -72587,9 +74297,6 @@ function Get-AdminReversibleEncryption {
 	            }
 	            if ($totalAccounts -gt $Script:ProgressThreshold) {
 	                Show-Progress -Activity "Processing reversible encryption accounts" -Completed
-	            }
-	            if ($privilegedCount -gt 0) {
-	                Show-Line "$privilegedCount of them is/are privileged - the cleartext password of an administrator is recoverable from the DC" -Class Finding
 	            }
 	        } else {
 	            Show-Line "No accounts with reversible password encryption found" -Class Secure
@@ -75618,7 +77325,9 @@ function Get-GPOUserRightsAssignment {
 	    [Alias('IncludePrivileged')]
 	    [switch]$IncludeDefaults,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$IncludeInactive
+	    [switch]$IncludeInactive,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludeUnknown
 	)
 	process {
 	    try {
@@ -75645,6 +77354,7 @@ function Get-GPOUserRightsAssignment {
 	        $statusMap = $gpoStatusMap
 	        $dcOU = if ($domainDN) { "OU=Domain Controllers,$domainDN" } else { $null }
 	        $Script:gpoUserRightsFindings = @()
+	        $Script:gpoUserRightsUnjudged = [System.Collections.ArrayList]::new()
 	        $Script:gpoUserRightsSysvolScanned = $false
 	        Invoke-SMBAccess -Description "Scanning GPO user rights assignments" -ScriptBlock {
 	            $sysvolPath = "\\$dcServer\SYSVOL\$domainFQDN\Policies"
@@ -75682,28 +77392,9 @@ function Get-GPOUserRightsAssignment {
 	                if ($links) {
 	                    $activeLinks = @($links | Where-Object { $_.LinkStatus -ne "Disabled" })
 	                }
-	                $linkedOUs = @($activeLinks | ForEach-Object { $_.DistinguishedName })
-	                $isDomainWide = ($null -ne ($activeLinks | Where-Object { $_.Scope -eq "Domain" }))
-	                $reachesDC = ($gpoGUIDKey -eq '{6AC1786C-016F-11D2-945F-00C04FB984F9}') -or $isDomainWide
-	                $reachesMember = $isDomainWide -or ($linkedOUs.Count -eq 0)
-	                foreach ($linkDN in $linkedOUs) {
-	                    if ($dcOU -and "$linkDN".EndsWith($dcOU, [System.StringComparison]::OrdinalIgnoreCase)) {
-	                        $reachesDC = $true
-	                    } else {
-	                        $reachesMember = $true
-	                    }
-	                }
-	                if (-not $reachesDC -and -not $reachesMember) { $reachesMember = $true }
-	                $scopes = @()
-	                if ($reachesMember) { $scopes += 'Member' }
-	                if ($reachesDC)     { $scopes += 'DC' }
-	                $machineScope = if ($reachesDC -and $reachesMember) {
-	                    'Domain Controllers and member computers'
-	                } elseif ($reachesDC) {
-	                    'Domain Controllers'
-	                } else {
-	                    'Member computers'
-	                }
+	                $machineReach = Get-GPOMachineScope -GPOGUID $gpoGUIDKey -ActiveLink $activeLinks -DomainControllersOU $dcOU
+	                $scopes = @($machineReach.Scopes)
+	                $machineScope = $machineReach.Text
 	                foreach ($right in $Script:UserRightsBaseline.Keys) {
 	                    $pattern = '(?im)^[ \t]*' + [regex]::Escape($right) + '[ \t]*=[ \t]*([^\r\n]*)'
 	                    $m = [regex]::Match($section, $pattern)
@@ -75786,6 +77477,31 @@ function Get-GPOUserRightsAssignment {
 	                    }
 	                    $Script:gpoUserRightsFindings += $finding
 	                }
+	                foreach ($assignment in [regex]::Matches($section, '(?im)^[ \t]*(Se[A-Za-z]+)[ \t]*=[ \t]*([^\r\n]*)')) {
+	                    $assignedRight = $assignment.Groups[1].Value
+	                    if ($Script:UserRightsBaseline.Contains($assignedRight)) { continue }
+	                    if ($Script:LogonDenyRights.Contains($assignedRight)) { continue }
+	                    $holders = @()
+	                    foreach ($token in ($assignment.Groups[2].Value -split ',')) {
+	                        $raw = $token.Trim().TrimStart('*')
+	                        if (-not $raw) { continue }
+	                        $holderName = $raw
+	                        if ($raw -match '^S-1-') {
+	                            $resolvedName = $null
+	                            try { $resolvedName = ConvertFrom-SID -SID $raw } catch { }
+	                            if ($resolvedName) { $holderName = [string]$resolvedName }
+	                        }
+	                        $holders += $holderName
+	                    }
+	                    [void]$Script:gpoUserRightsUnjudged.Add([PSCustomObject]@{
+	                        GPOName    = $gpo.displayName
+	                        GPOGUID    = $gpo.Name
+	                        GPOPath    = $gpo.gPCFileSysPath
+	                        SourceFile = Get-GPORelativePath -Path $file.FullName
+	                        UserRight  = $assignedRight
+	                        Holders    = $holders
+	                    })
+	                }
 	            }
 	            if ($totalGPOs -gt $Script:ProgressThreshold) {
 	                Show-Progress -Activity "Scanning GPO user rights assignments" -Completed
@@ -75795,6 +77511,18 @@ function Get-GPOUserRightsAssignment {
 	        $Script:gpoUserRightsFindings = $null
 	        $sysvolScanned = [bool]$Script:gpoUserRightsSysvolScanned
 	        $Script:gpoUserRightsSysvolScanned = $null
+	        $unjudged = @($Script:gpoUserRightsUnjudged)
+	        $Script:gpoUserRightsUnjudged = $null
+	        $unjudgedSplit = Split-GPOFindingByReach -Finding $unjudged -GPOStatusMap $gpoStatusMap `
+	            -GPOLinkage $gpoLinkage -Scope 'Machine'
+	        $unjudgedShown = @(if ($IncludeInactive) { $unjudged } else { $unjudgedSplit.Active })
+	        if ($unjudgedShown.Count -gt 0) {
+	            $unjudgedPolicies = @($unjudgedShown | ForEach-Object { ([string]$_.GPOGUID).ToUpper() } | Sort-Object -Unique).Count
+	            $policyWord = if ($unjudgedPolicies -eq 1) { 'policy' } else { 'policies' }
+	            $unjudgedText = "$($unjudgedShown.Count) further user right assignment(s) from $unjudgedPolicies $policyWord are not on the list of this check - not judged"
+	            if (-not $IncludeUnknown -and $null -eq $Script:adPEAS_CurrentCheckContext) { $unjudgedText += ' (-IncludeUnknown to list)' }
+	            Show-Line $unjudgedText -Class Note
+	        }
 	        if ($findings.Count -gt 0) {
 	            $split = Split-GPOFindingByReach -Finding $findings -GPOStatusMap $gpoStatusMap `
 	                -GPOLinkage $gpoLinkage -Scope 'Machine'
@@ -75847,11 +77575,274 @@ function Get-GPOUserRightsAssignment {
 	            if (Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf')) { $emptyClass = 'Note' }
 	            Show-Line "Every user right assigned via GPO matches the Windows default" -Class $emptyClass
 	        }
+	        if ($IncludeUnknown -and $unjudgedShown.Count -gt 0) {
+	            $unjudgedGroups = @($unjudgedShown | Group-Object -Property { "$(([string]$_.GPOGUID).ToUpper())|$($_.SourceFile)" } |
+	                Sort-Object -Property @{ Expression = { [string]$_.Group[0].GPOName } })
+	            foreach ($group in $unjudgedGroups) {
+	                $first = $group.Group[0]
+	                $inventory = [PSCustomObject][ordered]@{
+	                    GPOName           = $first.GPOName
+	                    GPOGUID           = $first.GPOGUID
+	                    GPOPath           = $first.GPOPath
+	                    SourceFile        = $first.SourceFile
+	                    UserRights        = @($group.Group | Sort-Object -Property UserRight | ForEach-Object {
+	                        $holderText = if (@($_.Holders).Count -gt 0) { @($_.Holders) -join ', ' } else { '(nobody)' }
+	                        "$($_.UserRight) = $holderText"
+	                    })
+	                    _adPEASObjectType = 'GPOUserRightValue'
+	                }
+	                Show-Object $inventory -Class Standard
+	            }
+	        }
 	    } catch {
 	        Show-Line "Error during check: $_" -Class "Finding"
 	    } finally {
 	        $Script:gpoUserRightsFindings = $null
+	        $Script:gpoUserRightsUnjudged = $null
 	    }
+	}
+}
+function Get-GPOLogonRestrictions {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [string]$Domain,
+	    [Parameter(Mandatory=$false)]
+	    [string]$Server,
+	    [Parameter(Mandatory=$false)]
+	    [System.Management.Automation.PSCredential]$Credential,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$IncludeInactive
+	)
+	process {
+	    try {
+	        $CredParams = @{}
+	        if ($Domain) { $CredParams['Domain'] = $Domain }
+	        if ($Server) { $CredParams['Server'] = $Server }
+	        if ($Credential) { $CredParams['Credential'] = $Credential }
+	        if (-not (Ensure-LDAPConnection @CredParams)) {
+	            return
+	        }
+	        Show-SubHeader "Checking which logons Group Policy denies..." -ObjectType "GPOLogonRestriction"
+	        $gpos = @(Get-DomainGPO @CredParams)
+	        if ($gpos.Count -eq 0) {
+	            Show-Line "No GPOs found" -Class "Note"
+	            return
+	        }
+	        $gpoLinkage = Get-GPOLinkage
+	        $gpoStatusMap = Get-GPOStatusMap -GPO $gpos
+	        $domainFQDN = $Script:LDAPContext.Domain
+	        $dcServer = $Script:LDAPContext.Server
+	        $domainDN = $Script:LDAPContext.DomainDN
+	        $domainSID = [string]$Script:LDAPContext.DomainSID
+	        $linkage = $gpoLinkage
+	        $statusMap = $gpoStatusMap
+	        $dcOU = if ($domainDN) { "OU=Domain Controllers,$domainDN" } else { $null }
+	        $tier0SIDs = @{}
+	        if ($domainSID) {
+	            $domainAdminsSID = "$domainSID-512"
+	            $tier0SIDs[$domainAdminsSID] = $true
+	            foreach ($groupSID in @(Get-RecursiveGroupMembership -IdentitySID $domainAdminsSID)) {
+	                if ($groupSID -and -not ([string]$groupSID).StartsWith('S-1-5-32-')) { $tier0SIDs[[string]$groupSID] = $true }
+	            }
+	        }
+	        $Script:gpoLogonRestrictions = @()
+	        $Script:gpoLogonRestrictionsScanned = $false
+	        Invoke-SMBAccess -Description "Scanning GPO logon restrictions" -ScriptBlock {
+	            $sysvolPath = "\\$dcServer\SYSVOL\$domainFQDN\Policies"
+	            if (-not (Test-Path $sysvolPath)) {
+	                return
+	            }
+	            $Script:gpoLogonRestrictionsScanned = $true
+	            $gpoByGuid = @{}
+	            foreach ($g in $gpos) {
+	                if ($g.Name) { $gpoByGuid[([string]$g.Name).ToUpper()] = $g }
+	            }
+	            foreach ($file in @(Get-CachedSYSVOLFiles -Filter "GptTmpl.inf")) {
+	                if ($file.FullName -notmatch '\\Policies\\(\{[^}]+\})\\') { continue }
+	                $gpoGUIDKey = $Matches[1].ToUpper()
+	                $gpo = $gpoByGuid[$gpoGUIDKey]
+	                if (-not $gpo) { continue }
+	                if ($file.FullName -notmatch '(?i)\\Policies\\\{[^}]+\}\\MACHINE\\') { continue }
+	                $content = Get-CachedSYSVOLContent -Path $file.FullName
+	                if (-not $content) { continue }
+	                if ($content -notmatch '(?is)\[Privilege Rights\](.*?)(\[|$)') { continue }
+	                $section = $Matches[1]
+	                $denials = [ordered]@{}
+	                foreach ($right in $Script:LogonDenyRights.Keys) {
+	                    $m = [regex]::Match($section, '(?im)^[ \t]*' + [regex]::Escape($right) + '[ \t]*=[ \t]*([^\r\n]*)')
+	                    if ($m.Success) { $denials[$right] = @(ConvertFrom-GPOLogonDenyValue -Value $m.Groups[1].Value) }
+	                }
+	                if ($denials.Count -eq 0) { continue }
+	                $links = $null
+	                if ($linkage) {
+	                    $links = @()
+	                    if ($linkage.ContainsKey($gpoGUIDKey)) { $links = @($linkage[$gpoGUIDKey]) }
+	                }
+	                $activeLinks = @()
+	                if ($links) { $activeLinks = @($links | Where-Object { $_.LinkStatus -ne 'Disabled' }) }
+	                $reach = Get-GPOMachineScope -GPOGUID $gpoGUIDKey -ActiveLink $activeLinks -DomainControllersOU $dcOU
+	                $verdict = Get-GPOLogonDenialVerdict -Denial $denials -Reach $reach -Tier0SID $tier0SIDs
+	                $restriction = [ordered]@{
+	                    GPOName    = $gpo.displayName
+	                    GPOGUID    = $gpo.Name
+	                    GPOPath    = $gpo.gPCFileSysPath
+	                    SourceFile = Get-GPORelativePath -Path $file.FullName
+	                    AppliesTo  = $reach.Text
+	                }
+	                foreach ($right in $Script:LogonDenyRights.Keys) {
+	                    if (-not $denials.Contains($right)) { continue }
+	                    $names = @($denials[$right] | ForEach-Object { $_.Name })
+	                    $restriction[$Script:LogonDenyRights[$right].Property] = $(if ($names.Count -gt 0) { $names } else { '(nobody)' })
+	                }
+	                if (@($verdict.Text).Count -gt 0) { $restriction['LogonVerdict'] = @($verdict.Text) }
+	                $object = [PSCustomObject]$restriction
+	                $object | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $(if ($null -eq $links) { 'Unknown - linkage could not be resolved' } else { $links }) -Force
+	                Add-GPODomainControllerReach -Object $object -Reach (Get-GPODomainControllerReachDetail -Link $links -GPOGUID $gpo.Name)
+	                Add-GPOConditionRow -Object $object -GPOGUID $gpo.Name
+	                $gpoStatus = Get-GPOEffectiveStatus -StatusEntry $statusMap[$gpoGUIDKey] `
+	                    -Scope 'Machine' -Link $(if ($null -eq $linkage) { $null } else { $links })
+	                if ($gpoStatus) { $object | Add-Member -NotePropertyName 'GPOStatus' -NotePropertyValue $gpoStatus -Force }
+	                $object | Add-Member -NotePropertyName '_severity' -NotePropertyValue $verdict.Severity -Force
+	                $object | Add-Member -NotePropertyName '_tier0Logons' -NotePropertyValue @($verdict.Tier0Logons) -Force
+	                $object | Add-Member -NotePropertyName '_localAdminLogons' -NotePropertyValue @($verdict.LocalAdminLogons) -Force
+	                $Script:gpoLogonRestrictions += $object
+	            }
+	        }
+	        $restrictions = @($Script:gpoLogonRestrictions)
+	        $scanned = [bool]$Script:gpoLogonRestrictionsScanned
+	        $Script:gpoLogonRestrictions = $null
+	        $Script:gpoLogonRestrictionsScanned = $null
+	        if (-not $scanned) {
+	            if ((Test-SysvolAccessible) -eq $false) {
+	                Show-Line "SYSVOL is not accessible - GPO logon restrictions could not be evaluated" -Class "Note"
+	            } else {
+	                Show-Line "SYSVOL access failed - GPO logon restrictions could not be evaluated - SMB access failed (authentication/network issue)" -Class "Finding"
+	            }
+	            return
+	        }
+	        $split = Split-GPOFindingByReach -Finding $restrictions -GPOStatusMap $gpoStatusMap `
+	            -GPOLinkage $gpoLinkage -Scope 'Machine'
+	        $active = @($split.Active)
+	        Show-GPOInactiveSummary -Unlinked $split.Unlinked -Disabled $split.Disabled `
+	            -Dormant $split.Dormant -Listed:$IncludeInactive
+	        $partial = [bool](Show-SYSVOLCoverageNote -FileFilter @('GptTmpl.inf'))
+	        $tier0Policies = @($active | Where-Object { @($_._tier0Logons | Where-Object { @('local', 'remote desktop') -contains $_ }).Count -gt 0 })
+	        if ($tier0Policies.Count -gt 0) {
+	            $logons = @($tier0Policies | ForEach-Object { $_._tier0Logons } | Select-Object -Unique)
+	            Show-Line "Domain Admins are denied the $($logons -join ', ') logon on member computers by $($tier0Policies.Count) policy(s)" -Class Secure
+	        } elseif ($partial) {
+	            Show-Line "No readable policy denies Domain Admins the local or Remote Desktop logon on member computers" -Class Note
+	        } else {
+	            Show-Line "No policy denies Domain Admins the local or Remote Desktop logon on member computers" -Class Hint -FindingId 'GPO_TIER0_LOGON_NOT_DENIED'
+	        }
+	        $localPolicies = @($active | Where-Object { @($_._localAdminLogons) -contains 'network' })
+	        if ($localPolicies.Count -gt 0) {
+	            Show-Line "Local administrator accounts are denied the network logon on member computers by $($localPolicies.Count) policy(s)" -Class Secure
+	        } elseif ($partial) {
+	            Show-Line "No readable policy denies local administrator accounts the network logon on member computers" -Class Note
+	        } else {
+	            Show-Line "No policy denies local administrator accounts the network logon on member computers" -Class Hint -FindingId 'GPO_LOCAL_ADMIN_NETWORK_NOT_DENIED'
+	        }
+	        $shown = if ($IncludeInactive) { @($restrictions) } else { $active }
+	        if (@($shown).Count -eq 0) { return }
+	        $hasHint = @($shown | Where-Object { $_._severity -eq 'Hint' }).Count -gt 0
+	        Show-Line "Found $(@($shown).Count) policy(s) that deny a logon:" -Class $(if ($hasHint) { 'Hint' } else { 'Note' })
+	        $ordered = @($shown | Sort-Object @{ Expression = {
+	            switch ($_._severity) { 'Hint' { 0 } 'Secure' { 1 } default { 2 } }
+	        } }, GPOName)
+	        foreach ($restriction in $ordered) {
+	            $restriction | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPOLogonRestriction' -Force
+	            $class = if (@($split.Inactive) -contains $restriction) { 'Note' } else { $restriction._severity }
+	            Show-Object $restriction -Class $class
+	        }
+	    } catch {
+	        Show-Line "Error during check - the logon restrictions of the GPOs could not be evaluated: $_" -Class "Finding"
+	    } finally {
+	        $Script:gpoLogonRestrictions = $null
+	        $Script:gpoLogonRestrictionsScanned = $null
+	    }
+	}
+}
+function ConvertFrom-GPOLogonDenyValue {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowEmptyString()]
+	    [string]$Value
+	)
+	foreach ($token in ($Value -split ',')) {
+	    $raw = $token.Trim()
+	    $isSidForm = $raw.StartsWith('*')
+	    $raw = $raw.TrimStart('*').Trim()
+	    if (-not $raw) { continue }
+	    if ($raw -match '^S-1-') {
+	        $name = $null
+	        try { $name = ConvertFrom-SID -SID $raw } catch { }
+	        [PSCustomObject]@{ SID = $raw; Name = $(if ($name) { [string]$name } else { $raw }); RawName = $raw; Local = $false }
+	        continue
+	    }
+	    if ($isSidForm -or $raw.IndexOf([char]92) -ge 0) {
+	        $resolved = $null
+	        try { $resolved = ConvertTo-SID -Identity $raw } catch { }
+	        [PSCustomObject]@{ SID = $(if ($resolved) { [string]$resolved } else { '' }); Name = $raw; RawName = $raw; Local = $false }
+	        continue
+	    }
+	    [PSCustomObject]@{ SID = ''; Name = "$raw (local account)"; RawName = $raw; Local = $true }
+	}
+}
+function Test-GPOLogonLockoutSID {
+	[CmdletBinding()]
+	[OutputType([bool])]
+	param(
+	    [Parameter(Mandatory=$false)]
+	    [AllowEmptyString()]
+	    [string]$SID
+	)
+	if (-not $SID) { return $false }
+	if (@('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-2', 'S-1-5-4') -contains $SID) { return $true }
+	return ($SID -match '^S-1-5-21-\d+-\d+-\d+-(513|515)$')
+}
+function Get-GPOLogonDenialVerdict {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] $Denial,
+	    [Parameter(Mandatory=$true)] $Reach,
+	    [Parameter(Mandatory=$false)] [hashtable]$Tier0SID = @{}
+	)
+	$lockouts = @()
+	$tier0OnMembers = @()
+	$tier0OnDCs = @()
+	$localAdmin = @()
+	foreach ($right in $Denial.Keys) {
+	    $logon = $Script:LogonDenyRights[$right].Logon
+	    foreach ($entry in @($Denial[$right])) {
+	        $sid = [string]$entry.SID
+	        if (Test-GPOLogonLockoutSID -SID $sid) { $lockouts += "$($entry.Name) ($logon)" }
+	        if ($sid -and $Tier0SID.ContainsKey($sid)) {
+	            if ($Reach.ReachesMember) { $tier0OnMembers += $logon }
+	            if ($Reach.ReachesDC) { $tier0OnDCs += $logon }
+	        }
+	        $isLocalAdmin = ($sid -eq 'S-1-5-114') -or ($sid -eq 'S-1-5-113') -or ($entry.Local -and [string]$entry.RawName -eq 'Administrator')
+	        if ($isLocalAdmin -and $Reach.ReachesMember) { $localAdmin += $logon }
+	    }
+	}
+	$tier0OnMembers = @($tier0OnMembers | Select-Object -Unique)
+	$tier0OnDCs = @($tier0OnDCs | Select-Object -Unique)
+	$localAdmin = @($localAdmin | Select-Object -Unique)
+	$text = @()
+	if ($lockouts.Count -gt 0) { $text += "Locks out every account of $(@($lockouts | Select-Object -Unique) -join ', ')" }
+	if ($tier0OnDCs.Count -gt 0) { $text += "Locks out Domain Admins on domain controllers: $($tier0OnDCs -join ', ')" }
+	if ($tier0OnMembers.Count -gt 0) { $text += "Keeps Domain Admins off member computers: $($tier0OnMembers -join ', ')" }
+	if ($localAdmin.Count -gt 0) { $text += "Keeps local administrators off member computers: $($localAdmin -join ', ')" }
+	$severity = 'Standard'
+	if ($tier0OnMembers.Count -gt 0 -or $localAdmin.Count -gt 0) { $severity = 'Secure' }
+	if ($lockouts.Count -gt 0 -or $tier0OnDCs.Count -gt 0) { $severity = 'Hint' }
+	return [PSCustomObject]@{
+	    Text             = $text
+	    Severity         = $severity
+	    Tier0Logons      = $tier0OnMembers
+	    LocalAdminLogons = $localAdmin
 	}
 }
 function Get-LAPSPermissions {
@@ -78305,7 +80296,7 @@ function Invoke-ShareHunt {
 	                            $found = @(Find-ScriptFileCredential -Content $text -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
 	                        }
 	                    } else {
-	                        $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop
+	                        $text = Read-CredentialScanText -Path $file.FullName
 	                        if ($file.Extension -ieq '.vbe') { $text = ConvertFrom-VBE -EncodedScript $text }
 	                        $found = @(Find-ScriptFileCredential -Content $text -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)
 	                    }
@@ -79498,6 +81489,10 @@ function Parse-GPPGroups {
 	            _memberVerdicts = $memberVerdicts
 	            _groupBaseSeverity = Get-LocalGroupBaseSeverity -GroupSID $groupSID
 	        }
+	        $itemDescription = ConvertTo-GPOTextRow -Text ([string]$group.GetAttribute('desc'))
+	        if ($null -ne $itemDescription) {
+	            $finding | Add-Member -NotePropertyName 'itemDescription' -NotePropertyValue $itemDescription -Force
+	        }
 	        if (@($removedMembers).Count -gt 0) {
 	            $finding | Add-Member -NotePropertyName 'MembersRemoved' -NotePropertyValue $removedMembers -Force
 	        }
@@ -79909,19 +81904,7 @@ function Parse-ScheduledTasksXML {
 	            $severity = "Hint"
 	            $risk = "Task runs as SYSTEM"
 	        }
-	        $trigger = "Unknown"
-	        if ($taskNode.Properties.Task.Triggers) {
-	            $triggers = $taskNode.Properties.Task.Triggers
-	            if ($triggers.LogonTrigger) {
-	                $trigger = "At Logon"
-	            } elseif ($triggers.BootTrigger) {
-	                $trigger = "At Startup"
-	            } elseif ($triggers.TimeTrigger) {
-	                $trigger = "Scheduled (Time-based)"
-	            } elseif ($triggers.CalendarTrigger) {
-	                $trigger = "Scheduled (Calendar)"
-	            }
-	        }
+	        $trigger = @(ConvertTo-GPOTaskTriggerText -TaskNode $taskNode)
 	        $taskProps = [ordered]@{
 	            GPOName    = $GPOName
 	            GPOGUID    = $GPOGUID
@@ -79936,6 +81919,16 @@ function Parse-ScheduledTasksXML {
 	            _Severity  = $severity
 	            _Risk      = $risk
 	        }
+	        $taskDescriptionText = ''
+	        if ($taskNode.Properties -and $taskNode.Properties.Task -and $taskNode.Properties.Task.RegistrationInfo) {
+	            $taskDescriptionText = [string]$taskNode.Properties.Task.RegistrationInfo.Description
+	        } elseif ($taskNode.Properties) {
+	            $taskDescriptionText = [string]$taskNode.Properties.GetAttribute('comment')
+	        }
+	        $taskDescription = ConvertTo-GPOTextRow -Text $taskDescriptionText
+	        if ($null -ne $taskDescription) { $taskProps['TaskDescription'] = $taskDescription }
+	        $itemDescription = ConvertTo-GPOTextRow -Text ([string]$taskNode.GetAttribute('desc'))
+	        if ($null -ne $itemDescription) { $taskProps['itemDescription'] = $itemDescription }
 	        if ($isElevatedAccount -and $hasUNCPath) { $taskProps['_UNCCard'] = $true }
 	        if ($riskyPathFinding) { $taskProps['_CommandSeverity'] = 'Finding' }
 	        if ($isTier0Account) {
@@ -80027,6 +82020,241 @@ function Get-TaskUNCPaths {
 	    $seen[$pathKey] = $true
 	    $uncPath
 	}
+}
+function Get-GPOTaskXmlChild {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowNull()] $Node,
+	    [Parameter(Mandatory=$true)] [string]$Name
+	)
+	if (-not $Node) { return }
+	foreach ($child in @($Node.ChildNodes)) {
+	    if ($child -is [System.Xml.XmlElement] -and $child.LocalName -eq $Name) { $child }
+	}
+}
+function Get-GPOTaskXmlText {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowNull()] $Node,
+	    [Parameter(Mandatory=$true)] [string]$Name
+	)
+	$child = @(Get-GPOTaskXmlChild -Node $Node -Name $Name)[0]
+	if ($child) { return ([string]$child.InnerText).Trim() }
+	return ''
+}
+function Format-GPOTaskDuration {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Value
+	)
+	if (-not $Value) { return '' }
+	$span = $null
+	try { $span = [System.Xml.XmlConvert]::ToTimeSpan($Value) } catch { return $Value }
+	$parts = @()
+	foreach ($unit in @(@{ N = [int][Math]::Floor($span.TotalDays); W = 'day' }, @{ N = $span.Hours; W = 'hour' },
+	                    @{ N = $span.Minutes; W = 'minute' }, @{ N = $span.Seconds; W = 'second' })) {
+	    if ($unit.N -gt 0) { $parts += "$($unit.N) $($unit.W)$(if ($unit.N -ne 1) { 's' })" }
+	}
+	if ($parts.Count -eq 0) { return '0 minutes' }
+	return ($parts -join ' ')
+}
+function Split-GPOTaskBoundary {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowEmptyString()] [string]$Value
+	)
+	$result = [PSCustomObject]@{ Date = ''; Time = ''; Text = $Value; IsVariable = ($Value -match '^%[^%]+%$') }
+	if ($Value -match '^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$') {
+	    $zone = ''
+	    if ($Matches[5] -eq 'Z') { $zone = ' UTC' } elseif ($Matches[5]) { $zone = " UTC$($Matches[5])" }
+	    $result.Date = $Matches[1]
+	    $result.Time = "$($Matches[2])$zone"
+	    $result.Text = "$($Matches[1]) $($Matches[2])$zone"
+	}
+	return $result
+}
+function Join-GPOTaskNames {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$Name = @(),
+	    [Parameter(Mandatory=$false)] [int]$All = 0,
+	    [Parameter(Mandatory=$false)] [string]$Prefix = ''
+	)
+	$names = @($Name | Where-Object { $_ })
+	if ($names.Count -eq 0 -or ($All -gt 0 -and $names.Count -ge $All)) { return '' }
+	return "$Prefix$($names -join ', ')"
+}
+function ConvertFrom-GPOTaskTriggerV2 {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$true)] $Trigger,
+	    [Parameter(Mandatory=$true)] [string]$Reapply
+	)
+	$start = Split-GPOTaskBoundary -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'StartBoundary')
+	$at = if ($start.Time) { " at $($start.Time)" } else { '' }
+	$starting = if ($start.Date) { ", starting $($start.Date)" } else { '' }
+	$weekNames = @{ '1' = 'first'; '2' = 'second'; '3' = 'third'; '4' = 'fourth'; 'Last' = 'last' }
+	$text = switch ($Trigger.LocalName) {
+	    'TimeTrigger' {
+	        if ($start.IsVariable) { "When the policy applies, $Reapply" }
+	        elseif ($start.Text) { "Once at $($start.Text)" }
+	        else { 'Once' }
+	    }
+	    'CalendarTrigger' {
+	        $byDay = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByDay')[0]
+	        $byWeek = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByWeek')[0]
+	        $byMonth = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByMonth')[0]
+	        $byWeekday = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'ScheduleByMonthDayOfWeek')[0]
+	        if ($byDay) {
+	            $every = 0; [void][int]::TryParse((Get-GPOTaskXmlText -Node $byDay -Name 'DaysInterval'), [ref]$every)
+	            $(if ($every -gt 1) { "Every $every days" } else { 'Daily' }) + $at + $starting
+	        } elseif ($byWeek) {
+	            $every = 0; [void][int]::TryParse((Get-GPOTaskXmlText -Node $byWeek -Name 'WeeksInterval'), [ref]$every)
+	            $days = @(@(Get-GPOTaskXmlChild -Node $byWeek -Name 'DaysOfWeek')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+	            $(if ($every -gt 1) { "Every $every weeks" } else { 'Weekly' }) + (Join-GPOTaskNames -Name $days -Prefix ' on ') + $at + $starting
+	        } elseif ($byMonth) {
+	            $daysOfMonth = @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $byMonth -Name 'DaysOfMonth')[0] -Name 'Day' | ForEach-Object { ([string]$_.InnerText).Trim() })
+	            $months = @(@(Get-GPOTaskXmlChild -Node $byMonth -Name 'Months')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+	            $onDays = Join-GPOTaskNames -Name @($daysOfMonth | Where-Object { $_ -ne 'Last' }) -Prefix ' on day '
+	            if ($daysOfMonth -contains 'Last') { $onDays = $(if ($onDays) { "$onDays and the last day" } else { ' on the last day' }) }
+	            'Monthly' + $onDays + $at + (Join-GPOTaskNames -Name $months -All 12 -Prefix ' in ') + $starting
+	        } elseif ($byWeekday) {
+	            $weeks = @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $byWeekday -Name 'Weeks')[0] -Name 'Week' | ForEach-Object {
+	                $week = ([string]$_.InnerText).Trim(); if ($weekNames.ContainsKey($week)) { $weekNames[$week] } else { $week } })
+	            $days = @(@(Get-GPOTaskXmlChild -Node $byWeekday -Name 'DaysOfWeek')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+	            $months = @(@(Get-GPOTaskXmlChild -Node $byWeekday -Name 'Months')[0].ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } | ForEach-Object { $_.LocalName })
+	            'Monthly' + (Join-GPOTaskNames -Name $weeks -Prefix ' on the ') + (Join-GPOTaskNames -Name $days -Prefix ' ') + $at + (Join-GPOTaskNames -Name $months -All 12 -Prefix ' in ') + $starting
+	        } else {
+	            'On a calendar schedule' + $at + $starting
+	        }
+	    }
+	    'BootTrigger' { 'At startup' }
+	    'LogonTrigger' {
+	        $user = Get-GPOTaskXmlText -Node $Trigger -Name 'UserId'
+	        if ($user) { "At logon of $user" } else { 'At logon of any user' }
+	    }
+	    'IdleTrigger' { 'When the computer is idle' }
+	    'EventTrigger' {
+	        $query = Get-GPOTaskXmlText -Node $Trigger -Name 'Subscription'
+	        $where = ''
+	        if ($query -match '(?i)Path="([^"]+)"') { $where = $Matches[1] }
+	        if ($query -match '(?i)EventID=(\d+)') { $where = "$where, event $($Matches[1])".TrimStart(', ') }
+	        if ($where) { "On an event: $where" } else { 'On an event' }
+	    }
+	    'RegistrationTrigger' { "When the policy registers the task, $Reapply" }
+	    'SessionStateChangeTrigger' {
+	        $states = @{ ConsoleConnect = 'console connect'; ConsoleDisconnect = 'console disconnect'; RemoteConnect = 'remote connect'
+	                     RemoteDisconnect = 'remote disconnect'; SessionLock = 'session lock'; SessionUnlock = 'session unlock' }
+	        $change = Get-GPOTaskXmlText -Node $Trigger -Name 'StateChange'
+	        $label = if ($states.ContainsKey($change)) { $states[$change] } else { 'session state change' }
+	        $user = Get-GPOTaskXmlText -Node $Trigger -Name 'UserId'
+	        "On $label of $(if ($user) { $user } else { 'any user' })"
+	    }
+	    default { "On a $($Trigger.LocalName)" }
+	}
+	$delay = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'Delay')
+	if ($delay) { $text += ", delayed by $delay" }
+	$random = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'RandomDelay')
+	if ($random) { $text += ", random delay up to $random" }
+	$repetition = @(Get-GPOTaskXmlChild -Node $Trigger -Name 'Repetition')[0]
+	$interval = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $repetition -Name 'Interval')
+	if ($interval) {
+	    $duration = Format-GPOTaskDuration -Value (Get-GPOTaskXmlText -Node $repetition -Name 'Duration')
+	    $text += ", repeated every $interval " + $(if ($duration) { "for $duration" } else { 'indefinitely' })
+	}
+	$end = Split-GPOTaskBoundary -Value (Get-GPOTaskXmlText -Node $Trigger -Name 'EndBoundary')
+	if ($end.Text -and -not $end.IsVariable) { $text += ", until $($end.Text)" }
+	if ((Get-GPOTaskXmlText -Node $Trigger -Name 'Enabled') -eq 'false') { $text += ' (trigger disabled)' }
+	return $text
+}
+function ConvertFrom-GPOTaskTriggerV1 {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory=$true)] $Trigger
+	)
+	$number = {
+	    param([string]$Name)
+	    $value = 0
+	    [void][int]::TryParse([string]$Trigger.GetAttribute($Name), [ref]$value)
+	    $value
+	}
+	$type = ([string]$Trigger.GetAttribute('type')).ToUpper()
+	$at = ''
+	if ([string]$Trigger.GetAttribute('startHour') -ne '') { $at = ' at {0:D2}:{1:D2} UTC' -f (& $number 'startHour'), (& $number 'startMinutes') }
+	$begin = ''
+	if ((& $number 'beginYear') -gt 0) { $begin = '{0:D4}-{1:D2}-{2:D2}' -f (& $number 'beginYear'), (& $number 'beginMonth'), (& $number 'beginDay') }
+	$every = & $number 'interval'
+	$dayNames = @('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday')
+	$monthNames = @('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December')
+	$dayMask = & $number 'days'
+	$monthMask = & $number 'months'
+	$weekdays = @(for ($i = 0; $i -lt 7; $i++) { if ($dayMask -band (1 -shl $i)) { $dayNames[$i] } })
+	$months = @(for ($i = 0; $i -lt 12; $i++) { if ($monthMask -band (1 -shl $i)) { $monthNames[$i] } })
+	$inMonths = Join-GPOTaskNames -Name $months -All 12 -Prefix ' in '
+	$starting = if ($begin) { ", starting $begin" } else { '' }
+	$text = switch ($type) {
+	    'ONCE'    { "Once$(if ($begin) { " on $begin" })$at" }
+	    'DAILY'   { $(if ($every -gt 1) { "Every $every days" } else { 'Daily' }) + $at + $starting }
+	    'WEEKLY'  { $(if ($every -gt 1) { "Every $every weeks" } else { 'Weekly' }) + (Join-GPOTaskNames -Name $weekdays -Prefix ' on ') + $at + $starting }
+	    'MONTHLY' {
+	        $week = ([string]$Trigger.GetAttribute('week')).ToLower()
+	        if ($week) {
+	            "Monthly on the $week" + (Join-GPOTaskNames -Name $weekdays -Prefix ' ') + $at + $inMonths + $starting
+	        } else {
+	            $daysOfMonth = @(for ($i = 0; $i -lt 31; $i++) { if ($dayMask -band (1L -shl $i)) { [string]($i + 1) } })
+	            'Monthly' + (Join-GPOTaskNames -Name $daysOfMonth -Prefix ' on day ') + $at + $inMonths + $starting
+	        }
+	    }
+	    'IDLE'    { 'When the computer is idle' + $(if ((& $number 'idleMinute') -gt 0) { " for $(& $number 'idleMinute') minutes" }) }
+	    'STARTUP' { 'At startup' }
+	    'LOGON'   { 'At logon of any user' }
+	    default   { "On a trigger of type $type" }
+	}
+	$repeat = & $number 'minutesInterval'
+	if ($repeat -gt 0) {
+	    $for = & $number 'minutesDuration'
+	    $text += ", repeated every $repeat minutes" + $(if ($for -gt 0) { " for $for minutes" } else { '' })
+	}
+	if ([string]$Trigger.GetAttribute('hasEndDate') -eq '1' -and (& $number 'endMonth') -gt 0) {
+	    $text += ', until {0:D4}-{1:D2}-{2:D2}' -f (& $number 'endYear'), (& $number 'endMonth'), (& $number 'endDay')
+	}
+	return $text
+}
+function ConvertTo-GPOTaskTriggerText {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory=$true)] $TaskNode
+	)
+	$kind = [string]$TaskNode.LocalName
+	$properties = @(Get-GPOTaskXmlChild -Node $TaskNode -Name 'Properties')[0]
+	$runOnce = @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $TaskNode -Name 'Filters')[0] -Name 'FilterRunOnce').Count -gt 0
+	$reapply = if ($runOnce) { 'once only (Apply once and do not reapply)' } else { 'again at every Group Policy refresh' }
+	$texts = @()
+	$disabled = $false
+	if ($kind -eq 'Task') {
+	    if ($properties -and [string]$properties.GetAttribute('enabled') -eq '0') { $disabled = $true }
+	    foreach ($trigger in @(Get-GPOTaskXmlChild -Node @(Get-GPOTaskXmlChild -Node $properties -Name 'Triggers')[0] -Name 'Trigger')) {
+	        $texts += ConvertFrom-GPOTaskTriggerV1 -Trigger $trigger
+	    }
+	} elseif ($kind -eq 'ImmediateTask') {
+	    $texts += "When the policy applies, $reapply"
+	} else {
+	    $taskXml = @(Get-GPOTaskXmlChild -Node $properties -Name 'Task')[0]
+	    if ((Get-GPOTaskXmlText -Node @(Get-GPOTaskXmlChild -Node $taskXml -Name 'Settings')[0] -Name 'Enabled') -eq 'false') { $disabled = $true }
+	    $triggersNode = @(Get-GPOTaskXmlChild -Node $taskXml -Name 'Triggers')[0]
+	    foreach ($trigger in @(if ($triggersNode) { $triggersNode.ChildNodes | Where-Object { $_ -is [System.Xml.XmlElement] } })) {
+	        $texts += ConvertFrom-GPOTaskTriggerV2 -Trigger $trigger -Reapply $reapply
+	    }
+	    if ($texts.Count -eq 0 -and $kind -eq 'ImmediateTaskV2') { $texts += "When the policy applies, $reapply" }
+	}
+	if ($texts.Count -eq 0) { $texts += 'No trigger - runs only when someone starts it' }
+	if ($disabled) { $texts = @('Task disabled - none of its triggers fire') + $texts }
+	return $texts
 }
 function Get-GPOScriptPaths {
 	[CmdletBinding()]
@@ -80737,7 +82965,7 @@ function New-RegistryFinding {
 	if ($entry.KeyPattern) { $keyText = ([string]$record.Key -replace '^\\+', '').TrimEnd('\') }
 	$valueNameText = [string]$entry.ValueName
 	if ($valueNameText -eq '*') { $valueNameText = [string]$record.ValueName }
-	return [PSCustomObject][ordered]@{
+	$finding = [PSCustomObject][ordered]@{
 	    GPOName           = $RegMatch.GPOName
 	    GPOGUID           = $RegMatch.GPOGUID
 	    GPOPath           = $RegMatch.GPOPath
@@ -80749,6 +82977,13 @@ function New-RegistryFinding {
 	    Severity          = $entry.Severity
 	    ConsoleClass      = $entry.ConsoleClass
 	}
+	if ($record.PSObject.Properties['Description']) {
+	    $itemDescription = ConvertTo-GPOTextRow -Text ([string]$record.Description)
+	    if ($null -ne $itemDescription) {
+	        $finding | Add-Member -NotePropertyName 'itemDescription' -NotePropertyValue $itemDescription -Force
+	    }
+	}
+	return $finding
 }
 $Script:PointAndPrintKeyRoot        = 'Software\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
 $Script:PackagePointAndPrintKeyRoot = 'Software\Policies\Microsoft\Windows NT\Printers\PackagePointAndPrint'
@@ -81368,6 +83603,7 @@ function Get-ADCSTemplate {
 	            RAApplicationPolicies = if ($coreTemplate.'msPKI-RA-Application-Policies') {
 	                @($coreTemplate.'msPKI-RA-Application-Policies')
 	            } else { @() }
+	            TemplateKeySettings = $coreTemplate.TemplateKeySettings
 	            ExtendedKeyUsage = if ($coreTemplate.pKIExtendedKeyUsage) {
 	                @($coreTemplate.pKIExtendedKeyUsage)
 	            } else { @() }
@@ -84685,7 +86921,6 @@ function Get-KerberoastableAccounts {
 	            }
 	            $totalUsers = @($kerberoastableUsers).Count
 	            $currentIndex = 0
-	            $privilegedCount = 0
 	            foreach ($user in $kerberoastableUsers) {
 	                $currentIndex++
 	                if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing Kerberoastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -84714,7 +86949,6 @@ function Get-KerberoastableAccounts {
 	                }
 	                $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
 	                if ($privileged -and $privileged.IsPrivileged) {
-	                    $privilegedCount++
 	                    $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
 	                        -NotePropertyValue $privileged.Reason -Force
 	                }
@@ -84727,9 +86961,6 @@ function Get-KerberoastableAccounts {
 	                Show-EmptyLine
 	            }
 	            if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing Kerberoastable accounts" -Completed }
-	            if ($privilegedCount -gt 0) {
-	                Show-Line "$privilegedCount of them is/are privileged - cracking one of those passwords is a domain compromise" -Class "Finding"
-	            }
 	        } else {
 	            Show-Line "No kerberoastable accounts found" -Class "Secure"
 	        }
@@ -84789,8 +87020,6 @@ function Get-ASREPRoastableAccounts {
 	            }
 	            $totalUsers = @($asrepRoastableUsers).Count
 	            $currentIndex = 0
-	            $privilegedCount = 0
-	            $protectedCount = 0
 	            foreach ($user in $asrepRoastableUsers) {
 	                $currentIndex++
 	                if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Current $currentIndex -Total $totalUsers -ObjectName $user.sAMAccountName }
@@ -84824,12 +87053,10 @@ function Get-ASREPRoastableAccounts {
 	                }
 	                $privileged = Test-IsPrivileged -Identity $user -IncludeOperators
 	                if ($privileged -and $privileged.IsPrivileged) {
-	                    $privilegedCount++
 	                    $user | Add-Member -NotePropertyName 'PrivilegedRoastTarget' `
 	                        -NotePropertyValue $privileged.Reason -Force
 	                }
 	                if ($user.objectSid -and $protectedSIDs.ContainsKey([string]$user.objectSid)) {
-	                    $protectedCount++
 	                    $user | Add-Member -NotePropertyName 'protectedUsersMember' -NotePropertyValue (
 	                        'Yes - RC4 is refused for members, so the AS-REP is AES-encrypted and far slower to crack') -Force
 	                }
@@ -84838,12 +87065,6 @@ function Get-ASREPRoastableAccounts {
 	                Show-EmptyLine
 	            }
 	            if ($totalUsers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing AS-REP Roastable accounts" -Completed }
-	            if ($privilegedCount -gt 0) {
-	                Show-Line "$privilegedCount of them is/are privileged - this hash needs no credentials at all to obtain" -Class "Finding"
-	            }
-	            if ($protectedCount -gt 0) {
-	                Show-Line "$protectedCount of them is/are in Protected Users - AES-only AS-REP, slower to crack" -Class "Hint"
-	            }
 	            $domainSIDForRoast = $Script:LDAPContext['DomainSID']
 	            $krbtgtExclusion = if ($domainSIDForRoast) {
 	                "(&(!(objectSid=$domainSIDForRoast-502))(!(msDS-SecondaryKrbTgtNumber=*)))"
@@ -84933,7 +87154,7 @@ function Get-UnixPasswordAccounts {
 $Script:CredentialScanExtensions = @(
 	'*.txt', '*.bat', '*.ini', '*.conf', '*.cnf', '*.cmd', '*.vbs', '*.vbe', '*.kix',
 	'*.ps1', '*.psm1',
-	'*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1', '*.inf',
+	'*.cmt', '*.cmtx', '*.config', '*.reg', '*.json', '*.yml', '*.yaml', '*.psd1', '*.inf',
 	'*.vnc'
 )
 $Script:CredentialScanSkippedFiles = @('GptTmpl.inf')
@@ -84953,6 +87174,7 @@ $Script:CredentialTier1Patterns = @(
 	@{ Pattern = 'pw\s*[=:]\s*\S{3,}'; Description = "PW assignment" },
 	@{ Pattern = '\bpass\s*[=:]\s*\S{3,}'; Description = "Pass assignment" },
 	@{ Pattern = 'kennwort\s*[=:]\s*\S{3,}'; Description = "Kennwort assignment (German)" },
+	@{ Pattern = 'passwort\s*[=:]\s*\S{3,}'; Description = "Passwort assignment (German)" },
 	@{ Pattern = 'passord\s*[=:]\s*\S{3,}'; Description = "Passord assignment (Norwegian)" }
 )
 $Script:CredentialTier2Patterns = @(
@@ -85000,6 +87222,46 @@ function Get-ReportedLineKey {
 	    if ($line.Contains($Match)) { return $line.Trim() }
 	}
 	return $Match.Trim()
+}
+function ConvertFrom-CredentialScanBytes {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowEmptyCollection()]
+	    [byte[]]$Bytes
+	)
+	$length = $Bytes.Length
+	if ($length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+	    return [System.Text.Encoding]::UTF8.GetString($Bytes, 3, $length - 3)
+	}
+	if ($length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+	    return [System.Text.Encoding]::Unicode.GetString($Bytes, 2, $length - 2)
+	}
+	if ($length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+	    return [System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $length - 2)
+	}
+	if ($length -ge 2 -and ($length % 2) -eq 0) {
+	    $sample = [Math]::Min($length, 512)
+	    $pairs = [int]($sample / 2)
+	    $nulOdd = 0
+	    for ($i = 1; $i -lt $sample; $i += 2) {
+	        if ($Bytes[$i] -eq 0) { $nulOdd++ }
+	    }
+	    if (($nulOdd * 10) -ge ($pairs * 9)) {
+	        return [System.Text.Encoding]::Unicode.GetString($Bytes)
+	    }
+	}
+	return [System.Text.Encoding]::Default.GetString($Bytes)
+}
+function Read-CredentialScanText {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [string]$Path
+	)
+	return (ConvertFrom-CredentialScanBytes -Bytes ([System.IO.File]::ReadAllBytes($Path)))
 }
 function Get-WinlogonCredential {
 	[CmdletBinding()]
@@ -85070,7 +87332,7 @@ function Get-VNCFileCredential {
 	}
 	foreach ($line in @($Lines)) {
 	    $trimmed = ([string]$line).Trim()
-	    if ($trimmed -notmatch '(?i)^(Password|PasswordViewOnly|ControlPassword|passwd|passwd2)\s*=\s*([0-9A-F]{16}([0-9A-F]{2})?)$') { continue }
+	    if ($trimmed -notmatch '(?i)^(Password|PasswordViewOnly|ControlPassword|passwd|passwd2)\s*=\s*((?:[0-9A-F]{16})+([0-9A-F]{2})?)$') { continue }
 	    $setting = $Matches[1]
 	    $password = ConvertFrom-VNCPassword -Hex $Matches[2]
 	    if ($null -eq $password) { continue }
@@ -85080,6 +87342,29 @@ function Get-VNCFileCredential {
 	        VNCHost  = $vncHost
 	        Password = $password
 	    }
+	}
+}
+function Get-RegistryCredentialDisplay {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    $Credential
+	)
+	if ([string]$Credential.CredentialType -eq 'VNC Password') {
+	    return [PSCustomObject]@{
+	        Headline = 'Found a VNC password in a registry value deployed by Group Policy'
+	        Class    = 'Finding'
+	    }
+	}
+	if ([string]$Credential.CredentialType -eq 'VNC Password Hash') {
+	    return [PSCustomObject]@{
+	        Headline = 'Found a VNC password a policy deploys, stored in a form that cannot be reversed'
+	        Class    = 'Hint'
+	    }
+	}
+	return [PSCustomObject]@{
+	    Headline = 'Found a password in a registry value deployed by Group Policy'
+	    Class    = 'Finding'
 	}
 }
 function Get-RegistryPasswordCredential {
@@ -85099,17 +87384,30 @@ function Get-RegistryPasswordCredential {
 	        if ($record.PSObject.Properties['Disabled'] -and $record.Disabled) { continue }
 	        if ($record.PSObject.Properties['Action'] -and $record.Action -eq 'D') { continue }
 	        $vncPassword = $null
+	        $vncForm = $null
 	        if ($record.PSObject.Properties['ValueBytes'] -and $record.ValueBytes) {
 	            $vncPassword = ConvertFrom-VNCPassword -Bytes $record.ValueBytes
+	            if ($null -eq $vncPassword) { $vncForm = Get-VNCPasswordForm -Bytes $record.ValueBytes }
 	        } elseif ($record.ValueString) {
 	            $vncPassword = ConvertFrom-VNCPassword -Hex ([string]$record.ValueString)
+	            if ($null -eq $vncPassword) { $vncForm = Get-VNCPasswordForm -Hex ([string]$record.ValueString) }
 	        }
+	        $vncRegistryValue = (@($record.Hive, $record.Key, $valueName) | Where-Object { $_ }) -join '\'
 	        if ($null -ne $vncPassword) {
 	            [PSCustomObject]@{
 	                CredentialType = 'VNC Password'
 	                FilePath       = $FilePath
-	                RegistryValue  = (@($record.Hive, $record.Key, $valueName) | Where-Object { $_ }) -join '\'
+	                RegistryValue  = $vncRegistryValue
 	                Password       = $vncPassword
+	            }
+	            continue
+	        }
+	        if ($vncForm) {
+	            [PSCustomObject]@{
+	                CredentialType = 'VNC Password Hash'
+	                FilePath       = $FilePath
+	                RegistryValue  = $vncRegistryValue
+	                StoredForm     = $vncForm
 	            }
 	            continue
 	        }
@@ -85201,6 +87499,51 @@ function Get-UnattendCredential {
 	    [PSCustomObject]@{ UserName = $userName; Password = [string]$passwordNode.InnerText; Setting = 'UnattendedJoin/Identification/Credentials' }
 	}
 }
+function Get-PreferenceItemName {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [AllowNull()]
+	    $Node
+	)
+	$current = $Node
+	while ($current -is [System.Xml.XmlElement]) {
+	    $name = [string]$current.GetAttribute('name')
+	    if (-not [string]::IsNullOrWhiteSpace($name)) { return $name }
+	    $current = $current.ParentNode
+	}
+	return ''
+}
+function Get-PreferenceFreeText {
+	[CmdletBinding()]
+	[OutputType([PSCustomObject])]
+	param(
+	    [Parameter(Mandatory = $true)]
+	    [xml]$XmlContent
+	)
+	foreach ($node in @($XmlContent.SelectNodes('//*[@desc]'))) {
+	    $text = [string]$node.GetAttribute('desc')
+	    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+	    [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = 'Item description'; Text = $text }
+	}
+	foreach ($node in @($XmlContent.SelectNodes("//*[local-name()='RegistrationInfo']/*[local-name()='Description']"))) {
+	    $text = [string]$node.InnerText
+	    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+	    [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = 'Task description'; Text = $text }
+	}
+	foreach ($node in @($XmlContent.SelectNodes('//Task/Properties[@comment] | //ImmediateTask/Properties[@comment]'))) {
+	    $text = [string]$node.GetAttribute('comment')
+	    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+	    [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = 'Task comment'; Text = $text }
+	}
+	foreach ($node in @($XmlContent.SelectNodes('//User/Properties[@description] | //Group/Properties[@description]'))) {
+	    $text = [string]$node.GetAttribute('description')
+	    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+	    $field = if ($node.ParentNode.LocalName -eq 'User') { 'Local user description' } else { 'Local group description' }
+	    [PSCustomObject]@{ Item = (Get-PreferenceItemName -Node $node); Field = $field; Text = $text }
+	}
+}
 function Find-XmlFileCredential {
 	[CmdletBinding()]
 	[OutputType([PSCustomObject])]
@@ -85230,6 +87573,12 @@ function Find-XmlFileCredential {
 	            UserName       = $username
 	            Password       = $decryptedPassword
 	        }
+	        if ($properties.ParentNode -is [System.Xml.XmlElement]) {
+	            $itemDescription = [string]$properties.ParentNode.GetAttribute('desc')
+	            if (-not [string]::IsNullOrWhiteSpace($itemDescription)) {
+	                $credObj | Add-Member -NotePropertyName 'itemDescription' -NotePropertyValue $itemDescription.Trim() -Force
+	            }
+	        }
 	        $accountInAD = Resolve-CredentialAccount -UserName $username -FileName $FileName -FileTime $FileTime
 	        if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
 	        [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found GPP credential'; Context = 'GPP Password' }
@@ -85248,8 +87597,8 @@ function Find-XmlFileCredential {
 	        [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found AutoAdminLogon credential'; Context = 'AutoAdminLogon' }
 	    }
 	    foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-RegistryXml -XmlFilePath $FilePath) -FilePath $FilePath)) {
-	        $headline = if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }
-	        [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = $headline; Context = [string]$credObj.CredentialType }
+	        $display = Get-RegistryCredentialDisplay -Credential $credObj
+	        [PSCustomObject]@{ Credential = $credObj; Class = $display.Class; Headline = $display.Headline; Context = [string]$credObj.CredentialType }
 	    }
 	}
 	foreach ($unattendCredential in @(Get-UnattendCredential -XmlContent $XmlContent)) {
@@ -85263,6 +87612,13 @@ function Find-XmlFileCredential {
 	    $accountInAD = Resolve-CredentialAccount -UserName $unattendCredential.UserName -FileName $FileName -FileTime $FileTime
 	    if ($accountInAD) { $credObj | Add-Member -NotePropertyName 'accountInAD' -NotePropertyValue $accountInAD -Force }
 	    [PSCustomObject]@{ Credential = $credObj; Class = 'Finding'; Headline = 'Found a password in a Windows answer file'; Context = 'Unattend' }
+	}
+	foreach ($field in @(Get-PreferenceFreeText -XmlContent $XmlContent)) {
+	    foreach ($result in @(Find-ScriptFileCredential -Content $field.Text -FilePath $FilePath -FileName $FileName -FileTime $FileTime)) {
+	        if ($field.Item) { $result.Credential | Add-Member -NotePropertyName 'PreferenceItem' -NotePropertyValue $field.Item -Force }
+	        $result.Credential | Add-Member -NotePropertyName 'PreferenceField' -NotePropertyValue $field.Field -Force
+	        $result
+	    }
 	}
 }
 function Find-ScriptFileCredential {
@@ -85429,10 +87785,11 @@ function Get-CredentialExposure {
 	                try {
 	                    $polHive = if ($polFile.FullName -match '\\Machine\\') { 'HKLM' } else { 'HKCU' }
 	                    foreach ($credObj in @(Get-RegistryPasswordCredential -Records @(Parse-PRegRecords -PolFilePath $polFile.FullName -Hive $polHive) -FilePath $polFile.FullName)) {
-	                        Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
+	                        $display = Get-RegistryCredentialDisplay -Credential $credObj
+	                        Show-Line $display.Headline -Class $display.Class
 	                        $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                        $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
-	                        Show-Object $credObj -Class Finding
+	                        Show-Object $credObj -Class $display.Class
 	                    }
 	                }
 	                catch {
@@ -85455,7 +87812,7 @@ function Get-CredentialExposure {
 	                            }
 	                        }
 	                        else {
-	                            $fileContent = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+	                            $fileContent = Read-CredentialScanText -Path $file.FullName
 	                        }
 	                        foreach ($result in @(Find-ScriptFileCredential -Content $fileContent -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)) {
 	                            $credObj = $result.Credential
@@ -85583,10 +87940,11 @@ function Get-CredentialExposure {
 	                                }
 	                                $credObj | Add-Member -NotePropertyName 'LinkedOUs' -NotePropertyValue $polLinkedOUs -Force
 	                            }
-	                            Show-Line $(if ($credObj.CredentialType -eq 'VNC Password') { 'Found a VNC password in a registry value deployed by Group Policy' } else { 'Found a password in a registry value deployed by Group Policy' }) -Class Finding
+	                            $display = Get-RegistryCredentialDisplay -Credential $credObj
+	                            Show-Line $display.Headline -Class $display.Class
 	                            $credObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'GPPCredential' -Force
 	                            $credObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue ([string]$credObj.CredentialType) -Force
-	                            Show-Object $credObj -Class Finding
+	                            Show-Object $credObj -Class $display.Class
 	                            $gppFindingsCount++
 	                        }
 	                    }
@@ -85638,7 +87996,7 @@ function Get-CredentialExposure {
 	                                }
 	                            }
 	                            else {
-	                                $fileContent = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+	                                $fileContent = Read-CredentialScanText -Path $file.FullName
 	                            }
 	                            foreach ($result in @(Find-ScriptFileCredential -Content $fileContent -FilePath $file.FullName -FileName $file.Name -FileTime $file.LastWriteTime)) {
 	                                $credObj = $result.Credential
@@ -96905,10 +99263,12 @@ function Collect-BHCertTemplates {
 	    $appPolicies = @()
 	    if ($template.'msPKI-RA-Application-Policies') {
 	        $rawAp = if ($template.'msPKI-RA-Application-Policies' -is [array]) { $template.'msPKI-RA-Application-Policies' } else { @($template.'msPKI-RA-Application-Policies') }
+	        $decodedAp = @()
 	        foreach ($ap in $rawAp) {
 	            if ($ap -is [byte[]]) { $ap = [System.Text.Encoding]::UTF8.GetString($ap) }
-	            if ($ap) { $appPolicies += $ap }
+	            if ($ap) { $decodedAp += $ap }
 	        }
+	        $appPolicies = @((ConvertFrom-RAApplicationPolicy -Value $decodedAp).Policies)
 	    }
 	    $issuancePolicies = @()
 	    if ($template.'msPKI-RA-Policies') {
@@ -97423,7 +99783,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.9.0"
+$Script:adPEASVersion = "2.10.0"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -97843,6 +100203,7 @@ try {
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-PasswordResetRights' -Title 'Password Reset Rights' -Check { Get-PasswordResetRights -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-AddComputerRights' -Title 'Add Computer Rights' -Check { Get-AddComputerRights -IncludePrivileged:$IncludePrivileged }
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-GPOUserRightsAssignment' -Title 'GPO User Rights Assignment' -Check { Get-GPOUserRightsAssignment -IncludePrivileged:$IncludePrivileged }
+	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-GPOLogonRestrictions' -Title 'GPO Logon Restrictions' -Check { Get-GPOLogonRestrictions }
 	        Invoke-CheckWithContext -Category 'Rights' -CheckName 'Get-LAPSPermissions' -Title 'LAPS Permissions' -Check { Get-LAPSPermissions -IncludePrivileged:$IncludePrivileged }
 	    } catch {
 	        Write-Warning "[adPEAS] Error executing Rights Module: $_"

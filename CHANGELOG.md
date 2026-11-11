@@ -6,6 +6,185 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.10.0] - 2026-11-11
+
+### Added
+
+- **`Get-DomainWriteAccess`, what an account may write in the directory.** A Core function
+  for the question an assessment keeps asking: which objects can this account change, with
+  which right, and through which of its groups. Without `-Identity` it evaluates the account
+  adPEAS is bound as; with `-Identity` any user, computer, managed service account or group.
+  The token is the account's SID and sIDHistory, its groups through member links, its
+  primary group with that group's nesting, and Everyone, Authenticated Users and This
+  Organization with the groups their foreign security principals are in. Every ACE is read
+  as the access check reads it: in DACL order, an inherit-only ACE does not apply, an object
+  ACE grants on what it names - the object's own class included - a property set covers the
+  attributes the schema puts in it, SELF counts on its own object and OWNER RIGHTS on
+  objects it owns, and the owner holds WRITE_DAC unless an OWNER RIGHTS ACE replaces that.
+  For the bound account the domain controller is asked as well
+  (allowedAttributesEffective, allowedChildClassesEffective, sDRightsEffective, computed
+  with the real token): a row it confirms is marked 'ACL, directory', one it contradicts is
+  left out and counted, one only the directory knows is added. A right on something the
+  object cannot hold - an attribute its class lacks, a child class the schema does not
+  allow - is set aside. The default view keeps the rights over the whole object and the
+  single rights that are a known step to control; `-All` adds everything else. Tab
+  completion for `-Identity` and `-SearchBase`; documented in docs/06.
+- **`Get-GPOLogonRestrictions`, which logons Group Policy denies, and to whom.** A deny
+  logon right takes one kind of logon away and wins over every right that would allow it,
+  so it belongs to neither side of the user rights comparison. The check reads the five
+  deny rights from each policy's GptTmpl.inf and reports, per policy, what it denies to whom
+  and whether it reaches domain controllers, member computers or both. Domain Admins - or a
+  group Domain Admins is a member of - denied a logon on member computers, and the local
+  administrator accounts (S-1-5-114, S-1-5-113, or the account by its name) denied there,
+  are Secure. A broad group denied, or Domain Admins denied on domain controllers, is a
+  lockout and a hint. Across the policies that apply, a hint says when none keeps Domain
+  Admins off the local and Remote Desktop logon of member computers, and when none keeps
+  the local administrator accounts off the network logon.
+- **`Get-GPOUserRightsAssignment` counts the rights it does not judge.** They were dropped
+  without a word. One note now counts them, and `-IncludeUnknown` lists them per policy
+  file.
+- **`Get-RODCPasswordReplication` names who administers a read-only domain controller.**
+  The principal in managedBy on an RODC's computer object is an implicit member of that
+  server's Administrators group, and of no other (MS-ADTS 6.1.1.3.2) - and administrator
+  there holds every secret the server has cached and the keys of its krbtgt account. The
+  check read each RODC's password replication policy, but neither who administers the
+  server nor who may change that. It now reports a principal outside Tier 0 in managedBy, a
+  broad group there as such, and every principal outside Tier 0 that may write managedBy
+  and so make itself the administrator: the owner, GenericAll, GenericWrite or a write of
+  every property, a write of managedBy itself, WriteDacl and WriteOwner. Inherit-only ACEs,
+  ACEs scoped to another attribute or a child class, SELF, CREATOR OWNER and the RODC's own
+  account do not count; an explicit Deny of the write cancels a write grant but not
+  WriteDacl or WriteOwner. A managedBy that cannot be resolved and an ACL that cannot be
+  read are said so instead of counting as clean.
+- **`Get-GPOScheduledTasks` says when and how often each task runs.** The check saw that a
+  task had a trigger, but not what the trigger said. The Trigger row now carries one line
+  per trigger: the time, the interval in days, weeks or months, the weekdays and months, a
+  repetition with its interval and duration, a random delay, the start and the end - read
+  from both file formats. The trigger times of a v1 task are UTC by the file format and say
+  so; a start boundary that is a preference variable such as `%LocalTimeXmlEx%` is shown as
+  such. An immediate task, and a task whose trigger is its own registration, runs when the
+  policy applies and again at every Group Policy refresh, because preference items are
+  rewritten at each refresh - unless the item is set to apply once, which the line then
+  names. A disabled task and a task without a trigger say so too.
+- **GPO findings carry the comment of their policy.** The comment an administrator writes
+  on a policy in the Group Policy Management Console says what the policy is for, which no
+  other row of a finding can. It is kept in GPO.cmt in the policy's SYSVOL folder, readable
+  by every authenticated user, and is now a gpoComment row on all eight GPO object types,
+  one entry per line of the comment. A policy without a comment, a GPO.cmt that cannot be
+  read and SYSVOL out of reach give no row: a comment changes nothing about where a policy
+  applies, so it is never reported as unknown.
+- **`Get-CredentialExposure` reads the comment of a policy.** `*.cmt` was not on its list -
+  comment.cmtx, which holds the comments on single settings, was taken for the policy
+  comment - and GPO.cmt is UTF-16LE without a byte order mark, which Windows PowerShell 5.1
+  read as ANSI with a NUL after every letter, so no pattern could have matched. The files
+  the scan greps are now decoded by their byte order mark, and UTF-16LE without one is
+  recognised by its NULs; the SYSVOL scan, the custom path and `Invoke-ShareHunt` share the
+  reader. A comment written mostly in a script beyond U+00FF, such as Cyrillic or CJK, is
+  not recognised by the scan. The German "Passwort:" is an assignment now, next to
+  "Kennwort:".
+- **Group Policy Preference items carry their description and are scanned for
+  passwords.** adPEAS read none of the free text an administrator writes on a preference
+  item: the Description on its Common tab, a scheduled task's own description, and the
+  description a local user or group item writes to the account. `Get-CredentialExposure`
+  runs the patterns of a script line over each of these texts and names the item and the
+  field a match came from; a GPP password finding shows the Description of its item.
+  `Get-GPOScheduledTasks`, `Get-GPOLocalGroupMembership` and `Get-GPORegistrySettings` show
+  the Description of an item, and a task its own description, as a row on the finding.
+
+### Changed
+
+- **Finding cards name NetExec instead of CrackMapExec and link their tools.** Three cards
+  still named CrackMapExec, which NetExec replaced, and NetExec itself - named on ten
+  cards - had no link. Four links of the tool map pointed to repositories that were gone
+  or had moved (PingCastle, SharpGPOAbuse, PXEThiefy, ConfigManBearPig). The map now links
+  46 tools the cards named without a link, among them bloodyAD, SharpSuccessor, pre2k, the
+  potatoes and SharpDPAPI; tools built into Windows and descriptions such as "Manual
+  review" stay plain text. Process Hacker is called System Informer, two "PowerSploit"
+  privilege modules that do not exist became SeBackupPrivilege, and each tool keeps one
+  spelling. Seventeen cards showed a Tools section holding a single "-"; it is hidden now.
+- **The default TGS-REQ offers AES256, AES128 and RC4, in that order.** RC4 first gave
+  every connection ticket an RC4 session key. Kerberoasting asks for RC4 explicitly and is
+  unchanged.
+
+### Removed
+
+- **Kerberoast, AS-REP roasting and reversible encryption drop their summary lines.** Four
+  lines counted, below the list of accounts, how many of them are privileged or in
+  Protected Users. Each such account already carries a row with the reason, its own
+  severity and its own card, and the section severity comes from those rows. A line
+  carries no card, so in the HTML report it stood as plain text below the objects - "1 of
+  them is/are privileged".
+
+### Fixed
+
+- **SMB signing on member servers is a finding when no policy requires it.** The posture
+  of the member computers appeared only when every signing policy was linked to the Domain
+  Controllers OU, and it was a hint once the domain controllers required signing. The HTML
+  report ranks Secure above Hint, so the SMB signing card of a domain whose domain
+  controllers required signing and whose member servers did not was blue - over the
+  servers an SMB relay goes to. A domain-wide policy that set client signing alone made the
+  posture disappear altogether. It is now shown whenever no linked and enabled policy
+  outside the Domain Controllers OU requires server signing, and it is a finding. Its
+  values are what a member computer in an OU without a signing policy of its own gets: the
+  policies at the domain root and on its site, by precedence, or the Windows default. A
+  policy that requires signing on an OU keeps the posture away; one that weakens signing
+  is still listed on its own.
+- **`Get-CredentialExposure` reads every form a VNC password is stored in.** A password
+  longer than eight characters is stored as several DES blocks, and the pattern accepted
+  exactly one: such a value fell through to a generic registry row that printed the whole
+  blob as the password. Any whole number of blocks is decrypted now, and nothing is
+  returned unless every character of the plaintext is printable. RealVNC Server stores a
+  salted hash instead, from 6.11.0 on wherever its own encryption is enabled; such a value
+  carries a hint of its own instead of being dropped or printed as a password - nothing is
+  recovered from it, but it says that the machines the policy reaches run a VNC server
+  that authenticates against one shared VNC password rather than a Windows account. The
+  card for a password found in a script no longer claims VNC values, which it outscored and
+  reported where no script held a password.
+- **A version 4 certificate template's key settings are read, not printed.**
+  msPKI-RA-Application-Policies holds the application policies an enrollment agent's
+  certificate must carry below schema version 4, and in a version 4 template without
+  CT_FLAG_USE_LEGACY_PROVIDER a string of name-type-value triplets that holds the
+  template's key settings, with the policies, if any, nested inside (MS-CRTD). Such a
+  template printed its whole triplet string as the value of its RAApplicationPolicies row.
+  The value is now split by its shape: the policy row holds policies, resolved to their
+  names, and disappears for a template that has none. The key settings get a row only where
+  one of them is outdated - an MD2, MD4, MD5 or SHA1 request hash, DES, RC2 or RC4 as the
+  symmetric algorithm, or a symmetric key below 112 bits - with a card that separates the
+  request hash, which proves that the requester holds the private key, from the algorithm
+  that wraps an archived private key. 3DES, which Windows writes wherever AES-256 was not
+  chosen, is not reported. ESC3 detection is unaffected by either form.
+- **`Get-OutdatedComputers` places Windows 11 LTSC machines on builds 26200 and 26300.**
+  Both are the 24H2 platform with a feature enablement package on top, so they are LTSC
+  2024 - the build number rises, the edition and its support date do not - and they were
+  reported as an operating system the lifecycle table cannot place. The IoT Enterprise
+  LTSC editions were dated with the Enterprise LTSC row of the same release, although they
+  run on a ten-year lifecycle: Windows 11 IoT Enterprise LTSC 2024 is supported to
+  2034-10-10, not 2029-10-09, and Windows 10 IoT Enterprise LTSC 2021 to 2032-01-13, not
+  2027-01-12. They have rows of their own now.
+- **`Get-GPOUserRightsAssignment` names a dropped default holder once.** A policy that
+  reaches domain controllers and member computers is measured against both default sets,
+  and every default holder it dropped came out twice in RemovedFromDefault.
+- **`Get-AuthenticationPolicySilos` marks an empty result as a note.** The lines saying
+  that no silo or policy is configured carried no marker, unlike every other check that
+  finds nothing.
+
+### Security
+
+- **A pass-the-ticket session no longer falls back to the Windows logon running adPEAS.**
+  After importing its tickets adPEAS bound with Negotiate and no credential. When Windows
+  could not use the imported ticket - for instance because a VPN's DNS server answered for
+  the domain - Negotiate fell back to NTLM with the credentials of the Windows logon
+  running adPEAS: the tester's own account went to the target's domain controller, and
+  adPEAS reported "Wrong username or password" for an account whose ticket the KDC had
+  just issued. The Kerberos flow, PKINIT, Kirbi/Ccache import and the GC connection of such
+  a session now bind with the Kerberos package alone (`Connect-LDAP -KerberosOnly`), which
+  fails on the client and sends nothing; `-UseWindowsAuth` stays on Negotiate. A failed
+  Kerberos-only bind is reported as "Kerberos ticket not usable" with its reason, and for
+  LDAP error 82 with a hint at the system DNS. A Kerberos error without a KDC error code is
+  no longer titled "Invalid credentials".
+
+---
+
 ## [2.9.0] - 2026-10-28
 
 ### Added
