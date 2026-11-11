@@ -127,15 +127,14 @@ function Connect-adPEAS {
     No fallback available - requires valid ticket data.
 
 .PARAMETER ForceNTLM
-    Force NTLM impersonation, skipping Kerberos entirely.
+    Force an explicit NTLM bind, skipping Kerberos entirely.
     Only available for Username/Password and PSCredential authentication.
 
-    This method uses LogonUser() with LOGON32_LOGON_NEW_CREDENTIALS (similar to "runas /netonly"):
-    - Does NOT modify the Kerberos ticket cache
-    - Original Kerberos tickets remain intact
-    - Network operations use NTLM Challenge/Response authentication
-    - Supports LDAP Signing (unlike SimpleBind)
-    - Works even when LDAP Signing is enforced on the DC
+    The LDAP connection binds with AuthType Ntlm (Sicily) and the supplied credential:
+    - Does NOT touch the Kerberos ticket cache; the Windows logon's tickets are untouched
+    - The bind authenticates with NTLM Challenge/Response, not a logon impersonation
+    - Supports LDAP signing (unlike SimpleBind)
+    - Works even when LDAP signing is enforced on the DC
 
     Advantages over SimpleBind:
     - Credentials never sent in clear text
@@ -260,8 +259,9 @@ function Connect-adPEAS {
     No fallback - requires Kerberos (port 88 must be reachable).
 
 .EXAMPLE
-    Connect-adPEAS -Domain "contoso.com" -Username "admin" -NTHash "..." -ForceSimpleBind
-    Skips Kerberos and connects directly via SimpleBind with the hash.
+    Connect-adPEAS -Domain "contoso.com" -Username "admin" -Password "P@ssw0rd" -ForceSimpleBind
+    Skips Kerberos and connects directly via SimpleBind. SimpleBind needs a password;
+    -NTHash and the key parameters have no SimpleBind path and fail with -ForceSimpleBind.
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Username "admin" -NTHash "..." -ForceKerberos
@@ -269,13 +269,13 @@ function Connect-adPEAS {
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Username "admin" -Password "P@ssw0rd" -ForceNTLM
-    Connects using NTLM impersonation (runas /netonly style).
+    Connects with an explicit NTLM bind.
     Does NOT modify Kerberos ticket cache - original tickets remain intact.
     Supports LDAP Signing and works without LDAPS.
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Credential (Get-Credential) -ForceNTLM
-    Connects using NTLM impersonation with PSCredential object.
+    Connects with an explicit NTLM bind using a PSCredential object.
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Kirbi "ticket.kirbi"
@@ -1093,8 +1093,8 @@ function Connect-adPEAS {
                                 return $null
                             }
 
-                            Write-Log "[Connect-adPEAS] Kerberos PTT failed - trying NTLM impersonation fallback..."
-                            Show-Line "Kerberos failed - trying NTLM impersonation" -Class Info
+                            Write-Log "[Connect-adPEAS] Kerberos PTT failed - trying NTLM bind fallback..."
+                            Show-Line "Kerberos failed - trying NTLM" -Class Info
                         }
                     }
                     else {

@@ -98,8 +98,9 @@ function Get-DomainGPO {
     Analyzes all GPOs for dangerous ACL permissions.
 
 .EXAMPLE
-    Get-DomainGPO -ShowLinkedOU -ShowDangerousSettings -ShowPermissions
-    Complete security analysis of all GPOs.
+    Get-DomainGPO -Identity "Default Domain Policy" -ShowDangerousSettings -ShowPermissions
+    Complete security analysis of one GPO. Add -ShowLinkedOU in a separate call to list its
+    links: -ShowLinkedOU returns only the link DNs and replaces the GPO object.
 
 .EXAMPLE
     Get-DomainGPO -LDAPFilter "(displayName=*Admin*)"
@@ -171,8 +172,11 @@ function Get-DomainGPO {
                 return $Script:CachedAllGPOs
             }
 
-            # Validation: ShowLinkedOU requires Identity (ignore if not provided)
+            # Validation: ShowLinkedOU requires Identity (ignore if not provided). Warn, do
+            # not only log it: the switch changes what the function returns (link DNs instead
+            # of the GPO), so a caller that relied on it gets plain GPOs back without a word.
             if ($ShowLinkedOU -and -not $Identity) {
+                Write-Warning "[Get-DomainGPO] -ShowLinkedOU requires -Identity - ignoring it and returning GPO objects"
                 Write-Log "[Get-DomainGPO] -ShowLinkedOU requires -Identity parameter - ignoring ShowLinkedOU switch"
                 $ShowLinkedOU = $false
             }

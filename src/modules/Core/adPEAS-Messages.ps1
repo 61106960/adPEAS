@@ -1881,8 +1881,11 @@ function Get-adPEASHelp {
         Show-KeyValue "Get-DomainGPO" "Query Group Policy Objects"
         Show-KeyValue "Get-DomainObject" "Query any AD object"
         Show-KeyValue "Get-ObjectACL" "Query object ACLs"
+        Show-KeyValue "Get-DomainWriteAccess" "What an account may write in the directory"
         Show-KeyValue "Get-CertificateTemplate" "Query certificate templates"
         Show-KeyValue "Get-CertificateAuthority" "Query certificate authorities"
+        Show-KeyValue "Get-DomainDNSZone" "Query AD-integrated DNS zones"
+        Show-KeyValue "Get-DomainDNSRecord" "Query AD-integrated DNS records"
         Show-EmptyLine
 
         # --- AD Modifications ---
@@ -1897,6 +1900,7 @@ function Get-adPEASHelp {
         Show-KeyValue "New-DomainComputer" "Create AD computer"
         Show-KeyValue "New-DomainGroup" "Create AD group"
         Show-KeyValue "New-DomainGPO" "Create Group Policy Object"
+        Show-KeyValue "Move-DomainObject" "Move or rename any AD object"
         Show-EmptyLine
 
         # --- Kerberos Authentication ---
@@ -1912,15 +1916,28 @@ function Get-adPEASHelp {
         Show-KeyValue "Invoke-ASREPRoast" "AS-REP Roasting (no preauth)"
         Show-KeyValue "Invoke-DCSync" "DCSync (directory replication)"
         Show-KeyValue "Invoke-PasswordSpray" "Password spraying"
+        Show-KeyValue "Get-Hash" "Derive NT/AES/DES keys from a password"
         Show-EmptyLine
 
         # --- Offensive Actions ---
         Show-Line "Offensive Actions:" -Class Hint
         Show-KeyValue "Invoke-TicketForge" "Golden/Silver/Diamond Tickets"
-        Show-KeyValue "Invoke-S4U" "S4U delegation attacks"
-        Show-KeyValue "Invoke-RBCDOperation" "Resource-Based Constrained Delegation"
-        Show-KeyValue "Invoke-ShadowCredentialOperation" "Shadow Credentials"
+        Show-KeyValue "Invoke-ConstrainedDelegation" "S4U attack via constrained delegation"
+        Show-KeyValue "Invoke-RBCD" "S4U attack via resource-based delegation"
+        Show-KeyValue "Set-DomainComputer -AddRBCD" "Configure resource-based delegation"
+        Show-KeyValue "Set-DomainUser -AddShadowCredential" "Shadow Credentials"
         Show-KeyValue "Request-ADCSCertificate" "Request ADCS certificate"
+        Show-EmptyLine
+
+        # --- Network ---
+        Show-Line "Network:" -Class Hint
+        Show-KeyValue "Invoke-PortScan" "TCP connect scan of hosts, networks or the domain"
+        Show-EmptyLine
+
+        # --- Reporting ---
+        Show-Line "Reporting:" -Class Hint
+        Show-KeyValue "Convert-adPEASReport" "Rebuild HTML/text report from a JSON export"
+        Show-KeyValue "Compare-adPEASReport" "Compare two JSON exports"
         Show-EmptyLine
     }
 }
