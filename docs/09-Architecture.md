@@ -67,10 +67,17 @@ Clear separation between data retrieval, security analysis, and output formattin
                     +-------v-------+
                     |   Reporting   |
                     +---------------+
-                    | Text Export   |
-                    | Console Out   |
+                    | Export-HTML*  |
+                    | Convert-*     |
+                    | Compare-*     |
                     +---------------+
 ```
+
+Console and plain-text output are produced in Core by `Write-adPEASOutput` and the
+`Show-*` functions, which also store every finding in the findings collection. The
+Reporting layer (`Export-HTMLReport`, `Convert-adPEASReport`, `Compare-adPEASReport`)
+turns that collection into the HTML and JSON outputs. The BloodHound collector lives in
+its own layer under `src/modules/Collector`.
 
 ---
 
@@ -95,10 +102,11 @@ Clear separation between data retrieval, security analysis, and output formattin
 6. Finding Generation
          |
          v
-7. Output Formatting (Show-* functions)
+7. Output Formatting (Show-* -> console) + Findings Collection
          |
          v
-8. Report (Console/File)
+8. Reports: console/text live; HTML and JSON built from the collection
+   (JSON cache is also rewritten after every module as a checkpoint)
 ```
 
 ---
@@ -120,15 +128,21 @@ Check Module
     |
     +-> Get-ObjectACL (ACL analysis checks)
     +-> Get-CertificateTemplate / Get-CertificateAuthority (ADCS checks)
+    +-> Get-DomainWriteAccess (what an account may write in the directory)
 ```
 
 ### Rules
 
-1. **Check Modules**: Call Get-Domain* functions, Get-ObjectACL, Get-CertificateTemplate, and Get-CertificateAuthority
+1. **Check Modules**: Call Get-Domain* functions, Get-ObjectACL, Get-CertificateTemplate, Get-CertificateAuthority and Get-DomainWriteAccess
 2. **Get-Domain Functions**: Only call Get-DomainObject
 3. **Get-DomainObject**: Only calls Invoke-LDAPSearch
 4. **Invoke-LDAPSearch**: Only uses `$Script:LdapConnection`
 5. **Set-DomainObject**: Uses `ModifyRequest` via `$Script:LdapConnection`
+
+A few checks call `Invoke-LDAPSearch` directly, where `Get-DomainObject` cannot express
+the query: reads of the Configuration partition by explicit `SearchBase` (the ADCS checks),
+a search over a Global Catalog connection (`Get-PrivilegedGroupMembers`), and a RootDSE read
+with an empty base. These are the deliberate exceptions to rule 1.
 
 ---
 
@@ -179,8 +193,9 @@ $Script:LDAPContext = @{
     Server              = "dc01.contoso.com"
     Protocol            = "LDAP"           # or "LDAPS"
     Port                = 389              # or 636
-    AuthMethod          = "Kerberos"       # or "NTLM Impersonation", "SimpleBind", "WindowsSSPI"
+    AuthMethod          = "Kerberos"       # or "NTLM", "SimpleBind", "WindowsSSPI", "Schannel"
     KerberosUsed        = $true
+    Credential          = $null            # PSCredential, when one was supplied
     AuthenticatedUser   = "CONTOSO\john.doe"
     SchemaNamingContext = "CN=Schema,CN=Configuration,DC=contoso,DC=com"
     ConfigurationNamingContext = "CN=Configuration,DC=contoso,DC=com"
@@ -210,9 +225,9 @@ $Script:LDAPContext = @{
           | Failure                               v
           v                             +-------------------+
 +-------------------+                   | Connect-LDAP      |
-| NTLM              |                   | (Kerberos auth)   |
-| Impersonation     |                   +---------+---------+
-| (Fallback 1)      |                             |
+| NTLM bind         |                   | (Kerberos auth)   |
+| (Fallback 1)      |                   +---------+---------+
+|                   |                             |
 +---------+---------+                             |
           |                                       |
           | Failure                               |
@@ -236,14 +251,19 @@ $Script:LDAPContext = @{
 | Method | Kerberos Attempt | Fallback |
 |--------|-----------------|----------|
 | Windows Auth | SSPI (automatic) | N/A |
-| PSCredential | TGT + TGS + PTT | NTLM Impersonation -> SimpleBind |
-| Username/Password | TGT + TGS + PTT | NTLM Impersonation -> SimpleBind |
+| PSCredential | TGT + TGS + PTT | NTLM bind -> SimpleBind |
+| Username/Password | TGT + TGS + PTT | NTLM bind -> SimpleBind |
 | NT Hash | TGT (RC4) + TGS + PTT | None |
 | AES256 Key | TGT (AES256) + TGS + PTT | None |
 | AES128 Key | TGT (AES128) + TGS + PTT | None |
-| Certificate | PKINIT + TGS + PTT | None |
+| Certificate (PKINIT) | PKINIT + TGS + PTT | None |
+| Certificate (`-ForcePassTheCert`) | None - Schannel/LDAPS client certificate | None |
 | Kirbi | PTT | None |
 | Ccache | PTT | None |
+
+The three `-Force*` switches pin one method: `-ForceKerberos` (no fallback), `-ForceNTLM`
+(password credentials only) and `-ForceSimpleBind`. Only password-based logins fall back;
+hash, key, certificate and ticket logins stop at their own method.
 
 ---
 
@@ -301,7 +321,9 @@ adPEAS uses a unified rendering pipeline where a single data model drives both C
 
 ```powershell
 @{
-    Primary = @(           # Always-visible attributes (severity != Standard)
+    ObjectType = 'User'    # detected type; IsComputer is carried alongside
+    Primary = @(           # the type's primary attributes, plus any other
+                           # attribute promoted because its severity != Standard
         @{ Name; RowType; OverallSeverity; Values = @(
             @{ Display; Severity; FindingId; RawValue; Metadata }
         )}
@@ -309,11 +331,18 @@ adPEAS uses a unified rendering pipeline where a single data model drives both C
     Extended = @(          # Collapsible attributes (severity == Standard)
         # Same structure as Primary
     )
-    PostObject = @(        # Post-object lines (e.g., activityStatus)
-        @{ Text; Severity }
+    PostObject = @(        # Post-object rows - full render rows, not just text;
+                           # e.g. the KerberoastingHash / ASREPRoastingHash lines
     )
 }
 ```
+
+**When each renderer runs:** during a check, `Show-Output` builds the model, renders it to
+the console, and stores it in the findings collection (`$Script:adPEAS_FindingsCollection`)
+via `Add-Finding`. The HTML is **not** rendered at that point - `Export-HTMLReport` renders
+it afterwards from the stored collection, and the same collection is what the JSON export
+and the per-module checkpoints are written from. So the console and HTML branches do not run
+side by side at check time; the HTML branch runs once, at the end, over everything collected.
 
 ### Semantic Output Functions
 
@@ -402,15 +431,15 @@ function Get-SecurityCheck {
 ### OPSEC Mode
 
 When `-OPSEC` is specified:
-- Kerberoasting is skipped (no TGS requests)
-- AS-REP Roasting is skipped (no AS-REQ without pre-auth)
+- Kerberoasting and AS-REP Roasting still list the affected accounts but do not request the tickets / extract the hashes
 - BloodHound collection is skipped (generates many LDAP queries)
-- No SMB connection is made to the file servers a GPO script names, or to NETLOGON for the logon scripts of accounts (the NTFS permissions of a script a policy runs from NETLOGON or a share, and of the logon script an account's scriptPath names are not read)
-- Only passive enumeration is performed
+- The enumeration-heavy checks are skipped: Get-PasswordInDescription, Get-NonDefaultUserOwners, Get-NonDefaultComputerOwners, Get-LAPSConfiguration, Get-OutdatedComputers and the opt-in Invoke-ShareHunt
+- Get-NetworkMap resolves names only from the AD-integrated DNS zones (no direct DNS lookups)
+- No SMB connection is made to the file servers a GPO script names, or to NETLOGON for the logon scripts of accounts
 
 ### Credential Handling
 
-- Credentials stored only in `$Script:LDAPCredential`
+- Credentials are held in `$Script:LDAPContext['Credential']` (and the related auth-info state) for the life of the session
 - Cleared on Disconnect-adPEAS
 - Never written to disk
 - Never logged in verbose output
