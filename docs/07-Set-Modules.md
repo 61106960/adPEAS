@@ -111,7 +111,7 @@ Set-DomainUser
     [-GrantRights <String>] [-Principal <String>]
     [-AddRBCD <String>]
     [-ClearRBCD] [-Principal <String>] [-Force]
-    [-AddShadowCredential] [-DeviceID <String>]
+    [-AddShadowCredential] [-DeviceID <String>] [-NoPassword]
     [-ClearShadowCredentials] [-DeviceID <String>] [-Force]
     [-SetSPN <String>]
     [-ClearSPN <String>] [-Force]
@@ -221,7 +221,7 @@ Set-DomainComputer
     [-ClearRBCD] [-Principal <String>] [-Force]
     [-Owner <String>]
     [-GrantRights <String>] [-Principal <String>]
-    [-AddShadowCredential] [-DeviceID <String>]
+    [-AddShadowCredential] [-DeviceID <String>] [-NoPassword]
     [-ClearShadowCredentials] [-DeviceID <String>] [-Force]
     [-Enable]
     [-Disable]
@@ -231,8 +231,8 @@ Set-DomainComputer
     [-ClearConstrainedDelegation] [-Principal <String>] [-Force]
     [-SetTrustedToAuthForDelegation]
     [-ClearTrustedToAuthForDelegation]
-    [-PasswordNotRequired]
-    [-PasswordNeverExpires]
+    [-PasswordNotRequired] [-ClearPasswordNotRequired]
+    [-PasswordNeverExpires] [-ClearPasswordNeverExpires]
     [-NotDelegated]
     [-ClearNotDelegated]
     [-DontReqPreauth]
@@ -724,7 +724,7 @@ Set-DomainGPO
     [-UnlinkFrom <String>]
     [-Owner <String>]
     [-GrantRights <String>] [-Principal <String>]
-    [-AddScheduledTask] [-TaskName <String>] [-TaskCommand <String>] [-TaskArguments <String>] [-TaskRunAs <String>]
+    [-AddScheduledTask] [-TaskName <String>] [-TaskCommand <String>] [-TaskArguments <String>] [-TaskRunAs <String>] [-TaskAuthor <String>]
     [-AddLocalGroupMember] [-LocalGroup <String>] [-MemberToAdd <String>]
     [-AddStartupScript] [-AddLogonScript] [-ScriptPath <String>] [-ScriptContent <String>] [-ScriptName <String>] [-ScriptParameters <String>]
     [-AddService] [-ServiceName <String>] [-BinaryPath <String>] [-ServiceDisplayName <String>] [-StartType <String>] [-ServiceAccount <String>]
@@ -828,6 +828,7 @@ Set-DomainObject
     [-DenyACE]
     [-ClearACE]
     [-SetOwner]
+    [-PassThru]
     [-Domain <String>]
     [-Server <String>]
     [-Credential <PSCredential>]
@@ -891,13 +892,14 @@ Set-DomainObject
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `-Principal` | String | Security principal (user/group) for ACL modification |
-| `-Rights` | String | AD rights to grant/revoke (GenericAll, WriteDacl, etc.) |
+| `-Rights` | String | AD rights to grant/revoke (GenericAll, WriteDacl, `ControlAccess`, etc.) |
 | `-ExtendedRight` | String | Extended right alias (DCSync, ResetPassword, etc.) |
 | `-GrantACE` | Switch | Add Allow ACE |
 | `-RevokeACE` | Switch | Remove ACE |
 | `-DenyACE` | Switch | Add Deny ACE |
 | `-ClearACE` | Switch | Remove all ACEs for principal |
 | `-SetOwner` | Switch | Change object owner |
+| `-PassThru` | Switch | Return a result object (Operation / Object / Success / Message) instead of console output |
 
 ### Extended Right Aliases
 
