@@ -112,11 +112,14 @@ Get-DomainUser
 | `-AccountNeverExpires` | Switch | Users where accountExpires is 0 or never set |
 | `-DESOnly` | Switch | Users with USE_DES_KEY_ONLY flag set (weak encryption) |
 | `-ReversibleEncryption` | Switch | Users with ENCRYPTED_TEXT_PWD_ALLOWED flag set (security risk) |
+| `-PasswordAgeDays` | Int | Users whose password was set at least N days ago (by pwdLastSet) |
+| `-InactiveDays` | Int | Users who have logged on at least once but not within N days (by lastLogonTimestamp) |
+| `-NeverLoggedIn` | Switch | Users that have never logged on |
 | `-GMSA` | Switch | Return only Managed Service Accounts (MSA, gMSA and dMSA) |
 | `-ShowGMSADetails` | Switch | Shows extended MSA/gMSA information (password access, rotation, SPNs). Use with -GMSA |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
 | `-ResolveGroups` | Switch | Adds `memberOfNested`: the primary group and every group reached through nesting, each with the group it was reached through, and the universal groups of other domains of the forest from the Global Catalog. One more query per account, two on the Global Catalog |
-| `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
+| `-Raw` | Switch | Return PSCustomObjects with the original, unconverted LDAP values (not DirectoryEntry objects) |
 | `-ResultLimit` | Int | Limit the number of results returned. Default: 0 (unlimited) |
 | `-Domain` | String | Target domain (FQDN) |
 | `-Server` | String | Specific Domain Controller to query |
@@ -240,12 +243,16 @@ Get-DomainComputer
 | `-RBCD` | Switch | Computers with Resource-Based Constrained Delegation (msDS-AllowedToActOnBehalfOfOtherIdentity attribute) |
 | `-TrustedToAuth` | Switch | Computers with Protocol Transition / S4U2Self |
 | `-LAPS` | Switch | Computers with LAPS enabled (Legacy or Windows LAPS) |
+| `-DomainController` | Switch | Only domain controllers, writable and read-only (RODC); wider than a userAccountControl=8192 filter, which misses RODCs |
 | `-Enabled` | Switch | Only enabled computers |
 | `-Disabled` | Switch | Only disabled computers |
+| `-PasswordAgeDays` | Int | Computers whose password was set at least N days ago |
+| `-InactiveDays` | Int | Computers that have logged on at least once but not within N days |
+| `-NeverLoggedIn` | Switch | Computers that have never logged on |
 | `-HighValueSPN` | Switch | Computers running high-value services (MSSQL, Exchange, SCCM, CA, etc.) |
 | `-KnownSPN` | String | Filter by specific service type. Valid values: `MSSQL`, `Exchange`, `SCCM`, `WSUS`, `ADFS`, `CA`, `SCOM`, `Backup`, `HyperV`, `RDP`, `WinRM`, `HTTP`, `FTP` |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
-| `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
+| `-Raw` | Switch | Return PSCustomObjects with the original, unconverted LDAP values (not DirectoryEntry objects) |
 | `-ResultLimit` | Int | Limit the number of results returned. Default: 0 (unlimited) |
 | `-Domain` | String | Target domain (FQDN) |
 | `-Server` | String | Specific Domain Controller to query |
@@ -366,7 +373,7 @@ Get-DomainGroup
 | `-ShowMembers` | Switch | Returns the DNs of the direct members (the `member` attribute) instead of the group. Requires -Identity; with several matches, the first group |
 | `-Recurse` | Switch | Implies -ShowMembers and returns every member instead: direct, nested at any depth, and accounts whose primary group is the group or a nested one. One object per member with `Name`, `ObjectClass`, `Membership` (`Direct`, `Nested`, `Primary group`), `Via`, `Domain`, `DistinguishedName` and `SID`. A member of another domain of the forest comes from the Global Catalog, opened only for one, and names its domain; a universal group there is followed to its members. Of a global group there only the accounts whose primary group it is, with a warning naming the group |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
-| `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
+| `-Raw` | Switch | Return PSCustomObjects with the original, unconverted LDAP values (not DirectoryEntry objects) |
 | `-Domain` | String | Target domain (FQDN) |
 | `-Server` | String | Specific Domain Controller to query |
 | `-Credential` | PSCredential | PSCredential object for authentication |
@@ -457,10 +464,10 @@ Get-DomainGPO
 | `-AppliedToOU` | String | Get GPOs linked to a specific OU (DN format) |
 | `-Enabled` | Switch | Only enabled GPOs (flags=0, all settings active) |
 | `-Disabled` | Switch | Only fully disabled GPOs (flags=3, both Computer and User settings disabled) |
-| `-ShowLinkedOU` | Switch | Include OUs where the GPO is linked |
-| `-ShowDangerousSettings` | Switch | Analyze GPO for dangerous settings (scheduled tasks, scripts, registry, etc.) |
-| `-ShowPermissions` | Switch | Include GPO permissions (who can edit) |
-| `-Raw` | Switch | Return raw DirectoryEntry objects without processing |
+| `-ShowLinkedOU` | Switch | Return the OU/domain DNs the GPO is linked to (an array of DNs), **instead of** the GPO object. Requires `-Identity`; ignored (with a warning) without it |
+| `-ShowDangerousSettings` | Switch | Analyze GPO for dangerous settings (scheduled tasks, scripts, registry, etc.) and add a `DangerousSettings` property |
+| `-ShowPermissions` | Switch | Add a `DangerousPermissions` property (who can edit) |
+| `-Raw` | Switch | Return PSCustomObjects with the original, unconverted LDAP values (not DirectoryEntry objects) |
 | `-Domain` | String | Target domain (FQDN) |
 | `-Server` | String | Specific Domain Controller to query |
 | `-Credential` | PSCredential | PSCredential object for authentication |
@@ -477,8 +484,8 @@ Get-DomainGPO -Identity "Default Domain Policy"
 # Get GPO by GUID
 Get-DomainGPO -Identity "{6AC1786C-016F-11D2-945F-00C04fB984F9}"
 
-# Get GPOs with linked OUs
-Get-DomainGPO -ShowLinkedOU
+# List the OUs/domain a GPO is linked to (returns DNs, needs -Identity)
+Get-DomainGPO -Identity "Default Domain Policy" -ShowLinkedOU
 
 # Get GPOs linked to specific OU
 Get-DomainGPO -AppliedToOU "OU=Servers,DC=contoso,DC=com"
@@ -495,21 +502,22 @@ Get-DomainGPO -Enabled
 # Get GPOs with specific text in name
 Get-DomainGPO -LDAPFilter "(displayName=*Security*)"
 
-# Full GPO analysis
-Get-DomainGPO -ShowLinkedOU -ShowDangerousSettings -ShowPermissions
+# Full GPO analysis of one policy (-ShowLinkedOU is a separate call: it
+# returns link DNs in place of the GPO, so it does not combine with these)
+Get-DomainGPO -Identity "Default Domain Policy" -ShowDangerousSettings -ShowPermissions
 ```
 
 ### Dangerous Settings Detection
 
-When using `-ShowDangerousSettings`, the function analyzes GPOs for:
+When using `-ShowDangerousSettings`, the function reads these SYSVOL preference/policy files from the GPO and reports what they set:
 
-- **Scheduled Tasks**: Immediate tasks, logon/logoff scripts
-- **Startup Scripts**: Machine/User startup scripts
-- **Registry Settings**: AutoRun entries, service modifications
-- **Group Membership**: Local admin modifications
-- **Security Options**: LAPS, password policies
-- **File Deployments**: MSI packages, file copies
-- **Service Configuration**: Service accounts, startup types
+- **Scheduled Tasks** (`ScheduledTasks.xml`): immediate and scheduled tasks
+- **Scripts** (`scripts.ini`): machine and user startup/logon scripts
+- **Registry Settings** (`Registry.xml`): Run keys and other registry preferences
+- **Group Membership** (`Groups.xml`): local group modifications
+- **Service Configuration** (`Services.xml`): service accounts and startup types
+
+It does not read security options (LAPS, password policy) or software-installation/file deployments here - those are covered by the dedicated checks.
 
 ### Output Properties
 
@@ -521,9 +529,10 @@ Common properties returned:
 - `gPCFileSysPath` - SYSVOL path
 - `whenCreated` - Creation date
 - `whenChanged` - Last modified date
-- `LinkedOUs` - OUs where linked (with -ShowLinkedOU)
 - `DangerousSettings` - Security issues found (with -ShowDangerousSettings)
-- `Permissions` - Edit permissions (with -ShowPermissions)
+- `DangerousPermissions` - Edit permissions outside Tier 0 (with -ShowPermissions)
+
+(With `-ShowLinkedOU` the function returns an array of link DNs instead of GPO objects.)
 
 ---
 
@@ -596,6 +605,9 @@ Get-DomainObject
 | `-PreauthNotRequired` | Switch | Return only accounts with DONT_REQ_PREAUTH flag set (AS-REP Roastable) |
 | `-DESOnly` | Switch | Return only accounts with USE_DES_KEY_ONLY flag set |
 | `-ReversibleEncryption` | Switch | Return only accounts with ENCRYPTED_TEXT_PWD_ALLOWED flag set |
+| `-PasswordAgeDays` | Int | Objects whose password was set at least N days ago |
+| `-InactiveDays` | Int | Objects that have logged on at least once but not within N days |
+| `-NeverLoggedIn` | Switch | Objects that have never logged on |
 | `-ShowOwner` | Switch | Include Owner and OwnerSID properties on returned objects |
 | `-Raw` | Switch | Return raw LDAP values without conversions |
 | `-IncludeDeleted` | Switch | Send the show-deleted control, so deleted objects and the Deleted Objects container are returned as well - as far as the account may list and read them |
@@ -826,19 +838,19 @@ Get-CertificateTemplate
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `-Identity` | String | Template name or OID |
+| `-Identity` | String | Template name (matched against cn, displayName or DN - not the OID) |
 | `-LDAPFilter` | String | Custom LDAP filter for special queries |
 | `-Properties` | String[] | Array of attribute names to return |
 | `-SearchBase` | String | Alternative SearchBase (DN) |
-| `-ShowAll` | Switch | Show all templates including disabled ones |
+| `-ShowAll` | Switch | Return every template; by default only templates published to a CA are returned |
 | `-EnrolleeSuppliesSubject` | Switch | Filter for templates where enrollee supplies subject name (CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT) |
 | `-NoSecurityExtension` | Switch | Filter for templates without szOID_NTDS_CA_SECURITY_EXT (ESC9/ESC10) |
 | `-ClientAuthentication` | Switch | Filter for templates with Client Authentication or Smartcard Logon EKU |
 | `-ExportableKey` | Switch | Filter for templates allowing private key export |
 | `-NoManagerApproval` | Switch | Filter for templates not requiring CA manager approval |
-| `-EnrollmentAllowed` | Switch | Filter for templates where enrollment is enabled (autoenrollment or manual) |
+| `-EnrollmentAllowed` | Switch | Filter for templates whose ACL grants an enrollment right |
 | `-Export` | Switch | Export template settings as raw LDAP values (for backup/restore) |
-| `-ExportPath` | String | Output path for exported template settings |
+| `-ExportPath` | String | Output **file** path for the exported template (a file name, not a directory) |
 | `-Raw` | Switch | Return raw LDAP values without conversion |
 | `-Domain` | String | Target domain (FQDN) |
 | `-Server` | String | Specific Domain Controller to query |
@@ -862,8 +874,8 @@ Get-CertificateTemplate -NoSecurityExtension
 # Get templates allowing enrollment with exportable key
 Get-CertificateTemplate -EnrollmentAllowed -ExportableKey
 
-# Export template for backup
-Get-CertificateTemplate -Identity "VulnTemplate" -Export -ExportPath "C:\backup\"
+# Export template for backup (-ExportPath is a file, not a directory)
+Get-CertificateTemplate -Identity "VulnTemplate" -Export -ExportPath "C:\backup\VulnTemplate.json"
 ```
 
 ### Output Properties
