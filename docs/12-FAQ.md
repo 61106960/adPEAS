@@ -19,7 +19,7 @@ adPEAS (Active Directory Privilege Escalation Awesome Scripts) is a PowerShell t
 | External Dependencies | None | None | RSAT Required |
 | Standalone File | Yes | Yes | No |
 | Kerberos Auth Methods | All (OPtH, PtK, PKINIT, etc.) | Limited | Limited |
-| Security Checks | 41+ | Enumeration only | None |
+| Security Checks | 50+ | Enumeration only | None |
 | OPSEC Mode | Yes | No | No |
 | Output Formatting | Colored + Reports | Raw | Raw |
 
@@ -38,7 +38,7 @@ They complement each other well. Use adPEAS for quick vulnerability assessment a
 
 ### What PowerShell version is required?
 
-Windows PowerShell 5.1 or higher. PowerShell Core (6+) is not fully supported due to .NET Framework dependencies.
+Windows PowerShell 5.1 is the primary target and the recommended runtime. adPEAS also runs on PowerShell 7+ - it is tested there, and the pwsh-7-specific issues with HTTPS and JSON date handling were fixed in 2.9.0.
 
 ---
 
@@ -227,12 +227,15 @@ The ADCS module checks for:
 - ESC2: Any purpose EKU
 - ESC3: Enrollment agent template abuse
 - ESC4: Vulnerable template ACLs
+- ESC5: Vulnerable PKI object / container permissions
 - ESC8: Web enrollment detection (HTTP/HTTPS + NTLM/EPA configuration)
 - ESC9: No security extension + client auth
 - ESC13: Issuance policy linked to AD group
-- ESC15: Schema v1 + enrollee-supplied subject (CVE-2024-49019)
+- ESC15: Schema v1 + enrollee-supplied subject
 
-**Not implemented**: ESC6 (requires registry access via RPC, not LDAP), ESC7 (requires DCOM/RPC to CA, not LDAP)
+ESC10 (weak certificate mapping registry keys) is detected by the GPO registry check, and ESC14 (weak explicit certificate mappings on accounts) by `Get-WeakCertificateMapping`.
+
+**Out of scope** - these need administrative access to the CA host (ManageCA/registry via RPC/DCOM), which adPEAS does not use: ESC6, ESC7, ESC11, ESC16.
 
 ```powershell
 Get-ADCSVulnerabilities
@@ -245,7 +248,7 @@ Get-ADCSVulnerabilities
 ### How do I save results to a file?
 
 ```powershell
-# Default: Both formats (creates .txt and .html)
+# Default: -Format All (creates .txt, .html and .json)
 Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -Outputfile .\report
 
 # Text report only
@@ -255,7 +258,7 @@ Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -Outputfile .\report -Format
 Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -Outputfile .\report -Format HTML
 ```
 
-The file extension (.txt or .html) is added automatically based on the format.
+The file extension (.txt, .html or .json) is added automatically based on the format. The default `-Format All` writes all three, plus the BloodHound ZIP.
 
 ---
 

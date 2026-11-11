@@ -65,19 +65,19 @@ The session-based approach is recommended for interactive assessments.
 
 ### Style 2b: Session-Based with Tab-Completion
 
-For interactive exploration, enable tab-completion for quick object lookup:
+Tab-completion for AD object names works after any `Connect-adPEAS`: the cache builds itself on the first TAB. `-BuildCompletionCache` only pre-builds it up front, so the first TAB is instant:
 
 ```powershell
-# Connect with tab-completion cache
+# Optional: pre-build the completion cache at connect time
 Connect-adPEAS -Domain "contoso.com" -UseWindowsAuth -BuildCompletionCache
 
-# Now use TAB to autocomplete object names:
-Get-DomainUser -Identity adm[TAB]        # → "administrator"
-Get-DomainGroup -Identity Domain[TAB]    # → "Domain Admins", "Domain Users", ...
-Get-DomainGPO -Identity Def[TAB]         # → "Default Domain Policy"
+# Use TAB to autocomplete object names:
+Get-DomainUser -Identity adm[TAB]        # -> "administrator"
+Get-DomainGroup -Identity Domain[TAB]    # -> "Domain Admins", "Domain Users", ...
+Get-DomainGPO -Identity Def[TAB]         # -> "Default Domain Policy"
 ```
 
-See [Helper-Functions](08-Helper-Functions.md#tab-completion) for more details.
+See [Helper-Functions](08-Helper-Functions.md#build-completioncache) for more details.
 
 ---
 
@@ -121,11 +121,12 @@ Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -UseLDAPS
 Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -OPSEC
 ```
 
-OPSEC mode skips:
-- Kerberoasting (TGS ticket requests)
-- AS-REP Roasting (AS-REQ without pre-auth)
-- BloodHound collection (many LDAP queries)
-- SMB connections to the file servers a GPO script names, and to NETLOGON for the logon scripts of accounts (the NTFS permissions of a script a policy runs from NETLOGON or a share, and of the logon script an account's scriptPath names are not read)
+OPSEC mode changes these checks:
+- Kerberoasting and AS-REP Roasting still list the affected accounts, but do **not** request the tickets / extract the hashes
+- BloodHound collection is skipped entirely (many LDAP queries)
+- The enumeration-heavy checks are skipped: `Get-PasswordInDescription`, `Get-NonDefaultUserOwners`, `Get-NonDefaultComputerOwners`, `Get-LAPSConfiguration`, `Get-OutdatedComputers` and the opt-in `Invoke-ShareHunt`
+- `Get-NetworkMap` resolves names only from the AD-integrated DNS zones (no direct DNS lookups)
+- No SMB connection is made to the file servers a GPO script names, or to NETLOGON for the logon scripts of accounts (so the NTFS permissions of those scripts are not read)
 
 ### Scenario 5b: Include Privileged Accounts
 
@@ -180,7 +181,7 @@ Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -Outputfile .\report -Verbos
 ```
 
 **Requirements:**
-- `-Outputfile` must be specified (VerboseLogging requires a text file destination)
+- `-Outputfile` must be specified, together with `-Format Text` or `-Format All` (the verbose messages are written into the text report); with `-Format HTML` or `JSON` only, `-VerboseLogging` logs to the console but has no file to write to
 - `-VerboseLogging` writes verbose messages to the output file AND automatically enables `-Verbose` for console output
 
 **Use Case:** When you need to analyze what adPEAS is doing internally, or when reporting issues.
@@ -202,15 +203,15 @@ Invoke-adPEAS -Module ADCS,Delegation -Outputfile .\audit -OutputAppend
 ```
 
 **How it works:**
-- Every run with `-Outputfile` creates up to 3 files: `audit.txt`, `audit.html`, and `audit.json`
-- With `-OutputAppend`, new findings are merged with existing ones from the JSON file
-- The HTML report is regenerated with all combined findings
-- Text report is appended (new findings added at the end)
+- A default run with `-Outputfile` creates up to 4 files: `audit.txt`, `audit.html`, `audit.json` and the BloodHound ZIP (unless `-OPSEC` or `-ExcludeModule Bloodhound`)
+- `-OutputAppend` needs `-Format All` or `-Format JSON`; with `Text` or `HTML` only it is ignored with a warning (the merge is driven by the JSON cache)
+- With `-OutputAppend`, the findings of the modules you re-run replace their earlier findings in the JSON, and the modules you do not run keep theirs
+- The HTML report is regenerated from all combined findings; the text report is appended
 - Without `-OutputAppend`, existing reports are overwritten (default behavior)
 
 **JSON Export:**
 
-adPEAS automatically saves all findings to a JSON file (`<basename>.json`) alongside the report files. This enables:
+adPEAS automatically saves all findings to a JSON file (`<basename>.json`) alongside the report files. The cache is rewritten after every module, so an interrupted scan still leaves a usable JSON (it carries `Complete` and `CompletedModules`; `Convert-adPEASReport` and `Compare-adPEASReport` warn when they read a partial export). This enables:
 - Incremental scanning with `-OutputAppend` (merge findings across runs)
 - Post-processing and analysis of scan results in external tools
 - Machine-readable export of all findings with full AD object data
@@ -261,7 +262,10 @@ Compare-adPEASReport -Baseline ".\scan_jan.json" -Current ".\scan_apr.json" -Out
 - **New findings** (in current but not in baseline) — potential new vulnerabilities
 - **Remediated findings** (in baseline but not in current) — fixed issues
 - **Changed findings** (severity or value changed between scans)
-- **Summary statistics** with counts per category
+- **Scan Scope Differences** — categories present in only one of the two scans (their findings are not counted as new or remediated)
+- **Summary** — totals and the list of categories compared
+
+With `-OutputPath`, the diff is written as a `.txt` and an `.html` report.
 
 ### Scenario 11: BloodHound Data Collection
 
@@ -303,6 +307,7 @@ Available modules (ordered by severity/impact):
 | `GPO`         | GPO permissions, local group membership               |
 | `Computer`    | LAPS, outdated systems, infrastructure servers        |
 | `Application` | Exchange, SCCM, SCOM infrastructure                   |
+| `Shares`      | Share hunting over SMB (opt-in: only with `-Module Shares`) |
 | `Bloodhound`  | BloodHound CE collector                               |
 
 ---
@@ -353,8 +358,8 @@ adPEAS uses color-coded output:
 Example output:
 
 ```
-[?] Analyzing Kerberoastable Accounts (Get-KerberoastableAccounts)
-[!] Found 3 Kerberoastable service accounts
+[?] Searching for Kerberoastable accounts (users with SPNs)... (Get-KerberoastableAccounts)
+[!] Found 3 kerberoastable user account(s):
     sAMAccountName: svc_backup
     servicePrincipalName: MSSQLSvc/db01.contoso.com:1433
     ...

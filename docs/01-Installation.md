@@ -63,10 +63,10 @@ Choose the version that best fits your needs:
 
 | File | Size | Use Case |
 |------|------|----------|
-| `adPEAS.ps1` | ~4.5 MB | Development, debugging, code review |
-| `adPEAS_min.ps1` | ~3-4 MB | Regular use with smaller footprint |
-| `adPEAS_ultra.ps1` | ~3 MB | Minimal size, no comments |
-| `adPEAS_obf.ps1` | <1 MB | Smallest size, obfuscated for transfer |
+| `adPEAS.ps1` | ~8 MB | Development, debugging, code review |
+| `adPEAS_min.ps1` | ~5.5 MB | Regular use with smaller footprint |
+| `adPEAS_ultra.ps1` | ~5 MB | Minimal size, no comments |
+| `adPEAS_obf.ps1` | ~1.2 MB | Smallest size, obfuscated for transfer |
 
 ---
 
@@ -116,10 +116,8 @@ Unblock-File -Path .\adPEAS.ps1
 After loading adPEAS, verify that the main functions are available:
 
 ```powershell
-# List all adPEAS functions
-Get-Command -Module adPEAS
-
-# Or check specific functions
+# adPEAS dot-sources its functions into the global scope rather than a module,
+# so check them by name (Get-Command -Module adPEAS returns nothing):
 Get-Command Invoke-adPEAS
 Get-Command Connect-adPEAS
 Get-Command Get-DomainUser
@@ -138,7 +136,7 @@ Expected output should include functions like:
 
 ## Building from Source
 
-The `main` branch always carries a current build of all four variants, rebuilt with every fix and feature, which is what the direct-download URLs above fetch. Those builds carry a development version string (`2.5.1+20260917-1759`); the four stable builds, with a clean version string, are attached as downloadable assets to each [GitHub Release](https://github.com/61106960/adPEAS/releases). To build from source yourself, use the included build script:
+The `main` branch always carries a current build of all four variants, rebuilt with every fix and feature, which is what the direct-download URLs above fetch. Those builds carry a development version string (`2.10.0+20261111-1947`); the four stable builds, with a clean version string, are attached as downloadable assets to each [GitHub Release](https://github.com/61106960/adPEAS/releases). To build from source yourself, use the included build script:
 
 ```powershell
 git clone https://github.com/61106960/adPEAS.git

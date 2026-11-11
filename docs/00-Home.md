@@ -17,9 +17,11 @@ adPEAS (Active Directory Privilege Escalation Awesome Scripts) is a PowerShell-b
 - **Standalone Deployment**: Single .ps1 file for easy transfer to target systems
 - **Multiple Authentication Methods**: Supports credentials, certificates (PKINIT & Pass-the-Cert/Schannel), NT-Hash, AES keys, and Kerberos tickets
 - **Kerberos-First Authentication**: Attempts Kerberos authentication by default with automatic fallback
-- **Comprehensive Security Checks**: 43+ security checks across 9 categories
+- **Comprehensive Security Checks**: 50+ security checks across 10 categories
+- **Reporting**: Color-coded console, plain text, interactive HTML (search, filter, risk scores) and JSON export; rebuild a report from JSON with `Convert-adPEASReport` and diff two scans with `Compare-adPEASReport`
+- **Incremental Scanning**: The JSON cache is written after every module, so an interrupted scan can still be turned into a report
 - **BloodHound CE Export**: Built-in collector for attack path analysis in BloodHound Community Edition
-- **OPSEC Mode**: Optional stealth mode that skips active testing (Kerberoast/ASREPRoast/BloodHound)
+- **OPSEC Mode**: Optional stealth mode that skips active and noisy steps (hash extraction in Kerberoast/ASREPRoast, the BloodHound collector, the enumeration-heavy checks, and SMB access to GPO/NETLOGON scripts)
 
 ### Use Cases
 

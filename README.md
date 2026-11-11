@@ -20,7 +20,7 @@ adPEAS is a PowerShell-based security assessment tool that identifies misconfigu
 
 - **Native Kerberos stack** — AS-REQ/AS-REP, TGS-REQ/TGS-REP, Pass-the-Ticket, PKINIT, all in pure PowerShell
 - **Multiple auth methods** — Password, NT-Hash (OPtH), AES keys (PtK), Certificates (PKINIT & Pass-the-Cert/Schannel), Windows integrated
-- **40+ security checks** across 9 categories with severity scoring
+- **50+ security checks** across 10 categories with severity scoring
 - **Interactive HTML reports** with search, filtering, risk scores, and tooltips
 - **JSON export** for offline report conversion, incremental scanning, and scan comparison
 - **BloodHound CE collector** — built-in data collection for attack path analysis
@@ -41,7 +41,7 @@ adPEAS is a PowerShell-based security assessment tool that identifies misconfigu
 | **Reporting** | Console (color-coded), plain text, interactive HTML, JSON export |
 | **Offensive Ops** | Kerberoasting, AS-REP Roasting, Golden/Silver/Diamond Tickets, RBCD, Shadow Credentials, Pass-the-Ticket |
 | **BloodHound** | Built-in BloodHound CE collector (ZIP export) |
-| **OPSEC Mode** | Skip active testing (Kerberoast, ASREPRoast, BloodHound, SMB to file servers named by GPO scripts) |
+| **OPSEC Mode** | Skip active and noisy steps: hash extraction in Kerberoast/ASREPRoast, the BloodHound collector, the enumeration-heavy checks (owners, LAPS config, outdated systems, password-in-description, share hunting) and all SMB access to GPO/NETLOGON scripts |
 | **Deployment** | Single `.ps1` file, no RSAT, no external modules, works offline and air-gapped |
 
 ---
@@ -51,7 +51,7 @@ adPEAS is a PowerShell-based security assessment tool that identifies misconfigu
 - **OS**: Windows 10/11, Windows Server 2016/2019/2022/2025
 - **PowerShell**: 5.1+ (Windows PowerShell)
 - **.NET Framework**: 4.5+ (included in Windows)
-- **Network**: LDAP (389), LDAPS (636), Kerberos (88), SMB (445)
+- **Network**: LDAP (389), LDAPS (636), Kerberos (88), SMB (445); Global Catalog (3268/3269) for forest-wide lookups; HTTP/HTTPS (80/443) for AD CS web-enrollment and Exchange probes. SMB (445) reaches domain computers for the GPO/NETLOGON script and (opt-in) share checks
 
 No ActiveDirectory module, RSAT, or external PowerShell modules required.
 
@@ -63,10 +63,10 @@ No ActiveDirectory module, RSAT, or external PowerShell modules required.
 
 | File | Size | Use Case |
 |------|------|----------|
-| `adPEAS.ps1` | ~4.5 MB | Development, debugging, code review |
-| `adPEAS_min.ps1` | ~3-4 MB | Regular use with smaller footprint |
-| `adPEAS_ultra.ps1` | ~3 MB | Minimal size, no comments |
-| `adPEAS_obf.ps1` | <1 MB | Smallest size, obfuscated for transfer |
+| `adPEAS.ps1` | ~8 MB | Development, debugging, code review |
+| `adPEAS_min.ps1` | ~5.5 MB | Regular use with smaller footprint |
+| `adPEAS_ultra.ps1` | ~5 MB | Minimal size, no comments |
+| `adPEAS_obf.ps1` | ~1.2 MB | Smallest size, obfuscated for transfer |
 
 All four versions are functionally identical. Choose based on your deployment scenario.
 
@@ -78,7 +78,7 @@ cd adPEAS
 
 ### Building from Source
 
-The `main` branch always carries a current build of all four variants, rebuilt with every fix and feature, so the raw URLs above serve the newest code. Those builds carry a development version string (`2.5.1+20260917-1759`). Every tagged [GitHub Release](https://github.com/61106960/adPEAS/releases) has the four stable builds attached as downloadable assets, with a clean version string (`2.5.1`) — use those if you need a known, citable version. To build from source yourself:
+The `main` branch always carries a current build of all four variants, rebuilt with every fix and feature, so the raw URLs above serve the newest code. Those builds carry a development version string (`2.10.0+20261111-1947`). Every tagged [GitHub Release](https://github.com/61106960/adPEAS/releases) has the four stable builds attached as downloadable assets, with a clean version string (`2.10.0`) — use those if you need a known, citable version. To build from source yourself:
 
 ```powershell
 git clone https://github.com/61106960/adPEAS.git
@@ -162,7 +162,7 @@ Connect-adPEAS -Domain "contoso.com" -Username "admin" -AES256Key "4a3b2c1d5e6f.
 Connect-adPEAS -Domain "contoso.com" -Certificate "user.pfx"
 
 # Pass-the-Cert / Schannel (LDAPS, no Kerberos)
-Connect-adPEAS -Domain "contoso.com" -Certificate "user.pfx" -PassTheCert
+Connect-adPEAS -Domain "contoso.com" -Certificate "user.pfx" -ForcePassTheCert
 
 # LDAPS
 Connect-adPEAS -Domain "contoso.com" -UseWindowsAuth -UseLDAPS
@@ -192,13 +192,14 @@ Compare-adPEASReport -Baseline ".\scan_q1.json" -Current ".\scan_q2.json" -Outpu
 |--------|-------------|
 | `Domain` | Domain configuration, trusts, password policy, LDAP signing, SMB signing |
 | `Creds` | Kerberoast, ASREPRoast, LAPS & BitLocker recovery key access, credential exposure in SYSVOL, credentials kept by deleted objects |
-| `Rights` | ACLs, DCSync, password reset rights, dangerous OU permissions |
+| `Rights` | ACLs, DCSync, password reset rights, dangerous OU permissions, GPO user-rights and logon restrictions, LAPS read permissions, add-computer rights, critical object ACLs |
 | `Delegation` | Unconstrained, constrained, resource-based constrained delegation |
 | `ADCS` | Certificate templates and CAs: ESC1-ESC5, ESC8, ESC9, ESC13, ESC14, ESC15 (ESC10 via the GPO check). The escalation paths that need administrative access to the CA host are out of scope - see [Security Checks](docs/04-Security-Checks.md) |
-| `Accounts` | Privileged accounts, protected users, service accounts, SID history |
+| `Accounts` | Privileged accounts, protected users, service accounts, SID history, authentication policy silos, RODC password replication |
 | `GPO` | GPO permissions, local group membership, scheduled tasks, scripts, dangerous registry settings (WDigest, AlwaysInstallElevated, OneLogon/Zerologon, …) and Point and Print printer driver policies (PrintNightmare) deployed via GPO |
-| `Computer` | LAPS, outdated systems, infrastructure servers |
+| `Computer` | LAPS, outdated systems, infrastructure servers, computer password age, network map |
 | `Application` | Exchange, SCCM, SCOM infrastructure |
+| `Shares` | Share hunting across domain computers (opt-in: only with `-Module Shares`, connects over SMB to every Windows computer) |
 | `Bloodhound` | BloodHound CE data collection |
 
 Run specific modules:
