@@ -475,8 +475,10 @@ Set-CertificateTemplate -Identity "SmartcardUser" -AddSmartcardLogon
 # Backup template before modification
 Set-CertificateTemplate -Identity "WebServer" -Export "C:\Backup\WebServer.json"
 
-# Restore template from backup
-Set-CertificateTemplate -Import "C:\Backup\WebServer.json"
+# Restore template from backup. Note: -Identity is currently mandatory even with
+# -Import (which reads the names from the file and does not use it), so pass any
+# value to satisfy the parameter.
+Set-CertificateTemplate -Identity "WebServer" -Import "C:\Backup\WebServer.json"
 
 # Cleanup: Revert ESC1 changes
 Set-CertificateTemplate -Identity "WebServer" -DisableEnrolleeSuppliesSubject -AddManagerApproval
@@ -515,14 +517,21 @@ Requests a certificate from an ADCS Certificate Authority via the `/certsrv/` We
 
 ```powershell
 Request-ADCSCertificate
-    -TemplateName <String>
+    [-TemplateName <String>]
     [-CAServer <String>]
+    [-CAName <String>]
     [-Impersonate <String>]
     [-Subject <String>]
     [-UPN <String>]
     [-DNS <String[]>]
+    [-SID <String>] [-NoSID]
+    [-ApplicationPolicies <String[]>]
     [-AlternativeNames <String[]>]
     [-KeyLength <Int> {1024|2048|4096}]
+    [-Method <String> {Auto|Web|COM}]
+    [-Port <Int>]
+    [-RetrieveID <Int>] [-KeyFile <String>]
+    [-OnBehalfOf <String>] [-PFX <String>] [-PFXPassword <String>]
     [-OutputPath <String>]
     [-Credential <PSCredential>]
     [-ModifyTemplate]
@@ -534,17 +543,29 @@ Request-ADCSCertificate
     [-Server <String>]
 ```
 
+`-TemplateName` is not mandatory: it is omitted when retrieving a previously issued request with `-RetrieveID`.
+
 ### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `-TemplateName` | String | Certificate template name (e.g., "User", "WebServer") |
-| `-CAServer` | String | FQDN of the CA server. If not specified, auto-discovers from AD. |
+| `-TemplateName` | String | Certificate template name (e.g., "User", "WebServer"). Optional; omitted with `-RetrieveID`. |
+| `-CAServer` | String | FQDN of the CA host. If not specified, auto-discovers from AD. |
+| `-CAName` | String | The CA's common name, when the host runs more than one CA. |
 | `-Impersonate` | String | Username, UPN, or FQDN to impersonate. Auto-resolves Subject and SAN. |
 | `-Subject` | String | Certificate subject name. "CN=" prefix added automatically if omitted. |
 | `-UPN` | String | User Principal Name for SAN (e.g., "admin@contoso.com") |
 | `-DNS` | String[] | DNS hostnames for SAN (e.g., "dc01.contoso.com") |
+| `-SID` / `-NoSID` | String / Switch | Set the szOID_NTDS_CA_SECURITY_EXT SID, or omit it (ESC9/ESC16 context). |
+| `-ApplicationPolicies` | String[] | Application-policy OIDs to place in the request (ESC13/ESC15). |
+| `-AlternativeNames` | String[] | Additional subject alternative names. |
 | `-KeyLength` | Int | RSA key length in bits. Default: 2048. |
+| `-Method` | String | How to submit the request: `Auto` (default), `Web` (certsrv) or `COM` (DCOM/RPC). |
+| `-Port` | Int | Port for the web-enrollment endpoint. |
+| `-RetrieveID` | Int | Retrieve a previously submitted request by its request ID (pending requests). |
+| `-KeyFile` | String | Private-key file to pair with a retrieved request. |
+| `-OnBehalfOf` | String | ESC3: request on behalf of another principal using an enrollment-agent certificate. |
+| `-PFX` / `-PFXPassword` | String | The enrollment-agent certificate (and its password) used with `-OnBehalfOf`. |
 | `-OutputPath` | String | Path for PFX file. Default: auto-generated from subject. |
 | `-Credential` | PSCredential | Credentials for HTTP authentication against certsrv. |
 | `-ModifyTemplate` | Switch | ESC4: Temporarily modify template, request cert, then restore. |
@@ -552,6 +573,8 @@ Request-ADCSCertificate
 | `-NoPassword` | Switch | Export PFX without password protection. |
 | `-PassThru` | Switch | Return result object instead of console output. |
 | `-Force` | Switch | Overwrite existing PFX file without prompting. |
+
+If neither `Web` nor `COM` is forced, `-Method Auto` tries the web-enrollment endpoint and falls back to the COM/RPC (DCOM) interface.
 
 ### CA Auto-Discovery
 
@@ -1058,7 +1081,7 @@ With `-PassThru`, returns an object with `Operation`, `Object`, `NewDistinguishe
 
 ## New-DomainUser
 
-Creates a new user account in Active Directory via DirectoryEntry.
+Creates a new user account in Active Directory via an LDAP `AddRequest` on `$Script:LdapConnection`. (A `DirectoryEntry` is used only as a fallback for setting the initial password, not to create the object.)
 
 ### Syntax
 
@@ -1138,7 +1161,7 @@ Password (SAVE THIS!)                        K8#mP2@xL9!nQ4$wR7
 
 ## New-DomainComputer
 
-Creates a new computer account in Active Directory via DirectoryEntry.
+Creates a new computer account in Active Directory via an LDAP `AddRequest` on `$Script:LdapConnection`. (A `DirectoryEntry` is used only as a fallback for setting the initial password.)
 
 ### Syntax
 
@@ -1223,7 +1246,7 @@ Password (SAVE THIS!)                        X9@kL2#mP5!nQ8$wR3
 
 ## New-DomainGroup
 
-Creates a new group object in Active Directory via DirectoryEntry.
+Creates a new group object in Active Directory via an LDAP `AddRequest` on `$Script:LdapConnection`.
 
 ### Syntax
 
@@ -1411,7 +1434,7 @@ GPT.INI                                      \\dc01.contoso.com\SYSVOL\contoso.c
 
 - GPO is created without any settings (empty policy)
 - Use `Set-DomainGPO` or GPMC to configure settings
-- Link GPO to OUs using `Set-DomainGPO -Link` or GPMC
+- Link GPO to OUs using `Set-DomainGPO -LinkTo` or GPMC
 - If SYSVOL creation fails, the AD object is still created but GPO will appear broken in GPMC
 
 ---
@@ -1425,7 +1448,7 @@ GPT.INI                                      \\dc01.contoso.com\SYSVOL\contoso.c
 Set-DomainUser -Identity "svc_backup" -SetSPN "HTTP/fake.contoso.com"
 
 # Kerberoast the account
-Invoke-Kerberoast -Identity "svc_backup"
+Invoke-Kerberoast -SAMAccountName "svc_backup"
 
 # Cleanup
 Set-DomainUser -Identity "svc_backup" -ClearSPN "HTTP/fake.contoso.com"
@@ -1438,7 +1461,7 @@ Set-DomainUser -Identity "svc_backup" -ClearSPN "HTTP/fake.contoso.com"
 Set-DomainUser -Identity "targetuser" -DontReqPreauth
 
 # Roast the account
-Invoke-ASREPRoast -Identity "targetuser"
+Invoke-ASREPRoast -SAMAccountName "targetuser"
 
 # Cleanup
 Set-DomainUser -Identity "targetuser" -ClearDontReqPreauth
@@ -1557,7 +1580,7 @@ Set-DomainGroup -Identity "Domain Admins" -RemoveMember "attacker"
 
 ## PassThru for Scripting
 
-All Set-* functions support `-PassThru` for programmatic use:
+Most Set-* functions support `-PassThru` for programmatic use (the exception is `Set-CertificateTemplate`, which has no `-PassThru`; it supports `-WhatIf` via `SupportsShouldProcess`):
 
 ```powershell
 $result = Set-DomainUser -Identity "target" -SetSPN "HTTP/test" -PassThru
