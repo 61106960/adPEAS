@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.10.1] - 2026-11-12
+
+### Added
+
+- **`Invoke-S4U`, S4U from a secret or a TGT, beyond the two fixed recipes.** It runs on
+  the same core as `Invoke-ConstrainedDelegation` and `Invoke-RBCD` and adds what they could
+  not do. Without `-TargetSPN` it performs S4U2Self alone: a ticket for the impersonated
+  user to the service account itself, encrypted with that account's key, so
+  `-AlternateService` (a full SPN here) turns it into a ticket to any service of the
+  account - for a computer account, `cifs/<host>` as an administrator. `-Ticket` takes the
+  service account's TGT as a .kirbi or ccache, file path or Base64, instead of a secret;
+  account and realm come from the ticket. `-EvidenceTicket` takes a forwardable service
+  ticket from the user to the service account in place of S4U2Self - constrained delegation
+  without protocol transition, where the KDC's own S4U2Self ticket is not forwardable.
+  `-ResourceBased` for RBCD, `-PTT`, and `-OutputKirbi`, which also writes each substituted
+  ticket. A request that cannot be served fails before the first Kerberos request. Listed
+  in `Get-adPEASHelp`, documented in docs/08.
+
+### Changed
+
+- **The documentation matches the current tool.** Every user-facing document under docs/
+  was checked against the code: wrong parameters, outputs, error texts and examples are
+  corrected, and the functions added since 2.0 are documented - the offensive helpers, the
+  Set-module syntax tables, the authentication methods and the troubleshooting texts.
+
+### Fixed
+
+- **S4U2Self works against a domain controller.** The PA-FOR-USER checksum was computed as
+  a bare HMAC-MD5 of the data. MS-SFU defines it as the keyed checksum -138 with key usage
+  17, keyed with the TGT session key, and the KDC answered every S4U2Self with
+  KRB_AP_ERR_MODIFIED - `Invoke-ConstrainedDelegation` and `Invoke-RBCD` had not worked
+  against a real KDC.
+- **RBCD written by adPEAS takes effect.** `Set-DomainComputer`/`Set-DomainUser -AddRBCD`
+  and `Invoke-RBCD`'s auto mode wrote each principal with the generic bit GenericAll
+  (`GA`). The KDC honours no generic bit in `msDS-AllowedToActOnBehalfOfOtherIdentity`, so
+  the entry granted nothing and S4U2Proxy failed with KDC_ERR_BADOPTION. The entry now
+  carries `0x000F01FF` (`CCDCLCSWRPWPDTLOCRSDRCWDWO`), the mask
+  `Set-ADComputer -PrincipalsAllowedToDelegateToAccount` writes. An existing `GA`-only entry
+  for the same principal is rewritten instead of being reported as already present.
+- **S4U tickets are usable whatever keys the target has.** The KRB-CRED labelled the session
+  key with the ticket's encryption type, so a target with RC4 keys only - which still gets
+  an AES session key - received an unusable ticket. The SPN also went in as one name
+  component without the ticket's flags and times, and `-AlternateService` rewrote the
+  KRB-CRED but not the service name inside the ticket.
+- **RBCD entries that grant nothing are reported as inert.** An entry with generic rights
+  only names a principal and lets it delegate nothing, yet the check rated it like a working
+  one - a broad group on it made the row a finding, a domain controller as the resource did
+  the same - and the BloodHound collector drew an `AllowedToAct` edge for it. Such an entry
+  is now shown as `<name> [inert: generic rights only]`, its principal is not assessed, a
+  descriptor of such entries only is a note, and the collector draws no edge. A domain
+  controller whose descriptor lets nobody delegate, inert or empty, is no longer reported as
+  a delegation target.
+- **`Set-CertificateTemplate -Import` no longer asks for `-Identity`.** The import restores
+  the templates named in the backup file and never read `-Identity`, which was mandatory
+  anyway; every other operation still requires it, with a clear message.
+- **`Get-adPEASHelp` lists the commands that exist.** It offered `Invoke-S4U` while that was
+  only a file name, and two internal back ends of `Set-DomainUser`/`Set-DomainComputer`;
+  it also missed `Get-DomainWriteAccess`, `Get-DomainDNSZone`, `Get-DomainDNSRecord`,
+  `Move-DomainObject`, `Get-Hash`, `Invoke-PortScan`, `Convert-adPEASReport` and
+  `Compare-adPEASReport`.
+- **`Connect-adPEAS` describes its NTLM path correctly.** It is an explicit NTLM bind on the
+  LDAP connection; the help called it a logon impersonation. An example that bound via
+  SimpleBind with an NT hash is replaced - SimpleBind takes a password.
+- **`Get-DomainGPO -ShowLinkedOU` without `-Identity` warns** instead of being silently
+  ignored.
+
 ## [2.10.0] - 2026-11-11
 
 ### Added

