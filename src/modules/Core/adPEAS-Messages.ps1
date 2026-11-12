@@ -1924,6 +1924,7 @@ function Get-adPEASHelp {
         Show-KeyValue "Invoke-TicketForge" "Golden/Silver/Diamond Tickets"
         Show-KeyValue "Invoke-ConstrainedDelegation" "S4U attack via constrained delegation"
         Show-KeyValue "Invoke-RBCD" "S4U attack via resource-based delegation"
+        Show-KeyValue "Invoke-S4U" "S4U2Self/S4U2Proxy from a secret or a TGT"
         Show-KeyValue "Set-DomainComputer -AddRBCD" "Configure resource-based delegation"
         Show-KeyValue "Set-DomainUser -AddShadowCredential" "Shadow Credentials"
         Show-KeyValue "Request-ADCSCertificate" "Request ADCS certificate"

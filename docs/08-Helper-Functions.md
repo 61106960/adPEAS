@@ -17,7 +17,7 @@ Helper functions provide supporting functionality for core operations and securi
 | [Credential Decryption](#credential-decryption) | ConvertFrom-GPPPassword, ConvertFrom-VBE |
 | [Testing Functions](#testing-functions) | Invoke-Kerberoast, Invoke-ASREPRoast |
 | [ADCS Certificate Enrollment](#adcs-certificate-enrollment) | Request-ADCSCertificate |
-| [Credential and Ticket Operations](#credential-and-ticket-operations) | Invoke-DCSync, Invoke-PasswordSpray, Invoke-TicketForge, Invoke-ConstrainedDelegation, Invoke-RBCD |
+| [Credential and Ticket Operations](#credential-and-ticket-operations) | Invoke-DCSync, Invoke-PasswordSpray, Invoke-TicketForge, Invoke-ConstrainedDelegation, Invoke-RBCD, Invoke-S4U |
 | [LAPS Utilities](#laps-utilities) | Get-LAPSGPOConfig, Get-OUPermissions |
 | [GPO Utilities](#gpo-utilities) | Get-GPOLinkage |
 | [Network Utilities](#network-utilities) | Invoke-PortScan, Invoke-SMBAccess, Resolve-adPEASName |
@@ -828,7 +828,28 @@ Resource-based constrained-delegation abuse. Manual mode uses a service account 
 | `-OutputKirbi` / `-PTT` | String / Switch | Write a .kirbi, and/or inject into the session |
 | `-Domain` / `-Server` | | Target |
 
-> `Invoke-S4U.ps1` defines `Invoke-ConstrainedDelegation` and `Invoke-RBCD`; there is no function named `Invoke-S4U`. `Request-ServiceTicket -S4U2Self`/`-S4U2Proxy` exposes the individual S4U steps for lower-level use.
+### Invoke-S4U
+
+The general S4U command, on the same core as the two above. In addition it covers S4U2Self alone, a TGT instead of a secret, an evidence ticket instead of S4U2Self (constrained delegation without protocol transition), and resource-based delegation.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-ServiceAccount` + one of `-ServicePassword` / `-ServiceCredential` / `-ServiceNTHash` / `-ServiceAES256Key` / `-ServiceAES128Key` | | The service account and its secret |
+| `-Ticket` | String | Instead: the service account's TGT as a `.kirbi` (KRB-CRED) or ccache, file path or Base64. The account, and the domain unless `-Domain` is given, come from the ticket |
+| `-ImpersonateUser` | String | The user to impersonate (defaults to the client of `-EvidenceTicket`) |
+| `-TargetSPN` | String | The service to reach through S4U2Proxy. Without it only S4U2Self is performed: a ticket for the user to the service account itself |
+| `-EvidenceTicket` | String | A forwardable service ticket user -> service account (`.kirbi`/ccache), used instead of S4U2Self. Needs `-TargetSPN` |
+| `-ResourceBased` | Switch | S4U2Proxy as resource-based constrained delegation. Needs `-TargetSPN` |
+| `-AlternateService` | String[] | Service names to substitute in the final ticket: a class (`cifs`, combined with the host of `-TargetSPN`) or a full SPN (`cifs/web01.contoso.com`, required without `-TargetSPN`). The name is rewritten in the ticket itself, not only in the KRB-CRED |
+| `-OutputKirbi` / `-PTT` | String / Switch | Write a .kirbi (substituted tickets are written next to it), and/or inject into the session |
+| `-Domain` / `-Server` | | Target; default to the ticket realm / the session |
+
+```powershell
+# S4U2Self alone from a computer account's TGT, as a CIFS ticket to that host
+Invoke-S4U -Ticket .\web01.kirbi -ImpersonateUser Administrator -AlternateService cifs/web01.contoso.com -PTT
+```
+
+> `Request-ServiceTicket -S4U2Self`/`-S4U2Proxy` exposes the individual S4U steps for lower-level use.
 
 ---
 
