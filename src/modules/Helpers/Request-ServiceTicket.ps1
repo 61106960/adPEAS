@@ -287,7 +287,14 @@ function Request-ServiceTicket {
                 $authPkgBytes = [System.Text.Encoding]::UTF8.GetBytes("Kerberos")
 
                 $checksumData = $nameTypeBytes + $nameBytes + $realmBytes + $authPkgBytes
-                $checksumValue = Get-HMACMD5 -Key $SessionKey -Data $checksumData
+                # MS-SFU 2.2.1: KERB_CHECKSUM_HMAC_MD5 (-138) with key usage 17
+                # (KERB_NON_KERB_CKSUM_SALT), keyed with the TGT session key whatever its type.
+                # That is the RFC 4757 keyed checksum - HMAC over MD5(usage || data) with a
+                # key derived from "signaturekey" - not a bare HMAC-MD5 of the data, which the
+                # KDC rejected with KRB_AP_ERR_MODIFIED on every S4U2Self (measured against a
+                # Server 2019 DC). Rubeus computes it the same way, through cryptdll; etype 23
+                # selects the -138 checksum in Get-KerberosChecksumNative.
+                $checksumValue = Get-KerberosChecksumNative -Key $SessionKey -Data $checksumData -KeyUsage 17 -EncryptionType 23
 
                 # Build Checksum structure: { cksumtype [0] Int32, checksum [1] OCTET STRING }
                 $checksumContent = @()
