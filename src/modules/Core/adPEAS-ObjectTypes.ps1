@@ -988,6 +988,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers, users and managed service accounts with msDS-AllowedToActOnBehalfOfOtherIdentity"
             "Which principals are allowed to delegate to the resource"
+            "Whether an entry grants anything: one with generic rights only (GA) is accepted by AD but ignored by the KDC, and is reported as inert"
             "Whether any of them is a broad group, or an identity this domain does not expect to delegate"
             "Whether the resource itself is a Domain Controller"
             "Not tested: who may write the attribute, which decides who can add themselves to it - the ACL and ownership sections answer that"

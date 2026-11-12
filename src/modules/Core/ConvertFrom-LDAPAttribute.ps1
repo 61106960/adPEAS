@@ -970,6 +970,21 @@ function ConvertFrom-LDAPAttribute {
                                 # single one made the whole attribute $null - the resource
                                 # then looked unconfigured.
                                 if (-not $PrincipalName) { $PrincipalName = $Principal }
+
+                                # An entry whose mask holds no specific or standard right -
+                                # generic bits only, such as GA (0x10000000), the form
+                                # Invoke-RBCDOperation wrote until 2026-11-12 - names the
+                                # principal and grants it nothing. AD stores this attribute as
+                                # plain bytes and maps no generic right, and the KDC refused
+                                # S4U2Proxy for such an entry with KDC_ERR_BADOPTION while
+                                # accepting the same principal with 0x000F01FF (measured
+                                # against a Server 2019 DC). The name stays visible, marked;
+                                # Get-ResourceBasedConstrainedDelegation and the collector
+                                # read the mark. .NET hands the mask over unmapped here, and
+                                # calls 0x000F01FF "GenericAll" - hence the number, not the name.
+                                if ((([int]$ACE.ActiveDirectoryRights) -band 0x00FFFFFF) -eq 0) {
+                                    $PrincipalName = "$PrincipalName [inert: generic rights only]"
+                                }
                                 $rbcdPrincipals += $PrincipalName
                             }
                         }

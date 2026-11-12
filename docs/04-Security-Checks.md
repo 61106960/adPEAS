@@ -731,6 +731,7 @@ Get-ConstrainedDelegation
 **What it checks**:
 - `msDS-AllowedToActOnBehalfOfOtherIdentity` attribute
 - Which accounts can delegate to which resources
+- Entries that grant nothing - a descriptor that allows nobody, or an entry with generic rights only (`GA`), which the KDC does not honour - are reported as inert notes, not findings, on a Domain Controller too
 
 **Security Impact**: RBCD can be exploited if an attacker can modify the `msDS-AllowedToActOnBehalfOfOtherIdentity` attribute on a computer object, enabling impersonation attacks.
 

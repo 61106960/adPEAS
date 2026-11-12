@@ -117,10 +117,6 @@ function Get-ResourceBasedConstrainedDelegation {
                     if (-not $targetName) { continue }
                     if ($dcIdentity.ContainsKey(([string]$targetName).Trim().TrimEnd('$').ToLower())) { $targetIsDC = $true }
                 }
-                if ($targetIsDC) {
-                    $account | Add-Member -NotePropertyName 'rbcdTarget' -NotePropertyValue (
-                        'Domain controller - whoever is listed below can request a ticket to it as any account, including a Domain Admin') -Force
-                }
 
                 # And who is listed. The attribute arrives decoded: one name per Allow ACE
                 # of the security descriptor, or the sentinel below when the descriptor is
@@ -134,6 +130,20 @@ function Get-ResourceBasedConstrainedDelegation {
                 $principals = @()
                 if (-not $undecoded) { $principals = @($rawPrincipals | Where-Object { $_ }) }
                 $emptyDescriptor = ($principals.Count -eq 1 -and ([string]$principals[0]) -eq '[SD present, no Allow ACEs]')
+
+                # An entry the decoder marked inert carries generic rights only. AD accepts
+                # it, the KDC does not honour it (see ConvertFrom-LDAPAttribute): it names a
+                # principal and lets it delegate nothing. A descriptor of such entries only is
+                # a leftover, like one that allows nobody - on a domain controller too, where
+                # it was a finding.
+                $inertPattern = '^(.+) \[inert: generic rights only\]$'
+                $livePrincipals = @($principals | Where-Object { ([string]$_).Trim() -notmatch $inertPattern })
+                $delegatesNobody = $emptyDescriptor -or ($principals.Count -gt 0 -and $livePrincipals.Count -eq 0)
+
+                if ($targetIsDC -and -not $delegatesNobody) {
+                    $account | Add-Member -NotePropertyName 'rbcdTarget' -NotePropertyValue (
+                        'Domain controller - whoever is listed below can request a ticket to it as any account, including a Domain Admin') -Force
+                }
 
                 $rbcdClass = 'Hint'
                 if ($undecoded) {
@@ -150,6 +160,12 @@ function Get-ResourceBasedConstrainedDelegation {
                     foreach ($principal in $principals) {
                         $principalText = ([string]$principal).Trim()
                         if (-not $principalText) { continue }
+
+                        if ($principalText -match $inertPattern) {
+                            $inertName = $Matches[1]
+                            $risks += "${inertName}: none - the entry carries generic rights only, which the KDC does not honour, so it delegates nothing"
+                            continue
+                        }
 
                         # An unresolved SID is a deleted or foreign trustee. Worth naming:
                         # the entry still grants delegation, and nobody can tell from the
@@ -193,10 +209,12 @@ function Get-ResourceBasedConstrainedDelegation {
                     if ($risks.Count -gt 0) {
                         $account | Add-Member -NotePropertyName 'rbcdPrincipalRisk' -NotePropertyValue $risks -Force
                     }
+                    if ($delegatesNobody) { $rbcdClass = 'Note' }
                 }
 
-                # A domain controller as the resource outranks whatever the principals are.
-                if ($targetIsDC) { $rbcdClass = 'Finding' }
+                # A domain controller as the resource outranks whatever the principals are -
+                # as long as the descriptor lets anybody delegate at all.
+                if ($targetIsDC -and -not $delegatesNobody) { $rbcdClass = 'Finding' }
 
                 Show-Object $account -Class $rbcdClass
             }

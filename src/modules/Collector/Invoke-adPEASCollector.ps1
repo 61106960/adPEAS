@@ -1981,6 +1981,10 @@ function Collect-BHComputers {
                 foreach ($ace in $sd.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
                     # A Deny in this descriptor refuses the delegation, it does not grant it.
                     if ($ace.AccessControlType -ne 'Allow') { continue }
+                    # Neither does an Allow with generic rights only: the KDC honours no
+                    # generic bit in this descriptor (see ConvertFrom-LDAPAttribute), so the
+                    # edge would draw a path that does not exist.
+                    if ((([int]$ace.ActiveDirectoryRights) -band 0x00FFFFFF) -eq 0) { continue }
 
                     # Get SID - IdentityReference may be SecurityIdentifier or NTAccount
                     $sidValue = $null
