@@ -1,3 +1,279 @@
+function ConvertFrom-CcacheBytes {
+    <#
+    .SYNOPSIS
+        Parses MIT Kerberos ccache data and returns its TGT credential.
+
+    .DESCRIPTION
+        Returns the TGT (krbtgt/...) credential of the cache, or the first credential when
+        the cache holds no TGT: the raw Ticket bytes, the session key and its type, the
+        client and server principal with their realms, and the ticket times.
+
+        Shared by Import-KerberosTicket (-Ccache, for pass-the-ticket) and Invoke-S4U
+        (-Ticket / -EvidenceTicket, which need the ticket and its session key rather than
+        an import into the logon session). It lived inside Import-KerberosTicket's begin
+        block until Invoke-S4U needed it, so it is top-level now; the logic is unchanged.
+
+    .DESCRIPTION
+        Ccache file format (MIT Kerberos):
+        - Header: version (2 bytes), principal, time offset
+        - Credentials: list of credential entries
+        - Each credential: client, server, keyblock, times, ticket, authdata
+
+    .PARAMETER Bytes
+        The ccache file content (format version 1 to 4).
+
+    .OUTPUTS
+        Hashtable: Ticket, SessionKey, SessionKeyType, ClientName, ClientRealm, ServerName,
+        ServerRealm, AuthTime, StartTime, EndTime, RenewTill.
+
+    .NOTES
+        File format reference: https://web.mit.edu/kerberos/krb5-devel/doc/formats/ccache_file_format.html
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Bytes
+    )
+
+    $bytes = $Bytes
+    $offset = 0
+
+    # Helper functions for reading big-endian values
+    function Read-UInt16BE {
+        param([int]$pos)
+        # Bounds check: need 2 bytes
+        if ($pos + 2 -gt $bytes.Length) {
+            throw "ccache: Read-UInt16BE out of bounds at position $pos"
+        }
+        return ([uint16]$bytes[$pos] -shl 8) -bor $bytes[$pos + 1]
+    }
+
+    function Read-UInt32BE {
+        param([int]$pos)
+        # Bounds check: need 4 bytes
+        if ($pos + 4 -gt $bytes.Length) {
+            throw "ccache: Read-UInt32BE out of bounds at position $pos"
+        }
+        return ([uint32]$bytes[$pos] -shl 24) -bor `
+               ([uint32]$bytes[$pos + 1] -shl 16) -bor `
+               ([uint32]$bytes[$pos + 2] -shl 8) -bor `
+               $bytes[$pos + 3]
+    }
+
+    function Read-Data {
+        param([int]$pos)
+        # Read length (with bounds check from Read-UInt32BE)
+        $len = Read-UInt32BE -pos $pos
+        # Bounds check: ensure data doesn't extend beyond buffer
+        if ($pos + 4 + $len -gt $bytes.Length) {
+            throw "ccache: Read-Data length $len extends beyond data at position $pos"
+        }
+        $data = if ($len -gt 0) { $bytes[($pos + 4)..($pos + 3 + $len)] } else { @() }
+        return @{
+            Length = $len
+            Data = $data
+            NextPos = $pos + 4 + $len
+        }
+    }
+
+    function Read-Principal {
+        param([int]$pos, [int]$version)
+        $result = @{
+            NameType = 0
+            Components = @()
+            Realm = ""
+            NextPos = $pos
+        }
+
+        # Name type (4 bytes)
+        $result.NameType = Read-UInt32BE -pos $pos
+        $pos += 4
+
+        # Component count (4 bytes)
+        $compCount = Read-UInt32BE -pos $pos
+        $pos += 4
+
+        # Realm (only in version 4+, in version 3 it's after components)
+        if ($version -ge 4) {
+            $realmData = Read-Data -pos $pos
+            $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
+            $pos = $realmData.NextPos
+        }
+
+        # Components
+        for ($i = 0; $i -lt $compCount; $i++) {
+            $compData = Read-Data -pos $pos
+            $result.Components += [System.Text.Encoding]::ASCII.GetString($compData.Data)
+            $pos = $compData.NextPos
+        }
+
+        # In version 3, realm comes after components
+        if ($version -lt 4) {
+            $realmData = Read-Data -pos $pos
+            $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
+            $pos = $realmData.NextPos
+        }
+
+        $result.NextPos = $pos
+        return $result
+    }
+
+    # Parse header
+    $version = Read-UInt16BE -pos 0
+    $offset = 2
+    Write-Log "[ConvertFrom-CcacheBytes] Ccache version: $version (0x$($version.ToString('X4')))"
+
+    # Normalize version number (0x0504 = version 4, 0x0503 = version 3, etc.)
+    $versionNum = $version -band 0x00FF
+
+    # Only support ccache version 3 and 4 (modern MIT Kerberos)
+    # Version 1/2 have different structure (pre-2000 MIT Kerberos) and are extremely rare
+    if ($versionNum -lt 3 -or $versionNum -gt 4) {
+        if ($versionNum -eq 1 -or $versionNum -eq 2) {
+            throw "Ccache version $versionNum is not supported (legacy MIT Kerberos format from pre-2000). Please use a modern tool like 'kcc' or 'ticketConverter.py' to convert to version 4 format."
+        }
+        throw "Unsupported ccache version: $versionNum (0x$($version.ToString('X4'))). Only version 3 and 4 are supported."
+    }
+
+    Write-Log "[ConvertFrom-CcacheBytes] Ccache format version: $versionNum"
+
+    # Skip header tags (version 4 only)
+    if ($versionNum -eq 4) {
+        $headerLen = Read-UInt16BE -pos $offset
+        $offset += 2 + $headerLen
+        Write-Log "[ConvertFrom-CcacheBytes] Skipped $headerLen bytes of v4 header tags"
+    }
+
+    # Read default principal
+    $defaultPrinc = Read-Principal -pos $offset -version $versionNum
+    $offset = $defaultPrinc.NextPos
+    Write-Log "[ConvertFrom-CcacheBytes] Default principal: $($defaultPrinc.Components -join '/') @ $($defaultPrinc.Realm)"
+
+    # Parse credentials until end of file
+    $credentials = @()
+    while ($offset -lt $bytes.Length) {
+        try {
+            $cred = @{}
+
+            # Client principal
+            $client = Read-Principal -pos $offset -version $versionNum
+            $cred.ClientRealm = $client.Realm
+            $cred.ClientName = $client.Components -join '/'
+            $offset = $client.NextPos
+
+            # Server principal
+            $server = Read-Principal -pos $offset -version $versionNum
+            $cred.ServerRealm = $server.Realm
+            $cred.ServerName = $server.Components -join '/'
+            $offset = $server.NextPos
+
+            # Keyblock
+            $keyType = Read-UInt16BE -pos $offset
+            $offset += 2
+            if ($versionNum -eq 3) {
+                $offset += 2  # padding in v3
+            }
+            $keyData = Read-Data -pos $offset
+            $cred.KeyType = $keyType
+            $cred.SessionKey = $keyData.Data
+            $offset = $keyData.NextPos
+
+            # Times (4x uint32)
+            $cred.AuthTime = Read-UInt32BE -pos $offset
+            $offset += 4
+            $cred.StartTime = Read-UInt32BE -pos $offset
+            $offset += 4
+            $cred.EndTime = Read-UInt32BE -pos $offset
+            $offset += 4
+            $cred.RenewTill = Read-UInt32BE -pos $offset
+            $offset += 4
+
+            # is_skey (1 byte)
+            $offset += 1
+
+            # Ticket flags (4 bytes)
+            $cred.TicketFlags = Read-UInt32BE -pos $offset
+            $offset += 4
+
+            # Addresses (count + data)
+            $addrCount = Read-UInt32BE -pos $offset
+            $offset += 4
+            for ($i = 0; $i -lt $addrCount; $i++) {
+                $null = Read-UInt16BE -pos $offset  # addrType - skip
+                $offset += 2
+                $addrData = Read-Data -pos $offset
+                $offset = $addrData.NextPos
+            }
+
+            # Authdata (count + data)
+            $authCount = Read-UInt32BE -pos $offset
+            $offset += 4
+            for ($i = 0; $i -lt $authCount; $i++) {
+                $null = Read-UInt16BE -pos $offset  # authType - skip
+                $offset += 2
+                $authData = Read-Data -pos $offset
+                $offset = $authData.NextPos
+            }
+
+            # Ticket
+            $ticketData = Read-Data -pos $offset
+            $cred.Ticket = $ticketData.Data
+            $offset = $ticketData.NextPos
+
+            # Second ticket (for TGS requests)
+            $secondTicketData = Read-Data -pos $offset
+            $offset = $secondTicketData.NextPos
+
+            Write-Log "[ConvertFrom-CcacheBytes] Found credential: $($cred.ServerName) @ $($cred.ServerRealm)"
+            $credentials += $cred
+        }
+        catch {
+            Write-Log "[ConvertFrom-CcacheBytes] Error parsing credential at offset $offset : $_"
+            break
+        }
+    }
+
+    if ($credentials.Count -eq 0) {
+        throw "No credentials found in ccache file"
+    }
+
+    # Find TGT (krbtgt/REALM@REALM)
+    $tgt = $credentials | Where-Object { $_.ServerName -match '^krbtgt/' } | Select-Object -First 1
+
+    if (-not $tgt) {
+        # Fall back to first credential
+        Write-Log "[ConvertFrom-CcacheBytes] No TGT found, using first credential"
+        $tgt = $credentials[0]
+    }
+
+    Write-Log "[ConvertFrom-CcacheBytes] Selected credential: $($tgt.ServerName) @ $($tgt.ServerRealm)"
+    Write-Log "[ConvertFrom-CcacheBytes] Session key type: $($tgt.KeyType), length: $($tgt.SessionKey.Length)"
+    Write-Log "[ConvertFrom-CcacheBytes] Ticket size: $($tgt.Ticket.Length) bytes"
+
+    # Convert Unix timestamps to DateTime (ccache stores times as Unix epoch)
+    $unixEpoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    $AuthTime = if ($tgt.AuthTime -gt 0) { $unixEpoch.AddSeconds($tgt.AuthTime) } else { $null }
+    $StartTime = if ($tgt.StartTime -gt 0) { $unixEpoch.AddSeconds($tgt.StartTime) } else { $null }
+    $EndTime = if ($tgt.EndTime -gt 0) { $unixEpoch.AddSeconds($tgt.EndTime) } else { $null }
+    $RenewTill = if ($tgt.RenewTill -gt 0) { $unixEpoch.AddSeconds($tgt.RenewTill) } else { $null }
+
+    Write-Log "[ConvertFrom-CcacheBytes] Ticket times: Auth=$AuthTime, Start=$StartTime, End=$EndTime, Renew=$RenewTill"
+
+    return @{
+        Ticket = $tgt.Ticket
+        SessionKey = $tgt.SessionKey
+        SessionKeyType = $tgt.KeyType
+        ClientName = $tgt.ClientName
+        ClientRealm = $tgt.ClientRealm
+        ServerName = $tgt.ServerName
+        ServerRealm = $tgt.ServerRealm
+        AuthTime = $AuthTime
+        StartTime = $StartTime
+        EndTime = $EndTime
+        RenewTill = $RenewTill
+    }
+}
+
 function Import-KerberosTicket {
 <#
 .SYNOPSIS
@@ -135,264 +411,8 @@ function Import-KerberosTicket {
         # - Build-KRBCred (for building KRB-CRED structures)
 
         #region Ccache Parser
-
-        function Parse-CcacheBytes {
-            <#
-            .SYNOPSIS
-                Parses MIT Kerberos ccache data and extracts the first TGT as KRB-CRED.
-
-            .DESCRIPTION
-                Ccache file format (MIT Kerberos):
-                - Header: version (2 bytes), principal, time offset
-                - Credentials: list of credential entries
-                - Each credential: client, server, keyblock, times, ticket, authdata
-
-            .NOTES
-                File format reference: https://web.mit.edu/kerberos/krb5-devel/doc/formats/ccache_file_format.html
-            #>
-            param(
-                [byte[]]$Bytes
-            )
-
-            $bytes = $Bytes
-            $offset = 0
-
-            # Helper functions for reading big-endian values
-            function Read-UInt16BE {
-                param([int]$pos)
-                # Bounds check: need 2 bytes
-                if ($pos + 2 -gt $bytes.Length) {
-                    throw "ccache: Read-UInt16BE out of bounds at position $pos"
-                }
-                return ([uint16]$bytes[$pos] -shl 8) -bor $bytes[$pos + 1]
-            }
-
-            function Read-UInt32BE {
-                param([int]$pos)
-                # Bounds check: need 4 bytes
-                if ($pos + 4 -gt $bytes.Length) {
-                    throw "ccache: Read-UInt32BE out of bounds at position $pos"
-                }
-                return ([uint32]$bytes[$pos] -shl 24) -bor `
-                       ([uint32]$bytes[$pos + 1] -shl 16) -bor `
-                       ([uint32]$bytes[$pos + 2] -shl 8) -bor `
-                       $bytes[$pos + 3]
-            }
-
-            function Read-Data {
-                param([int]$pos)
-                # Read length (with bounds check from Read-UInt32BE)
-                $len = Read-UInt32BE -pos $pos
-                # Bounds check: ensure data doesn't extend beyond buffer
-                if ($pos + 4 + $len -gt $bytes.Length) {
-                    throw "ccache: Read-Data length $len extends beyond data at position $pos"
-                }
-                $data = if ($len -gt 0) { $bytes[($pos + 4)..($pos + 3 + $len)] } else { @() }
-                return @{
-                    Length = $len
-                    Data = $data
-                    NextPos = $pos + 4 + $len
-                }
-            }
-
-            function Read-Principal {
-                param([int]$pos, [int]$version)
-                $result = @{
-                    NameType = 0
-                    Components = @()
-                    Realm = ""
-                    NextPos = $pos
-                }
-
-                # Name type (4 bytes)
-                $result.NameType = Read-UInt32BE -pos $pos
-                $pos += 4
-
-                # Component count (4 bytes)
-                $compCount = Read-UInt32BE -pos $pos
-                $pos += 4
-
-                # Realm (only in version 4+, in version 3 it's after components)
-                if ($version -ge 4) {
-                    $realmData = Read-Data -pos $pos
-                    $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
-                    $pos = $realmData.NextPos
-                }
-
-                # Components
-                for ($i = 0; $i -lt $compCount; $i++) {
-                    $compData = Read-Data -pos $pos
-                    $result.Components += [System.Text.Encoding]::ASCII.GetString($compData.Data)
-                    $pos = $compData.NextPos
-                }
-
-                # In version 3, realm comes after components
-                if ($version -lt 4) {
-                    $realmData = Read-Data -pos $pos
-                    $result.Realm = [System.Text.Encoding]::ASCII.GetString($realmData.Data)
-                    $pos = $realmData.NextPos
-                }
-
-                $result.NextPos = $pos
-                return $result
-            }
-
-            # Parse header
-            $version = Read-UInt16BE -pos 0
-            $offset = 2
-            Write-Log "[Parse-CcacheBytes] Ccache version: $version (0x$($version.ToString('X4')))"
-
-            # Normalize version number (0x0504 = version 4, 0x0503 = version 3, etc.)
-            $versionNum = $version -band 0x00FF
-
-            # Only support ccache version 3 and 4 (modern MIT Kerberos)
-            # Version 1/2 have different structure (pre-2000 MIT Kerberos) and are extremely rare
-            if ($versionNum -lt 3 -or $versionNum -gt 4) {
-                if ($versionNum -eq 1 -or $versionNum -eq 2) {
-                    throw "Ccache version $versionNum is not supported (legacy MIT Kerberos format from pre-2000). Please use a modern tool like 'kcc' or 'ticketConverter.py' to convert to version 4 format."
-                }
-                throw "Unsupported ccache version: $versionNum (0x$($version.ToString('X4'))). Only version 3 and 4 are supported."
-            }
-
-            Write-Log "[Parse-CcacheBytes] Ccache format version: $versionNum"
-
-            # Skip header tags (version 4 only)
-            if ($versionNum -eq 4) {
-                $headerLen = Read-UInt16BE -pos $offset
-                $offset += 2 + $headerLen
-                Write-Log "[Parse-CcacheBytes] Skipped $headerLen bytes of v4 header tags"
-            }
-
-            # Read default principal
-            $defaultPrinc = Read-Principal -pos $offset -version $versionNum
-            $offset = $defaultPrinc.NextPos
-            Write-Log "[Parse-CcacheBytes] Default principal: $($defaultPrinc.Components -join '/') @ $($defaultPrinc.Realm)"
-
-            # Parse credentials until end of file
-            $credentials = @()
-            while ($offset -lt $bytes.Length) {
-                try {
-                    $cred = @{}
-
-                    # Client principal
-                    $client = Read-Principal -pos $offset -version $versionNum
-                    $cred.ClientRealm = $client.Realm
-                    $cred.ClientName = $client.Components -join '/'
-                    $offset = $client.NextPos
-
-                    # Server principal
-                    $server = Read-Principal -pos $offset -version $versionNum
-                    $cred.ServerRealm = $server.Realm
-                    $cred.ServerName = $server.Components -join '/'
-                    $offset = $server.NextPos
-
-                    # Keyblock
-                    $keyType = Read-UInt16BE -pos $offset
-                    $offset += 2
-                    if ($versionNum -eq 3) {
-                        $offset += 2  # padding in v3
-                    }
-                    $keyData = Read-Data -pos $offset
-                    $cred.KeyType = $keyType
-                    $cred.SessionKey = $keyData.Data
-                    $offset = $keyData.NextPos
-
-                    # Times (4x uint32)
-                    $cred.AuthTime = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    $cred.StartTime = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    $cred.EndTime = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    $cred.RenewTill = Read-UInt32BE -pos $offset
-                    $offset += 4
-
-                    # is_skey (1 byte)
-                    $offset += 1
-
-                    # Ticket flags (4 bytes)
-                    $cred.TicketFlags = Read-UInt32BE -pos $offset
-                    $offset += 4
-
-                    # Addresses (count + data)
-                    $addrCount = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    for ($i = 0; $i -lt $addrCount; $i++) {
-                        $null = Read-UInt16BE -pos $offset  # addrType - skip
-                        $offset += 2
-                        $addrData = Read-Data -pos $offset
-                        $offset = $addrData.NextPos
-                    }
-
-                    # Authdata (count + data)
-                    $authCount = Read-UInt32BE -pos $offset
-                    $offset += 4
-                    for ($i = 0; $i -lt $authCount; $i++) {
-                        $null = Read-UInt16BE -pos $offset  # authType - skip
-                        $offset += 2
-                        $authData = Read-Data -pos $offset
-                        $offset = $authData.NextPos
-                    }
-
-                    # Ticket
-                    $ticketData = Read-Data -pos $offset
-                    $cred.Ticket = $ticketData.Data
-                    $offset = $ticketData.NextPos
-
-                    # Second ticket (for TGS requests)
-                    $secondTicketData = Read-Data -pos $offset
-                    $offset = $secondTicketData.NextPos
-
-                    Write-Log "[Parse-CcacheBytes] Found credential: $($cred.ServerName) @ $($cred.ServerRealm)"
-                    $credentials += $cred
-                }
-                catch {
-                    Write-Log "[Parse-CcacheBytes] Error parsing credential at offset $offset : $_"
-                    break
-                }
-            }
-
-            if ($credentials.Count -eq 0) {
-                throw "No credentials found in ccache file"
-            }
-
-            # Find TGT (krbtgt/REALM@REALM)
-            $tgt = $credentials | Where-Object { $_.ServerName -match '^krbtgt/' } | Select-Object -First 1
-
-            if (-not $tgt) {
-                # Fall back to first credential
-                Write-Log "[Parse-CcacheBytes] No TGT found, using first credential"
-                $tgt = $credentials[0]
-            }
-
-            Write-Log "[Parse-CcacheBytes] Selected credential: $($tgt.ServerName) @ $($tgt.ServerRealm)"
-            Write-Log "[Parse-CcacheBytes] Session key type: $($tgt.KeyType), length: $($tgt.SessionKey.Length)"
-            Write-Log "[Parse-CcacheBytes] Ticket size: $($tgt.Ticket.Length) bytes"
-
-            # Convert Unix timestamps to DateTime (ccache stores times as Unix epoch)
-            $unixEpoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
-            $AuthTime = if ($tgt.AuthTime -gt 0) { $unixEpoch.AddSeconds($tgt.AuthTime) } else { $null }
-            $StartTime = if ($tgt.StartTime -gt 0) { $unixEpoch.AddSeconds($tgt.StartTime) } else { $null }
-            $EndTime = if ($tgt.EndTime -gt 0) { $unixEpoch.AddSeconds($tgt.EndTime) } else { $null }
-            $RenewTill = if ($tgt.RenewTill -gt 0) { $unixEpoch.AddSeconds($tgt.RenewTill) } else { $null }
-
-            Write-Log "[Parse-CcacheBytes] Ticket times: Auth=$AuthTime, Start=$StartTime, End=$EndTime, Renew=$RenewTill"
-
-            return @{
-                Ticket = $tgt.Ticket
-                SessionKey = $tgt.SessionKey
-                SessionKeyType = $tgt.KeyType
-                ClientName = $tgt.ClientName
-                ClientRealm = $tgt.ClientRealm
-                ServerName = $tgt.ServerName
-                ServerRealm = $tgt.ServerRealm
-                AuthTime = $AuthTime
-                StartTime = $StartTime
-                EndTime = $EndTime
-                RenewTill = $RenewTill
-            }
-        }
-
+        # The ccache parser is the top-level ConvertFrom-CcacheBytes at the head of this
+        # file, shared with Invoke-S4U.
         #endregion
 
         #region KRB-CRED Parser (for kirbi files)
@@ -838,9 +858,9 @@ function Import-KerberosTicket {
             $ccacheBytes = $ccacheResult.Data
             Write-Log "[Import-KerberosTicket] Loaded ccache from $($ccacheResult.Source): $($ccacheBytes.Length) bytes ($($ccacheResult.Format))"
 
-            # Parse the ccache data (need to use bytes, not file path)
-            # We need to modify Parse-CcacheFile to accept bytes or use a temp approach
-            $ccacheData = Parse-CcacheBytes -Bytes $ccacheBytes
+            # Parse the ccache data (the top-level parser takes bytes; ConvertFrom-Base64OrFile
+            # has already checked the version header, so the array is never empty here)
+            $ccacheData = ConvertFrom-CcacheBytes -Bytes $ccacheBytes
 
             # Ccache contains raw ticket data - need to wrap in KRB-CRED
             $TicketBytes = $ccacheData.Ticket
