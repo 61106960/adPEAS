@@ -15,7 +15,7 @@
     anonymous logon). A probe with invalid credentials therefore cannot tell, whatever it
     sends - the probe this module used to run could only ever answer "undetermined".
 
-    The probe logs on with a real identity, three times, each over a TLS connection of its
+    The probe logs on with a real identity, up to four times, each over a connection of its
     own (Test-ExtendedProtection, Resolve-EPAProbeVerdict):
 
     - with the correct binding       the control - if this logon fails, the identity cannot
@@ -32,12 +32,18 @@
     coerced Windows machine, and only such clients remain relayable through it. SSPI
     always sends the pair, so a logon through SSPI cannot tell Required from Accept.
 
-    The identity is the session's (Resolve-EPAProbeIdentity). A password or NT hash given to
-    Connect-adPEAS answers the challenge here, in New-NTLMAuthenticateMessage. A session
-    authenticated as the current Windows user, or no session at all, logs on through SSPI
-    with the current Windows logon. An identity that has no password or NT hash - AES key,
-    certificate, ticket - cannot answer an NTLM challenge, and its endpoints stay
-    undetermined.
+    Where TLS ends at a proxy in front of IIS, the channel binding cannot be verified, and
+    IIS with the Proxy flag and an SPN list checks the service binding instead - the SPN
+    the client named (MsvAvTargetName). Any binding that is not zero passes there, so a
+    fourth logon names another host: rejected means service binding. Plain HTTP can only
+    be protected that way, and is probed with the control and that logon alone.
+
+    The identity is named, never assumed (New-EPAProbeIdentity): a credential, a password or an
+    NT hash given to the call, the identity of the adPEAS session (-UseSession, what the checks
+    pass), or the current Windows logon through SSPI (-UseWindowsAuth). A password or NT hash
+    answers the challenge here, in New-NTLMAuthenticateMessage. An identity that has no password
+    or NT hash - AES key, certificate, ticket - cannot answer an NTLM challenge, and its endpoints
+    stay undetermined.
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -976,20 +982,61 @@ function Split-EPAProbeAccount {
 
 <#
 .SYNOPSIS
-    Chooses the identity the EPA probe logs on with.
+    The current Windows logon as an EPA probe identity, logging on through SSPI.
 .DESCRIPTION
-    The session's own, so the probe answers for the account the scan runs as:
+    The name comes from the SSPI credential itself: under runas /netonly it is the network
+    identity, which the environment does not know; the environment's name is the fallback.
+.PARAMETER Source
+    How this identity was chosen, for the diagnostic.
+#>
+function New-EPASspiIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Source = 'current Windows logon'
+    )
+
+    $currentUser = if ($env:USERDOMAIN) { "$($env:USERDOMAIN)\$($env:USERNAME)" } else { [string]$env:USERNAME }
+    try {
+        Initialize-EPASspiType
+        $sspi = New-Object adPEASNtlmSspi('HTTP/localhost')
+        try {
+            $credentialName = $sspi.CredentialName()
+            if ($credentialName) { $currentUser = $credentialName }
+        }
+        finally { $sspi.Dispose() }
+    }
+    catch {
+        Write-Log "[New-EPASspiIdentity] SSPI credential name not available: $($_.Exception.Message)"
+    }
+    return [PSCustomObject]@{
+        Kind     = 'Sspi'
+        Name     = $currentUser
+        Source   = $Source
+        UserName = $null
+        Domain   = $null
+        NTHash   = $null
+        Reason   = $null
+    }
+}
+
+<#
+.SYNOPSIS
+    The identity of the adPEAS session, as the EPA probe logs on with it.
+.DESCRIPTION
+    The session's own, so the probe answers for the account the scan runs as, against
+    the systems of the AD the session is in:
     - a password given to Connect-adPEAS (Credential, Username/Password): its NT hash
     - an NT hash given to Connect-adPEAS: that hash
     - an AES key, a certificate or a ticket: none - they have nothing to answer an NTLM
       challenge with, and the endpoints stay undetermined
-    - a session as the current Windows user, or no session at all: the current Windows
-      logon, through SSPI
+    - a session as the current Windows user: the current Windows logon, through SSPI
+    - no session: none. The current Windows logon is never used without being asked for
+      (New-EPAProbeIdentity -UseWindowsAuth): run by hand against a host of another
+      organisation, it would hand that host the logon of the tester's own account.
 
-    The session's identity rather than the process's on purpose: the process may run as a
-    local account on a host outside the domain, and a password session has said who it
-    is. A session that forced Kerberos for LDAP still has a password and is probed with
-    it - EPA is a question about NTLM, and only an NTLM logon answers it.
+    A session that forced Kerberos for LDAP still has a password and is probed with it
+    (decided 2026-11-15) - EPA is a question about NTLM, and only an NTLM logon answers it.
 .OUTPUTS
     PSCustomObject with Kind ('Hash', 'Sspi' or 'None'), Name, Source, UserName, Domain,
     NTHash (Kind Hash only) and Reason (Kind None only).
@@ -998,16 +1045,20 @@ function Resolve-EPAProbeIdentity {
     [CmdletBinding()]
     param()
 
-    $context = $Script:LDAPContext
-    $parameterSet = $null
-    $sessionDomain = ''
-    if ($context) {
-        $parameterSet = [string]$context['ParameterSet']
-        $sessionDomain = [string]$context['Domain']
+    $none = {
+        param([string]$Reason)
+        [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null; Reason = $Reason }
     }
 
+    $context = $Script:LDAPContext
+    if (-not $context) {
+        return (& $none 'there is no adPEAS session (Connect-adPEAS) to take the identity from')
+    }
+    $parameterSet = [string]$context['ParameterSet']
+    $sessionDomain = [string]$context['Domain']
+
     $credential = $null
-    if ($context -and $context['Credential'] -is [System.Management.Automation.PSCredential]) {
+    if ($context['Credential'] -is [System.Management.Automation.PSCredential]) {
         $credential = $context['Credential']
     }
     elseif ($Script:LDAPCredential -is [System.Management.Automation.PSCredential]) {
@@ -1041,45 +1092,142 @@ function Resolve-EPAProbeIdentity {
                 Reason   = $null
             }
         }
-        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
-            Reason = 'the NT hash of the session is not available' }
+        return (& $none 'the NT hash of the session is not available')
     }
 
     # A password session whose credential is gone must not fall through to the Windows
     # logon below: that is another account, and the verdict would be about it.
     if ($parameterSet -in @('UsernamePassword', 'PSCredential')) {
-        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
-            Reason = 'the credential of the session is not available' }
+        return (& $none 'the credential of the session is not available')
     }
 
     if ($parameterSet -in @('AES256', 'AES128', 'Certificate', 'Kirbi', 'Ccache')) {
-        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
-            Reason = "the session authenticated with $parameterSet, which has no password or NT hash to answer an NTLM challenge" }
+        return (& $none "the session authenticated with $parameterSet, which has no password or NT hash to answer an NTLM challenge")
     }
 
-    # The account SSPI logs on as: under runas /netonly it is the network identity, which the
-    # environment does not know; the environment's name is the fallback
-    $currentUser = if ($env:USERDOMAIN) { "$($env:USERDOMAIN)\$($env:USERNAME)" } else { [string]$env:USERNAME }
-    try {
-        Initialize-EPASspiType
-        $sspi = New-Object adPEASNtlmSspi('HTTP/localhost')
-        try {
-            $credentialName = $sspi.CredentialName()
-            if ($credentialName) { $currentUser = $credentialName }
+    # A session as the current Windows user: that logon is the session's identity
+    return (New-EPASspiIdentity -Source 'session, current Windows logon')
+}
+
+<#
+.SYNOPSIS
+    Builds the EPA probe identity from what the caller named.
+.DESCRIPTION
+    -TestEPA logs on to every NTLM endpoint of its target, so the caller names the identity,
+    exactly one of:
+    - -Credential                     a password, as a PSCredential
+    - -Username with -Password        a password
+    - -Username with -NTHash          an NT hash (32 hex characters)
+    - -UseSession                     the identity of the adPEAS session (Resolve-EPAProbeIdentity)
+    - -UseWindowsAuth                 the current Windows logon, through SSPI
+
+    Nothing named is an error before any connection is made, and so is more than one
+    (decided 2026-11-15). The current Windows logon is never taken without being named:
+    run by hand against a host of another organisation, it would hand that host the logon
+    of the tester's own account. AES keys, certificates and tickets are not offered - NTLM
+    is answered with a password or an NT hash, nothing else.
+
+    A user name without a domain logs on in the target's own domain, the one its NTLM
+    challenge names: the caller gave the credential for that target.
+.OUTPUTS
+    PSCustomObject as Resolve-EPAProbeIdentity returns it.
+#>
+function New-EPAProbeIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Username,
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$Password,
+
+        [Parameter(Mandatory = $false)]
+        [string]$NTHash,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$UseSession,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$UseWindowsAuth
+    )
+
+    $forms = @()
+    if ($PSBoundParameters.ContainsKey('Credential') -and $Credential) { $forms += 'Credential' }
+    if ($PSBoundParameters.ContainsKey('Password')) { $forms += 'Password' }
+    if ($PSBoundParameters.ContainsKey('NTHash')) { $forms += 'NTHash' }
+    if ($UseSession) { $forms += 'UseSession' }
+    if ($UseWindowsAuth) { $forms += 'UseWindowsAuth' }
+
+    if ($forms.Count -eq 0) {
+        if ($PSBoundParameters.ContainsKey('Username')) {
+            throw '-Username needs -Password or -NTHash.'
         }
-        finally { $sspi.Dispose() }
+        throw '-TestEPA logs on to every NTLM endpoint of the target. Name the identity: -Credential, -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth.'
     }
-    catch {
-        Write-Log "[Resolve-EPAProbeIdentity] SSPI credential name not available: $($_.Exception.Message)"
+    if ($forms.Count -gt 1) {
+        throw "-TestEPA takes one identity, got -$($forms -join ', -')."
     }
-    return [PSCustomObject]@{
-        Kind     = 'Sspi'
-        Name     = $currentUser
-        Source   = 'current Windows logon'
-        UserName = $null
-        Domain   = $null
-        NTHash   = $null
-        Reason   = $null
+    if ($forms[0] -in @('Password', 'NTHash') -and [string]::IsNullOrWhiteSpace($Username)) {
+        throw "-$($forms[0]) needs -Username."
+    }
+    if ($forms[0] -in @('Credential', 'UseSession', 'UseWindowsAuth') -and $PSBoundParameters.ContainsKey('Username')) {
+        throw "-Username goes with -Password or -NTHash, not with -$($forms[0])."
+    }
+
+    switch ($forms[0]) {
+        'Credential' {
+            if ([string]::IsNullOrEmpty($Credential.UserName)) { throw '-Credential carries no user name.' }
+            $account = Split-EPAProbeAccount -Account $Credential.UserName
+            return [PSCustomObject]@{
+                Kind     = 'Hash'
+                Name     = $Credential.UserName
+                Source   = 'given credential'
+                UserName = $account.UserName
+                Domain   = $account.Domain
+                NTHash   = [byte[]](Get-NTHashFromPassword -PlainPassword $Credential.GetNetworkCredential().Password)
+                Reason   = $null
+            }
+        }
+        'Password' {
+            $account = Split-EPAProbeAccount -Account $Username
+            return [PSCustomObject]@{
+                Kind     = 'Hash'
+                Name     = $Username
+                Source   = 'given password'
+                UserName = $account.UserName
+                Domain   = $account.Domain
+                NTHash   = [byte[]](Get-NTHashFromPassword -PlainPassword $Password)
+                Reason   = $null
+            }
+        }
+        'NTHash' {
+            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { throw '-NTHash takes 32 hex characters.' }
+            $hashBytes = New-Object byte[] 16
+            for ($i = 0; $i -lt 16; $i++) { $hashBytes[$i] = [Convert]::ToByte($NTHash.Substring($i * 2, 2), 16) }
+            $account = Split-EPAProbeAccount -Account $Username
+            return [PSCustomObject]@{
+                Kind     = 'Hash'
+                Name     = $Username
+                Source   = 'given NT hash'
+                UserName = $account.UserName
+                Domain   = $account.Domain
+                NTHash   = $hashBytes
+                Reason   = $null
+            }
+        }
+        'UseSession' {
+            if (-not $Script:LDAPContext) {
+                throw '-UseSession needs an adPEAS session - run Connect-adPEAS first, or name the identity with -Credential, -Username with -Password or -NTHash, or -UseWindowsAuth.'
+            }
+            return (Resolve-EPAProbeIdentity)
+        }
+        'UseWindowsAuth' {
+            return (New-EPASspiIdentity -Source 'current Windows logon')
+        }
     }
 }
 
@@ -1106,10 +1254,41 @@ function Open-EPAProbeConnection {
         [int]$Port,
 
         [Parameter(Mandatory = $true)]
-        [int]$TimeoutSeconds
+        [int]$TimeoutSeconds,
+
+        # Plain HTTP: no TLS, so no channel binding either
+        [Parameter(Mandatory = $false)]
+        [switch]$Plain
     )
 
     $timeoutMs = $TimeoutSeconds * 1000
+
+    if ($Plain) {
+        $client = New-Object System.Net.Sockets.TcpClient
+        try {
+            $connect = $client.BeginConnect($HostName, $Port, $null, $null)
+            if (-not $connect.AsyncWaitHandle.WaitOne($timeoutMs)) {
+                throw "TCP connection to ${HostName}:$Port timed out"
+            }
+            $client.EndConnect($connect)
+            $client.NoDelay = $true
+            $network = $client.GetStream()
+            $network.ReadTimeout = $timeoutMs
+            $network.WriteTimeout = $timeoutMs
+            return [PSCustomObject]@{
+                Client         = $client
+                Stream         = $network
+                ChannelBinding = $null
+            }
+        }
+        catch {
+            $failure = $_
+            try { $client.Close() }
+            catch { Write-Log "[Open-EPAProbeConnection] Closing the failed connection: $($_.Exception.Message)" }
+            throw $failure
+        }
+    }
+
     # TLS 1.0 to 1.2 first, which every .NET Framework names; the operating system's own
     # choice second, for a server that speaks nothing older than TLS 1.3.
     $protocolChoices = @(
@@ -1327,7 +1506,11 @@ function Send-EPAProbeRequest {
                     (UnboundForm Absent); SSPI cannot, it sends the zero binding of a
                     Windows client without a channel (UnboundForm Zero)
     - Wrong         the binding of a channel the probe is not on
+    - ForeignSpn    the binding of Bound, but MsvAvTargetName names another host - the
+                    logon only service binding (IIS Proxy flag with an SPN list) rejects
     - ChallengeOnly stop after the challenge; the server facts it carries, no logon
+    Over plain HTTP there is no channel: Bound and ForeignSpn carry a random binding that
+    is not zero, as a client behind a TLS-terminating proxy does.
 .OUTPUTS
     PSCustomObject with Binding, UnboundForm, StatusCode (of the answer to the Type3,
     $null if none came), Type2Result and Error.
@@ -1342,7 +1525,7 @@ function Invoke-EPAProbeHandshake {
         $Identity,
 
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Bound', 'Unbound', 'Wrong', 'ChallengeOnly')]
+        [ValidateSet('Bound', 'Unbound', 'Wrong', 'ForeignSpn', 'ChallengeOnly')]
         [string]$Binding,
 
         [Parameter(Mandatory = $true)]
@@ -1363,18 +1546,36 @@ function Invoke-EPAProbeHandshake {
     $connection = $null
     $sspi = $null
     try {
-        $connection = Open-EPAProbeConnection -HostName $Uri.Host -Port $Uri.Port -TimeoutSeconds $TimeoutSeconds
+        $plain = ($Uri.Scheme -eq 'http')
+        $connection = Open-EPAProbeConnection -HostName $Uri.Host -Port $Uri.Port -TimeoutSeconds $TimeoutSeconds -Plain:$plain
         $hostHeader = if ($Uri.IsDefaultPort) { $Uri.Host } else { "$($Uri.Host):$($Uri.Port)" }
+        # The SPN the client means to reach. ForeignSpn names another host - what a logon
+        # relayed from a client that authenticated to the attacker carries
         $targetName = "HTTP/$($Uri.Host)"
+        if ($Binding -eq 'ForeignSpn') {
+            $targetName = 'HTTP/epa-probe-' + ([BitConverter]::ToString((Get-NTLMRandomBytes -Count 4)) -replace '-', '').ToLowerInvariant() + '.invalid'
+        }
 
+        # Plain HTTP has no channel. There the control and the foreign-SPN logon carry a
+        # binding that is not zero - what a client behind a TLS-terminating proxy sends,
+        # the case an IIS with the Proxy flag is built for - and the zero binding of a
+        # client without a channel is what the probe tests against it.
+        $randomBinding = {
+            $applicationData = [byte[]]([System.Text.Encoding]::ASCII.GetBytes('tls-server-end-point:') + (Get-NTLMRandomBytes -Count 32))
+            New-SecChannelBindings -ApplicationData $applicationData
+        }
         $bindingStruct = $null
-        if ($Binding -eq 'Bound') {
-            if (-not $connection.ChannelBinding) { throw 'the TLS channel offered no channel binding' }
-            $bindingStruct = $connection.ChannelBinding
+        if ($Binding -in @('Bound', 'ForeignSpn')) {
+            if ($plain) {
+                $bindingStruct = & $randomBinding
+            }
+            else {
+                if (-not $connection.ChannelBinding) { throw 'the TLS channel offered no channel binding' }
+                $bindingStruct = $connection.ChannelBinding
+            }
         }
         elseif ($Binding -eq 'Wrong') {
-            $applicationData = [byte[]]([System.Text.Encoding]::ASCII.GetBytes('tls-server-end-point:') + (Get-NTLMRandomBytes -Count 32))
-            $bindingStruct = New-SecChannelBindings -ApplicationData $applicationData
+            $bindingStruct = & $randomBinding
         }
 
         $useSspi = ($Identity.Kind -eq 'Sspi') -and ($Binding -ne 'ChallengeOnly')
@@ -1418,10 +1619,15 @@ function Invoke-EPAProbeHandshake {
             if ($bindingStruct) {
                 $bindingHash = Get-NTLMChannelBindingHash -ApplicationData (Get-ChannelBindingApplicationData -SecChannelBindings $bindingStruct)
             }
-            # The domain in the form the server names it, when it is the server's own
+            # The domain in the form the server names it, when it is the server's own; a
+            # bare user name (not a UPN) logs on in the domain the challenge names - the
+            # caller gave the credential for this target
             $domain = $Identity.Domain
             if ($domain -and $type2.NbDomainName -and
                 ($domain -ieq $type2.DnsDomainName -or $domain -ieq $type2.NbDomainName)) {
+                $domain = $type2.NbDomainName
+            }
+            elseif (-not $domain -and $Identity.UserName -notmatch '@' -and $type2.NbDomainName) {
                 $domain = $type2.NbDomainName
             }
             $authenticateParams = @{
@@ -1453,47 +1659,61 @@ function Invoke-EPAProbeHandshake {
 
 <#
 .SYNOPSIS
-    Reads the three logons of the EPA probe as a verdict.
+    Reads the logons of the EPA probe as a verdict.
 .DESCRIPTION
     A logon counts as accepted when it is answered with anything but 401: a 200, a 403
     or a 500 all come from past the authentication, and which one depends on the
     endpoint and the account, not on EPA. A 502, 503 or 504 counts as no answer.
 
-    What IIS does in each mode (measured, Exchange and AD CS web enrollment):
+    What IIS does over HTTPS (measured, Exchange and AD CS web enrollment; "own SPN" is
+    MsvAvTargetName naming the server, as every logon but ForeignSpn does):
 
-                          correct binding   no binding pair   zero binding   foreign binding
-        Require           accepted          rejected          rejected       rejected
-        Allow (Accept)    accepted          accepted          rejected       rejected
-        None (Off)        accepted          accepted          accepted       accepted
+                         correct      no binding   zero        foreign      correct binding,
+                         binding      pair         binding     binding      foreign SPN
+        Require          accepted     rejected     rejected    rejected     accepted
+        Allow (Accept)   accepted     accepted     rejected    rejected     accepted
+        None (Off)       accepted     accepted     accepted    accepted     accepted
+        Require + Proxy  accepted     rejected     rejected    accepted     rejected
+        Allow + Proxy    accepted     accepted     rejected    accepted     rejected
 
-    With the pair left out (UnboundForm Absent, the probe's own message):
-    - Bound rejected or missing      no verdict - the identity cannot log on here, so the
-                                     rejection of the other two would prove nothing
-    - Unbound rejected               Required
-    - Unbound accepted, Wrong        Accept
-      rejected
-    - Unbound and Wrong accepted     Off
-    - Unbound accepted, Wrong        EPA not required; Accept or Off unknown
-      missing
+    The Proxy flag (an SPN list set, TLS ending at a proxy in front of IIS) stops
+    verifying the binding and checks the SPN instead - service binding. Over plain HTTP
+    only service binding can work: without the Proxy flag IIS takes every logon there,
+    with it only one that carries a binding that is not zero and the listed SPN.
 
+    HTTPS, with the pair left out (UnboundForm Absent, the probe's own message):
+    - Bound rejected or missing        no verdict - the identity cannot log on here
+    - Unbound rejected, Wrong rejected Required
+    - Unbound rejected, Wrong accepted Service binding if ForeignSpn is rejected
+    - Unbound accepted, Wrong rejected Accept
+    - Unbound and Wrong accepted       Service binding if ForeignSpn is rejected, else Off
     With the zero binding (UnboundForm Zero, SSPI, which cannot leave the pair out):
-    - Unbound rejected               enabled - Required or Accept, which this logon
-                                     cannot tell apart
-    - Unbound accepted               Off - Accept would have rejected the zero binding
+    - Unbound rejected, Wrong rejected enabled - Required or Accept, which SSPI cannot
+                                       tell apart
+    - Unbound rejected, Wrong accepted Service binding if ForeignSpn is rejected
+    - Unbound accepted                 Service binding if ForeignSpn is rejected, else Off
+    Plain HTTP (Bound and ForeignSpn carry a binding that is not zero):
+    - ForeignSpn rejected              Service binding
+    - ForeignSpn accepted              Off
+    A logon that did not complete leaves the verdict open where it was needed.
 .PARAMETER Bound
-    Status code of the logon with the correct binding, $null if it did not complete.
+    Status code of the control logon, $null if it did not complete.
 .PARAMETER Unbound
     Status code of the logon without a binding, $null if not run or not completed.
 .PARAMETER Wrong
     Status code of the logon with a foreign binding, $null if not run or not completed.
+.PARAMETER ForeignSpn
+    Status code of the logon naming another host, $null if not run or not completed.
 .PARAMETER UnboundForm
     How the unbound logon went without a binding: Absent (no pair) or Zero (zero binding).
+.PARAMETER Transport
+    Https or Http.
 .PARAMETER IdentityName
     Who logged on, for the diagnostic.
 .OUTPUTS
     PSCustomObject with EPAEnabled, Confidence, Mode and DiagnosticInfo. EPAEnabled is
-    $true for Required and for Accept - both reject the logon of a client that sends a
-    binding of no or another channel - and $false for Off.
+    $true for Required, Accept and Service binding - each rejects the logon a relay of a
+    Windows client carries - and $false for Off.
 #>
 function Resolve-EPAProbeVerdict {
     [CmdletBinding()]
@@ -1508,8 +1728,15 @@ function Resolve-EPAProbeVerdict {
         $Wrong,
 
         [Parameter(Mandatory = $false)]
+        $ForeignSpn,
+
+        [Parameter(Mandatory = $false)]
         [ValidateSet('Absent', 'Zero')]
         [string]$UnboundForm = 'Absent',
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Https', 'Http')]
+        [string]$Transport = 'Https',
 
         [Parameter(Mandatory = $false)]
         [string]$IdentityName = 'the probe identity'
@@ -1525,60 +1752,101 @@ function Resolve-EPAProbeVerdict {
     # 502, 503 and 504 say nothing about the logon: a gateway, a load balancer or an
     # application pool that is not up answers them, and three of them would otherwise
     # read as three accepted logons - EPA off - on a server that was merely starting.
-    foreach ($name in @('Bound', 'Unbound', 'Wrong')) {
+    foreach ($name in @('Bound', 'Unbound', 'Wrong', 'ForeignSpn')) {
         $value = Get-Variable -Name $name -ValueOnly
         if ($null -ne $value -and [int]$value -in @(502, 503, 504)) { Set-Variable -Name $name -Value $null }
     }
 
+    $setVerdict = {
+        param($Enabled, $Mode, $Text)
+        $verdict.EPAEnabled = $Enabled
+        $verdict.Confidence = 'High'
+        $verdict.Mode = $Mode
+        $verdict.DiagnosticInfo = $Text
+    }
+    $serviceBindingText = "service binding is enforced: the logon naming another host was rejected, and a logon relayed from a client that authenticated to the attacker names the attacker"
+
     if ($null -eq $Bound) {
-        $verdict.DiagnosticInfo = "the logon of $IdentityName with the channel binding did not complete"
+        $verdict.DiagnosticInfo = "the control logon of $IdentityName did not complete"
         return $verdict
     }
     if ([int]$Bound -eq 401) {
-        $verdict.DiagnosticInfo = "$IdentityName was rejected even with the correct channel binding - it cannot log on to this endpoint (wrong password, NTLM restricted, Protected Users), so a rejection without the binding would prove nothing"
+        $verdict.DiagnosticInfo = "$IdentityName was rejected even in the control logon - it cannot log on to this endpoint (wrong password, NTLM restricted, Protected Users), so a rejection of the other logons would prove nothing"
         return $verdict
     }
+
+    if ($Transport -eq 'Http') {
+        if ($null -eq $ForeignSpn) {
+            $verdict.DiagnosticInfo = "$IdentityName logged on (HTTP $Bound); the logon naming another host did not complete"
+        }
+        elseif ([int]$ForeignSpn -eq 401) {
+            & $setVerdict $true 'ServiceBinding' "$IdentityName was accepted over plain HTTP naming this server (HTTP $Bound) - $serviceBindingText"
+        }
+        else {
+            & $setVerdict $false 'Off' "$IdentityName was accepted over plain HTTP naming another host (HTTP $ForeignSpn) - neither a channel nor a service binding is checked"
+        }
+        return $verdict
+    }
+
     if ($null -eq $Unbound) {
         $verdict.DiagnosticInfo = "$IdentityName logged on with the channel binding (HTTP $Bound); the logon without it did not complete"
         return $verdict
     }
 
-    $verdict.Confidence = 'High'
+    $unboundRejected = ([int]$Unbound -eq 401)
+    $wrongAnswered = ($null -ne $Wrong)
+    $wrongRejected = ($wrongAnswered -and [int]$Wrong -eq 401)
 
-    if ($UnboundForm -eq 'Zero') {
-        if ([int]$Unbound -eq 401) {
-            $verdict.EPAEnabled = $true
-            $verdict.DiagnosticInfo = "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected with the zero binding of a Windows client without a channel - Extended Protection is Required or Accept, which an SSPI logon cannot tell apart"
+    # Accepted without a binding: Accept or Off - or, if nothing checks the binding,
+    # service binding. Accept rejects a zero binding, so after an accepted zero binding
+    # (SSPI) only the SPN can still be checked.
+    if (-not $unboundRejected) {
+        if ($UnboundForm -eq 'Absent') {
+            if (-not $wrongAnswered) {
+                $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) - Extended Protection is not required; the logon with a foreign binding, which tells Accept from Off, did not complete"
+                return $verdict
+            }
+            if ($wrongRejected) {
+                & $setVerdict $true 'Accept' "$IdentityName was accepted without a channel binding (HTTP $Unbound) but rejected with a foreign one - Extended Protection is set to Accept: it takes the logon of a client that implements no channel binding and rejects a Windows client, which sends a binding"
+                return $verdict
+            }
+        }
+        if ($null -eq $ForeignSpn) {
+            $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound); the logon naming another host, which tells service binding from Off, did not complete"
+            return $verdict
+        }
+        if ([int]$ForeignSpn -eq 401) {
+            & $setVerdict $true 'ServiceBinding' "$IdentityName was accepted without verifying the channel binding - $serviceBindingText"
+            return $verdict
+        }
+        & $setVerdict $false 'Off' "$IdentityName was accepted without a channel binding (HTTP $Unbound), with a foreign one and naming another host - Extended Protection is off"
+        return $verdict
+    }
+
+    # Rejected without a binding: channel binding - or the Proxy flag, which rejects a
+    # missing binding too but takes any binding that is not zero and checks the SPN
+    if (-not $wrongAnswered) {
+        & $setVerdict $true $null "$IdentityName was rejected without a channel binding - Extended Protection is enforced; the logon with a foreign binding, which tells channel from service binding, did not complete"
+        return $verdict
+    }
+    if ($wrongRejected) {
+        if ($UnboundForm -eq 'Zero') {
+            & $setVerdict $true $null "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected with the zero binding of a Windows client without a channel and with a foreign one - Extended Protection is Required or Accept, which an SSPI logon cannot tell apart"
         }
         else {
-            $verdict.EPAEnabled = $false
-            $verdict.Mode = 'Off'
-            $verdict.DiagnosticInfo = "$IdentityName was accepted with the zero binding of a Windows client without a channel (HTTP $Unbound) - Extended Protection is off"
+            & $setVerdict $true 'Required' "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected without it and with a foreign one - Extended Protection is required"
         }
         return $verdict
     }
-
-    if ([int]$Unbound -eq 401) {
-        $verdict.EPAEnabled = $true
-        $verdict.Mode = 'Required'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected without it - Extended Protection is required"
+    if ($null -eq $ForeignSpn) {
+        $verdict.DiagnosticInfo = "$IdentityName was rejected without a channel binding but accepted with a foreign one (HTTP $Wrong); the logon naming another host did not complete"
         return $verdict
     }
-    if ($null -eq $Wrong) {
-        $verdict.EPAEnabled = $null
-        $verdict.Confidence = 'Unknown'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) - Extended Protection is not required; the logon with a foreign binding, which tells Accept from Off, did not complete"
+    if ([int]$ForeignSpn -eq 401) {
+        & $setVerdict $true 'ServiceBinding' "$IdentityName was accepted with a foreign channel binding (HTTP $Wrong) - the binding is not verified, but $serviceBindingText"
+        return $verdict
     }
-    elseif ([int]$Wrong -eq 401) {
-        $verdict.EPAEnabled = $true
-        $verdict.Mode = 'Accept'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) but rejected with a foreign one - Extended Protection is set to Accept: it takes the logon of a client that implements no channel binding and rejects a Windows client, which sends a binding"
-    }
-    else {
-        $verdict.EPAEnabled = $false
-        $verdict.Mode = 'Off'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) and with a foreign one (HTTP $Wrong) - Extended Protection is off"
-    }
+    $verdict.DiagnosticInfo = "$IdentityName was rejected without a channel binding but accepted with a foreign one and naming another host - a combination no measured IIS mode produces"
     return $verdict
 }
 
@@ -1586,15 +1854,16 @@ function Resolve-EPAProbeVerdict {
 .SYNOPSIS
     Names the EPA state of one web endpoint for its "[EPA: ...]" marker.
 .DESCRIPTION
-    Five states:
-    - Enabled: Extended Protection is required - or, from an SSPI logon, required or set
-      to Accept, which such a logon cannot tell apart
+    Six states:
+    - Enabled: Extended Protection checks the channel binding - required, or, from an SSPI
+      logon, required or set to Accept, which such a logon cannot tell apart
     - Accept: Extended Protection rejects a logon that brings a zero or foreign binding,
       as every Windows client does, and takes one that brings no binding at all, as a
       client without channel binding support does
+    - Service binding: the binding is not verified (IIS Proxy flag) but the SPN is - a
+      logon relayed from a client that authenticated to the attacker names the attacker
     - Disabled: Extended Protection is off
     - Untested: the endpoint was never probed - EPA is probed only where NTLM is offered
-      over HTTPS
     - Undetermined: the endpoint was probed and the probe could not tell - no identity to
       log on with, or the identity could not log on there
     A probed endpoint always carries a confidence and a never-probed one none, which is
@@ -1606,7 +1875,7 @@ function Resolve-EPAProbeVerdict {
     The endpoint's confidence, $null when it was never probed.
 .PARAMETER EPAMode
     The endpoint's Extended Protection mode, when the probe established it: Required,
-    Accept or Off.
+    Accept, ServiceBinding or Off.
 #>
 function Get-EPAStatusLabel {
     [CmdletBinding()]
@@ -1617,6 +1886,7 @@ function Get-EPAStatusLabel {
     )
 
     if ($EPAMode -eq 'Accept') { return 'Accept' }
+    if ($EPAMode -eq 'ServiceBinding') { return 'Service binding' }
     if ($EPAEnabled -eq $true) { return 'Enabled' }
     if ($EPAEnabled -eq $false) { return 'Disabled' }
     if ($null -eq $EPAConfidence) { return 'Untested' }
@@ -1625,20 +1895,27 @@ function Get-EPAStatusLabel {
 
 <#
 .SYNOPSIS
-    Tests whether an HTTPS endpoint enforces Extended Protection for Authentication (EPA).
+    Tests whether a web endpoint enforces Extended Protection for Authentication (EPA).
 .DESCRIPTION
-    Logs on with a real identity up to three times (Invoke-EPAProbeHandshake) and reads
-    the answers as a verdict (Resolve-EPAProbeVerdict): with the correct channel binding
-    as the control, then without one, then - only if that was accepted and left the
-    binding pair out - with the binding of another channel. It stops as soon as the
-    verdict is reached.
+    Logs on with a real identity several times (Invoke-EPAProbeHandshake) and reads the
+    answers as a verdict (Resolve-EPAProbeVerdict). It stops as soon as the verdict is
+    reached.
 
-    A probe with invalid credentials cannot decide this - IIS answers every failed logon
-    alike - which is why the probe needs an identity that can log on (Resolve-EPAProbeIdentity).
-    Without one, the endpoint is undetermined, and the server facts of its NTLM challenge
-    are still read.
+    HTTPS: with the channel binding as the control; without a binding; with the binding
+    of another channel; and - only where a foreign binding was taken, or SSPI's zero
+    binding was - with the correct binding but naming another host, which only service
+    binding rejects.
+
+    Plain HTTP has no channel, so only service binding can protect it: the control
+    names this server, the second logon another host, both carrying a binding that is
+    not zero.
+
+    A probe with invalid credentials cannot decide any of this - IIS answers every failed
+    logon alike - which is why the probe needs an identity that can log on
+    (Resolve-EPAProbeIdentity). Without one, the endpoint is undetermined, and the server
+    facts of its NTLM challenge are still read.
 .PARAMETER Url
-    The HTTPS URL to test (must be HTTPS for EPA to be relevant).
+    The HTTPS or HTTP URL to test.
 .PARAMETER TimeoutSeconds
     Timeout of each connection and read, in seconds (default: 10).
 .PARAMETER UserAgent
@@ -1648,12 +1925,12 @@ function Get-EPAStatusLabel {
 .RETURNS
     PSCustomObject with:
     - Success: $true if the probe got an answer to its logon, $false if it could not run
-    - EPAEnabled: $true (Required or Accept), $false (Off), $null (unknown/N/A)
-    - Confidence: "High" (a verdict), "Unknown" (no verdict), "N/A" (EPA does not apply)
-    - Mode: Required, Accept, Off, or $null when the probe could not tell (an SSPI
-      logon cannot tell Required from Accept)
+    - EPAEnabled: $true (Required, Accept, Service binding), $false (Off), $null (unknown)
+    - Confidence: "High" (a verdict), "Unknown" (no verdict)
+    - Mode: Required, Accept, ServiceBinding, Off, or $null when the probe could not tell
+      (an SSPI logon cannot tell Required from Accept)
     - Identity: who logged on
-    - ProbeStatus: status codes of the Bound, Unbound and Wrong logons
+    - ProbeStatus: status codes of the Bound, Unbound, Wrong and ForeignSpn logons
     - Type2Received, ErrorMessage, DiagnosticInfo
     - Server info from NTLM Type2 AV_PAIRs (NbComputerName, DnsComputerName, etc.)
 #>
@@ -1675,11 +1952,11 @@ function Test-ExtendedProtection {
 
     $result = [PSCustomObject]@{
         Success = $false           # True if the probe got an answer to its logon (not if EPA is enabled)
-        EPAEnabled = $null         # $true = EPA required (secure), $false = not enforced (relayable), $null = unknown/N/A
-        Confidence = "Unknown"     # "High", "Unknown", "N/A"
-        Mode = $null               # Required, Accept, Off
+        EPAEnabled = $null         # $true = relay of a Windows client rejected, $false = EPA off, $null = unknown
+        Confidence = "Unknown"     # "High", "Unknown"
+        Mode = $null               # Required, Accept, ServiceBinding, Off
         Identity = $null           # Who logged on
-        ProbeStatus = [PSCustomObject]@{ Bound = $null; Unbound = $null; Wrong = $null }
+        ProbeStatus = [PSCustomObject]@{ Bound = $null; Unbound = $null; Wrong = $null; ForeignSpn = $null }
         Type2Received = $false
         ErrorMessage = $null
         DiagnosticInfo = $null
@@ -1702,16 +1979,11 @@ function Test-ExtendedProtection {
         $result.DiagnosticInfo = $_.Exception.Message
         return $result
     }
-
-    # EPA only applies to TLS connections: for HTTP it is not applicable, not "disabled"
-    if ($uri.Scheme -ne 'https') {
-        $result.Success = $true
-        $result.EPAEnabled = $null
-        $result.Confidence = "N/A"
-        $result.ErrorMessage = "EPA only applies to HTTPS connections. HTTP does not use Channel Binding."
-        $result.DiagnosticInfo = "HTTP has no TLS channel to bind to - NTLM relay is always possible over HTTP regardless of EPA settings"
+    if ($uri.Scheme -notin @('https', 'http')) {
+        $result.ErrorMessage = "Not an HTTP or HTTPS URL: $Url"
         return $result
     }
+    $transport = if ($uri.Scheme -eq 'http') { 'Http' } else { 'Https' }
 
     if ($null -eq $Identity) { $Identity = Resolve-EPAProbeIdentity }
     $result.Identity = $Identity.Name
@@ -1734,39 +2006,54 @@ function Test-ExtendedProtection {
         return $result
     }
 
-    Write-Log "[Test-ExtendedProtection] Logging on as $($Identity.Name) ($($Identity.Source)), with the channel binding"
-    $bound = Invoke-EPAProbeHandshake @handshake -Binding 'Bound'
+    # Runs one logon and records its status; $null when it got no answer
+    $logon = {
+        param([string]$Kind, [string]$What)
+        Write-Log "[Test-ExtendedProtection] Logging on $What"
+        $answer = Invoke-EPAProbeHandshake @handshake -Binding $Kind
+        $result.ProbeStatus.$Kind = $answer.StatusCode
+        if ($answer.Error) {
+            $result.ErrorMessage = "Logon $What failed: $($answer.Error)"
+            Write-Log "[Test-ExtendedProtection] $($result.ErrorMessage)"
+        }
+        $answer
+    }
+    $accepted = { param($Status) $null -ne $Status -and $Status -ne 401 -and $Status -notin @(502, 503, 504) }
+    $rejected = { param($Status) $Status -eq 401 }
+
+    Write-Log "[Test-ExtendedProtection] Logging on as $($Identity.Name) ($($Identity.Source))"
+    $bound = & $logon 'Bound' 'naming this server (control)'
     # An SSPI logon names its account only once the credential exists
     $result.Identity = $Identity.Name
     Set-EPAProbeServerFacts -Result $result -Type2Result $bound.Type2Result
-    $result.ProbeStatus.Bound = $bound.StatusCode
-    if ($bound.Error) {
-        $result.ErrorMessage = "Logon with the channel binding failed: $($bound.Error)"
-        Write-Log "[Test-ExtendedProtection] $($result.ErrorMessage)"
-    }
+    $unboundForm = if ($Identity.Kind -eq 'Sspi') { 'Zero' } else { 'Absent' }
 
-    $unbound = $null
-    $wrong = $null
-    if ($null -ne $bound.StatusCode -and $bound.StatusCode -ne 401) {
-        Write-Log "[Test-ExtendedProtection] Accepted with the channel binding (HTTP $($bound.StatusCode)); logging on without it"
-        $unbound = Invoke-EPAProbeHandshake @handshake -Binding 'Unbound'
-        $result.ProbeStatus.Unbound = $unbound.StatusCode
-        if ($unbound.Error) { $result.ErrorMessage = "Logon without a channel binding failed: $($unbound.Error)" }
-
-        # The foreign binding tells Accept from Off, and only after a logon that left the
-        # pair out: Accept rejects the zero binding SSPI sends, so an accepted zero
-        # binding is Off already
-        if ($null -ne $unbound.StatusCode -and $unbound.StatusCode -ne 401 -and $unbound.UnboundForm -eq 'Absent') {
-            Write-Log "[Test-ExtendedProtection] Accepted without the channel binding (HTTP $($unbound.StatusCode)); logging on with a foreign one"
-            $wrong = Invoke-EPAProbeHandshake @handshake -Binding 'Wrong'
-            $result.ProbeStatus.Wrong = $wrong.StatusCode
-            if ($wrong.Error) { $result.ErrorMessage = "Logon with a foreign channel binding failed: $($wrong.Error)" }
+    if (& $accepted $result.ProbeStatus.Bound) {
+        if ($transport -eq 'Http') {
+            [void](& $logon 'ForeignSpn' 'naming another host')
+        }
+        else {
+            [void](& $logon 'Unbound' 'without a channel binding')
+            $unboundStatus = $result.ProbeStatus.Unbound
+            # The foreign binding tells Accept from Off after an absent pair, and channel
+            # from service binding after a rejection. After an accepted zero binding it
+            # has nothing to tell: Accept rejects that binding.
+            $runWrong = (& $rejected $unboundStatus) -or ((& $accepted $unboundStatus) -and $unboundForm -eq 'Absent')
+            if ($runWrong) {
+                [void](& $logon 'Wrong' 'with a foreign channel binding')
+            }
+            # Naming another host tells service binding from no protection, wherever the
+            # binding turned out not to be verified
+            $runForeignSpn = (& $accepted $result.ProbeStatus.Wrong) -or ((& $accepted $unboundStatus) -and $unboundForm -eq 'Zero')
+            if ($runForeignSpn) {
+                [void](& $logon 'ForeignSpn' 'naming another host')
+            }
         }
     }
 
-    $unboundForm = if ($Identity.Kind -eq 'Sspi') { 'Zero' } else { 'Absent' }
     $verdict = Resolve-EPAProbeVerdict -Bound $result.ProbeStatus.Bound -Unbound $result.ProbeStatus.Unbound `
-        -Wrong $result.ProbeStatus.Wrong -UnboundForm $unboundForm -IdentityName $Identity.Name
+        -Wrong $result.ProbeStatus.Wrong -ForeignSpn $result.ProbeStatus.ForeignSpn `
+        -UnboundForm $unboundForm -Transport $transport -IdentityName $Identity.Name
     $result.Success = ($null -ne $result.ProbeStatus.Bound)
     $result.EPAEnabled = $verdict.EPAEnabled
     $result.Confidence = $verdict.Confidence

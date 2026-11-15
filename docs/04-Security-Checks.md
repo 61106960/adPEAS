@@ -1653,31 +1653,62 @@ show whether an endpoint enforces Extended Protection - IIS rejects a logon with
 channel binding and a logon with a wrong password with the same `401` - so adPEAS logs on
 with a real identity, three times, each over its own TLS connection:
 
-| Logon | Accepted | Rejected |
-|---|---|---|
-| with the TLS channel binding (control) | continue | `[EPA: Undetermined]` - the identity cannot log on here |
-| without a channel binding pair | continue | `[EPA: Enabled]` - Required |
-| with the binding of another channel | `[EPA: Disabled]` - Off (Finding) | `[EPA: Accept]` (Hint) |
+| Logon | Reading |
+|---|---|
+| 1. with the TLS channel binding (control) | rejected: `[EPA: Undetermined]` - the identity cannot log on here |
+| 2. without a channel binding pair | - |
+| 3. with the binding of another channel | 2 and 3 rejected: `[EPA: Enabled]` (Required). 2 accepted, 3 rejected: `[EPA: Accept]` (Hint) |
+| 4. with the correct binding, naming another host - only after 3 was accepted | rejected: `[EPA: Service binding]` (Hint). Accepted: `[EPA: Disabled]` (Finding) |
 
-What IIS does in each mode, measured:
+What IIS does in each mode, measured ("own SPN" = the client names this server):
 
-| tokenChecking | correct binding | no binding pair | zero binding | foreign binding |
-|---|---|---|---|---|
-| Require | accepted | rejected | rejected | rejected |
-| Allow (Accept) | accepted | accepted | rejected | rejected |
-| None (Off) | accepted | accepted | accepted | accepted |
+| tokenChecking | correct binding | no binding pair | zero binding | foreign binding | correct binding, foreign SPN |
+|---|---|---|---|---|---|
+| Require | accepted | rejected | rejected | rejected | accepted |
+| Allow (Accept) | accepted | accepted | rejected | rejected | accepted |
+| None (Off) | accepted | accepted | accepted | accepted | accepted |
+| Require + Proxy flag + SPN list | accepted | rejected | rejected | accepted | rejected |
+| Allow + Proxy flag + SPN list | accepted | accepted | rejected | accepted | rejected |
+
+With the Proxy flag - TLS ends at a proxy in front of IIS - the binding is not verified and
+the SPN the client named is checked instead: service binding. It rejects every ordinary
+relay (the relayed logon names the attacker) and the zero binding of a coerced Windows
+client; it does not stop a victim whose name resolution the attacker controls and that
+trusts the attacker's certificate for the server's name.
+
+Plain HTTP has no channel to bind. Without the Proxy flag IIS takes every logon over HTTP,
+whatever `tokenChecking` says (measured); with it, only service binding applies. AD CS
+enrollment endpoints reachable over HTTP are therefore probed there too - a logon naming
+this server, then one naming another host - and an HTTP line reads
+`[EPA: Service binding]` or `[EPA: Disabled]`. An HTTP line that also offers Basic stays a
+finding: the password crosses the wire in the clear.
 
 A Windows client that has no channel to bind sends the zero binding, so `Accept` rejects
 the relay of a coerced Windows machine or user; it only takes the logon of an NTLM client
 that implements no channel binding. It is reported as a hint, not as ESC8 or an Exchange
 relay finding. Microsoft recommends `Required`.
 
-The identity is the session's: the password or NT hash given to `Connect-adPEAS`, or the
-current Windows logon for `-UseWindowsAuth` and for `Invoke-HTTPRequest` without a session.
-A logon through SSPI always sends a binding, so it cannot tell `Required` from `Accept`;
-both read `[EPA: Enabled]` then. A session authenticated with an AES key, a certificate or
-a ticket has nothing to answer an NTLM challenge with; its endpoints are reported as
-`[EPA: Undetermined]`.
+**Which account logs on.** In a scan, the probe logs on as the account of the session -
+the password or NT hash given to `Connect-adPEAS`, or the current Windows logon for a
+`-UseWindowsAuth` session - and only against Exchange servers and CAs of the session's own
+AD. A session authenticated with an AES key, a certificate or a ticket has nothing to answer
+an NTLM challenge with; its endpoints are reported as `[EPA: Undetermined]`.
+
+Run by hand, `Invoke-HTTPRequest -TestEPA` needs the identity named - one of:
+
+```powershell
+Invoke-HTTPRequest -ScanExchange -Uri mail.contoso.com -TestEPA -Credential (Get-Credential)
+Invoke-HTTPRequest -ScanADCS -Uri ca.contoso.com -TestEPA -Username 'CONTOSO\alice' -Password 'P@ssw0rd'
+Invoke-HTTPRequest -ScanADCS -Uri ca.contoso.com -TestEPA -Username 'CONTOSO\alice' -NTHash 32ED87BDB5FDC5E9CBA88547376818D4
+Invoke-HTTPRequest -ScanExchange -Uri mail.contoso.com -TestEPA -UseSession       # the Connect-adPEAS session
+Invoke-HTTPRequest -ScanExchange -Uri mail.contoso.com -TestEPA -UseWindowsAuth   # current Windows logon, or runas /netonly
+```
+
+Without one the call stops before it connects. The current Windows logon is never taken
+unasked: pointed at a host of another organisation, it would hand that host the logon of the
+tester's own account. A user name without a domain logs on in the target's domain. The
+result names the account in `EPAIdentity`. A logon through SSPI (`-UseWindowsAuth`) always
+sends a binding, so it cannot tell `Required` from `Accept`; both read `[EPA: Enabled]`.
 
 **Usage**:
 ```powershell

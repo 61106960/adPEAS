@@ -402,7 +402,9 @@ function Get-ADCSVulnerabilities {
                         try {
                             # Pass CA name for CES endpoint detection
                             # The CES URL pattern is: https://<hostname>/<CAName>_CES_<AuthType>/service.svc
-                            $webEnrollmentResult = Invoke-HTTPRequest -ScanADCS -Uri $ca.DNSHostName -CAName $ca.Name -TestEPA
+                            # -UseSession: the EPA probe logs on as the session's account; the CA comes
+                            # from the session's own AD, so the logon stays inside the scanned scope
+                            $webEnrollmentResult = Invoke-HTTPRequest -ScanADCS -Uri $ca.DNSHostName -CAName $ca.Name -TestEPA -UseSession
                             if ($webEnrollmentResult.Success) {
                                 Write-Log "[Get-ADCSVulnerabilities] Web enrollment check successful for $($ca.DNSHostName)"
                                 if ($null -ne $webEnrollmentResult.EPAEnabled) {
@@ -625,8 +627,11 @@ function Get-ADCSVulnerabilities {
                                 # ESC8 severity classification, as the triggers in
                                 # adPEAS-FindingDefinitions.ps1 actually apply it:
                                 # - any HTTP line           = Finding (unencrypted enrollment; ADCS_HTTP_AVAILABLE carries its own card)
+                                #   unless it reads [EPA: Service binding] - then a Hint
                                 # - HTTPS + NTLM + EPA off  = Finding (ESC8_WEB_ENROLLMENT)
                                 # - HTTPS + NTLM + EPA on   = Secure
+                                # - NTLM + Accept or Service binding = Hint (WEB_ENDPOINT_EPA_ACCEPT,
+                                #   WEB_ENDPOINT_EPA_SERVICE_BINDING), not ESC8
                                 # - HTTPS, no NTLM offered  = no ESC8 finding
                                 #
                                 # The last line was the defect: the finding trigger asked only
@@ -650,6 +655,14 @@ function Get-ADCSVulnerabilities {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
+                                        }
+                                        # Plain HTTP has no channel to bind; only service
+                                        # binding can protect it, probed on its own. The
+                                        # marker appears only where that probe ran, so an
+                                        # HTTP line nobody asked about stays as it was.
+                                        if ($null -ne $epData.EPAHttpConfidence) {
+                                            $httpEpaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAHttpEnabled -EPAConfidence $epData.EPAHttpConfidence -EPAMode $epData.EPAHttpMode
+                                            $epString += " [EPA: $httpEpaStatus]"
                                         }
                                         $endpointsWithAuth += $epString
                                     }
@@ -798,6 +811,11 @@ function Get-ADCSVulnerabilities {
                                     if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) { $epString += " ($authMethods)" }
+                                        # Same HTTP marker as the caComputer path above.
+                                        if ($null -ne $epData.EPAHttpConfidence) {
+                                            $httpEpaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAHttpEnabled -EPAConfidence $epData.EPAHttpConfidence -EPAMode $epData.EPAHttpMode
+                                            $epString += " [EPA: $httpEpaStatus]"
+                                        }
                                         $endpointsWithAuth += $epString
                                     }
                                     if ($epData.AvailableHttps) {

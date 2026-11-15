@@ -1859,7 +1859,7 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         Title = "ESC8 - NTLM Relay to Web Enrollment"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA) being required. Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed machine logon therefore carries; it is listed as a hint of its own. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there. IIS does not enforce EPA on web enrollment unless it was set, so read the tokenChecking setting of such an endpoint before treating it as relayable."
+        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA) being required. Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed machine logon therefore carries; it is listed as a hint of its own, and so is [EPA: Service binding], an endpoint that checks the SPN the client named instead of the binding. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there. IIS does not enforce EPA on web enrollment unless it was set, so read the tokenChecking setting of such an endpoint before treating it as relayable."
         Impact = @(
             "NTLM authentication can be relayed to obtain certificates"
             "Domain Controller machine accounts can be relayed to get DC certificates"
@@ -1934,7 +1934,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             # string lacked "[EPA: Enabled]" - and EPA is probed only where NTLM is offered,
             # so a Negotiate-only HTTPS endpoint carried no marker and came out red for
             # being configured the way Microsoft recommends.
-            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept)\]'; Severity = 'Finding' }
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept|Service binding)\]'; Severity = 'Finding' }
         )
     }
 
@@ -1978,7 +1978,9 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("Certipy", "ntlmrelayx", "PetitPotam")
         MITRE = "T1187"
         Triggers = @(
-            @{ Attribute = 'HttpAvailable'; Pattern = 'True'; Severity = 'Finding' }
+            # A relay path unless service binding protects every HTTP endpoint line
+            # (adcs_http_relayable reads the CA's WebEnrollmentEndpoints)
+            @{ Attribute = 'HttpAvailable'; Pattern = 'True'; Custom = 'adcs_http_relayable'; Severity = 'Finding' }
         )
     }
 
@@ -12886,6 +12888,43 @@ $acl.Access | Where-Object {
             @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Accept\]'; Severity = 'Hint' }
         )
     }
+    'WEB_ENDPOINT_EPA_SERVICE_BINDING' = @{
+        Title = "Extended Protection by Service Binding"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "This web endpoint does not verify the TLS channel binding but checks the service binding instead: the SPN the client named in its NTLM logon must be one the server lists. That is what IIS does with the Proxy flag set on Extended Protection, for a server whose TLS ends at a proxy in front of it, and the only protection plain HTTP can have. adPEAS logged on naming this server and naming another host; only the first was accepted. Measured against IIS, a logon relayed from a client that authenticated to the attacker names the attacker and is rejected, and so is the zero binding a Windows client sends without a channel. What remains is a client that names this server's own SPN while talking to the attacker over TLS - a victim whose name resolution the attacker controls - and only if it accepts the attacker's certificate for that name, because a binding that is not zero passes unverified."
+        Impact = @(
+            "The relay of a logon that names another host - every ordinary relay - is rejected"
+            "A Windows client without a channel, coerced over SMB or plain HTTP, sends a zero binding and is rejected"
+            "A client deceived into naming this server over TLS, and trusting the attacker's certificate for that name, can be relayed: the binding is not verified"
+        )
+        Attack = @(
+            "1. Control the victim's name resolution for this server's name (DNS, LLMNR/NBT-NS or ADIDNS records)"
+            "2. Present a certificate for that name the victim trusts, so that its TLS session to the attacker succeeds"
+            "3. Relay the victim's NTLM logon, which names this server and carries an unverifiable binding, to this endpoint"
+        )
+        Remediation = @(
+            "Where TLS can end on the IIS server itself, enable Extended Protection there without the Proxy flag, so that the channel binding is verified"
+            "Keep the SPN list to the names clients actually use for this endpoint"
+            "Disable the plain HTTP binding where no client needs it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the Extended Protection settings of an IIS virtual directory"
+                Command = "%windir%\system32\inetsrv\appcmd.exe list config 'Default Web Site/VDIR_NAME' -section:system.webServer/security/authentication/windowsAuthentication"
+            }
+        )
+        References = @(
+            @{ Title = "Extended Protection for Authentication - Microsoft"; Url = "https://docs.microsoft.com/en-us/dotnet/framework/wcf/feature-details/extended-protection-for-authentication-overview" }
+            @{ Title = "KB5005413: Mitigate NTLM Relay on ADCS - Microsoft"; Url = "https://support.microsoft.com/en-us/topic/kb5005413-mitigating-ntlm-relay-attacks-on-active-directory-certificate-services-ad-cs-3612b773-4043-4aa9-b23d-b87910cd3429" }
+        )
+        Tools = @("ntlmrelayx")
+        MITRE = "T1187"
+        Triggers = @(
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Service binding\]'; Severity = 'Hint' }
+            @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Service binding\]'; Severity = 'Hint' }
+        )
+    }
     # --- PKI / CA Certificate Secure Configurations ---
 
     'PKI_STRONG_SIGNATURE_ALGORITHM' = @{
@@ -14468,7 +14507,7 @@ $acl.Access | Where-Object {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed logon therefore carries; it is listed as a hint of its own. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed logon therefore carries; it is listed as a hint of its own, and so is [EPA: Service binding], an endpoint that checks the SPN the client named instead of the binding. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"
@@ -14507,7 +14546,7 @@ $acl.Access | Where-Object {
             # must not carry the card: the row went green through the severity-only trigger
             # and kept the "NTLM endpoints are vulnerable to relay" write-up, while the
             # Secure definition that fits it was reachable from the AD CS attribute only.
-            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept)\]'; Severity = 'Finding' }
+            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept|Service binding)\]'; Severity = 'Finding' }
         )
     }
 
@@ -15108,9 +15147,10 @@ $acl.Access | Where-Object {
         BaseScore = 0
         Description = "Web endpoint security classification based on protocol, authentication and EPA status."
         Triggers = @(
-            # HTTP + NTLM = Critical (relay possible)
-            @{ Attribute = 'WebEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; Severity = 'Finding'; SeverityOnly = $true }
-            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; Severity = 'Finding'; SeverityOnly = $true }
+            # HTTP + NTLM = Critical (relay possible) - unless service binding protects the
+            # endpoint and no Basic sends a password in the clear
+            @{ Attribute = 'WebEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; ExcludePattern = '^(?!.*\bBasic\b).*\[EPA:\s*Service binding\]'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; ExcludePattern = '^(?!.*\bBasic\b).*\[EPA:\s*Service binding\]'; Severity = 'Finding'; SeverityOnly = $true }
             # EPA Enabled = Secure
             @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure'; SeverityOnly = $true }
             @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure'; SeverityOnly = $true }
@@ -17709,6 +17749,28 @@ function Test-CustomTrigger {
             return (-not $linkFlag.Value)
         }
 
+        'adcs_http_relayable' {
+            # CA object: HTTP enrollment is a relay path unless service binding protects
+            # every HTTP endpoint line. Plain HTTP has no channel to bind; with the IIS
+            # Proxy flag and an SPN list the server checks the SPN the client named, which
+            # a relayed logon gets wrong - measured, a zero binding and a foreign SPN are
+            # both rejected there. A line that also offers Basic sends a password in the
+            # clear and stays a finding whatever the binding.
+            #
+            # Defaults to true - the finding - with no source object, no endpoint lines or
+            # no HTTP line among them: HttpAvailable alone says HTTP is offered, and only
+            # a probe that found service binding may take that back.
+            if (-not $SourceObject) { return $true }
+            $endpointLines = $SourceObject.PSObject.Properties['WebEnrollmentEndpoints']
+            if (-not $endpointLines -or -not $endpointLines.Value) { return $true }
+            $httpLines = @($endpointLines.Value | Where-Object { [string]$_ -match 'via HTTP( |$)' })
+            if ($httpLines.Count -eq 0) { return $true }
+            foreach ($line in $httpLines) {
+                if ([string]$line -match '\bBasic\b') { return $true }
+                if ([string]$line -notmatch '\[EPA:\s*Service binding\]') { return $true }
+            }
+            return $false
+        }
         'esc_enrollment_rights_unread' {
             # Certificate template only: true when Get-ADCSVulnerabilities could not read
             # who may enroll, which is what its 'Unknown' enrollment state writes onto the

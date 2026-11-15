@@ -540,8 +540,10 @@ function Get-ExchangeInfrastructure {
                                     Write-Log "[Get-ExchangeInfrastructure] Detecting Exchange endpoints and EPA for $($exServer.DNSHostName)..."
 
                                     try {
-                                        # Request with -TestEPA to check Extended Protection for Authentication
-                                        $httpResult = Invoke-HTTPRequest -ScanExchange -Uri $exServer.DNSHostName -TestEPA
+                                        # Request with -TestEPA to check Extended Protection for Authentication,
+                                        # logging on as the session's account: the server comes from the
+                                        # session's own AD, so the logon stays inside the scanned scope
+                                        $httpResult = Invoke-HTTPRequest -ScanExchange -Uri $exServer.DNSHostName -TestEPA -UseSession
                                         $webEnrollmentResult = $httpResult
 
                                         if ($httpResult.Success) {

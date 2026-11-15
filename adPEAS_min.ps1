@@ -6279,7 +6279,7 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         Title = "ESC8 - NTLM Relay to Web Enrollment"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA) being required. Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed machine logon therefore carries; it is listed as a hint of its own. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there. IIS does not enforce EPA on web enrollment unless it was set, so read the tokenChecking setting of such an endpoint before treating it as relayable."
+        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA) being required. Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed machine logon therefore carries; it is listed as a hint of its own, and so is [EPA: Service binding], an endpoint that checks the SPN the client named instead of the binding. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there. IIS does not enforce EPA on web enrollment unless it was set, so read the tokenChecking setting of such an endpoint before treating it as relayable."
         Impact = @(
             "NTLM authentication can be relayed to obtain certificates"
             "Domain Controller machine accounts can be relayed to get DC certificates"
@@ -6348,7 +6348,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         MITRE = "T1187"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC8'; Severity = 'Finding' }
-            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept)\]'; Severity = 'Finding' }
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept|Service binding)\]'; Severity = 'Finding' }
         )
     }
     'ADCS_HTTP_AVAILABLE' = @{
@@ -6390,7 +6390,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         Tools = @("Certipy", "ntlmrelayx", "PetitPotam")
         MITRE = "T1187"
         Triggers = @(
-            @{ Attribute = 'HttpAvailable'; Pattern = 'True'; Severity = 'Finding' }
+            @{ Attribute = 'HttpAvailable'; Pattern = 'True'; Custom = 'adcs_http_relayable'; Severity = 'Finding' }
         )
     }
     'ADCS_NONPRIV_ENROLLMENT' = @{
@@ -16397,6 +16397,43 @@ $acl.Access | Where-Object {
             @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Accept\]'; Severity = 'Hint' }
         )
     }
+    'WEB_ENDPOINT_EPA_SERVICE_BINDING' = @{
+        Title = "Extended Protection by Service Binding"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "This web endpoint does not verify the TLS channel binding but checks the service binding instead: the SPN the client named in its NTLM logon must be one the server lists. That is what IIS does with the Proxy flag set on Extended Protection, for a server whose TLS ends at a proxy in front of it, and the only protection plain HTTP can have. adPEAS logged on naming this server and naming another host; only the first was accepted. Measured against IIS, a logon relayed from a client that authenticated to the attacker names the attacker and is rejected, and so is the zero binding a Windows client sends without a channel. What remains is a client that names this server's own SPN while talking to the attacker over TLS - a victim whose name resolution the attacker controls - and only if it accepts the attacker's certificate for that name, because a binding that is not zero passes unverified."
+        Impact = @(
+            "The relay of a logon that names another host - every ordinary relay - is rejected"
+            "A Windows client without a channel, coerced over SMB or plain HTTP, sends a zero binding and is rejected"
+            "A client deceived into naming this server over TLS, and trusting the attacker's certificate for that name, can be relayed: the binding is not verified"
+        )
+        Attack = @(
+            "1. Control the victim's name resolution for this server's name (DNS, LLMNR/NBT-NS or ADIDNS records)"
+            "2. Present a certificate for that name the victim trusts, so that its TLS session to the attacker succeeds"
+            "3. Relay the victim's NTLM logon, which names this server and carries an unverifiable binding, to this endpoint"
+        )
+        Remediation = @(
+            "Where TLS can end on the IIS server itself, enable Extended Protection there without the Proxy flag, so that the channel binding is verified"
+            "Keep the SPN list to the names clients actually use for this endpoint"
+            "Disable the plain HTTP binding where no client needs it"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the Extended Protection settings of an IIS virtual directory"
+                Command = "%windir%\system32\inetsrv\appcmd.exe list config 'Default Web Site/VDIR_NAME' -section:system.webServer/security/authentication/windowsAuthentication"
+            }
+        )
+        References = @(
+            @{ Title = "Extended Protection for Authentication - Microsoft"; Url = "https://docs.microsoft.com/en-us/dotnet/framework/wcf/feature-details/extended-protection-for-authentication-overview" }
+            @{ Title = "KB5005413: Mitigate NTLM Relay on ADCS - Microsoft"; Url = "https://support.microsoft.com/en-us/topic/kb5005413-mitigating-ntlm-relay-attacks-on-active-directory-certificate-services-ad-cs-3612b773-4043-4aa9-b23d-b87910cd3429" }
+        )
+        Tools = @("ntlmrelayx")
+        MITRE = "T1187"
+        Triggers = @(
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Service binding\]'; Severity = 'Hint' }
+            @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Service binding\]'; Severity = 'Hint' }
+        )
+    }
     'PKI_STRONG_SIGNATURE_ALGORITHM' = @{
         Title = "PKI Certificate Uses Strong Signature Algorithm"
         Risk = "Secure"
@@ -17839,7 +17876,7 @@ $acl.Access | Where-Object {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed logon therefore carries; it is listed as a hint of its own. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed logon therefore carries; it is listed as a hint of its own, and so is [EPA: Service binding], an endpoint that checks the SPN the client named instead of the binding. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"
@@ -17874,7 +17911,7 @@ $acl.Access | Where-Object {
         )
         MITRE = "T1187"
         Triggers = @(
-            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept)\]'; Severity = 'Finding' }
+            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept|Service binding)\]'; Severity = 'Finding' }
         )
     }
     'CONSTRAINED_DELEGATION' = @{
@@ -18338,8 +18375,8 @@ $acl.Access | Where-Object {
         BaseScore = 0
         Description = "Web endpoint security classification based on protocol, authentication and EPA status."
         Triggers = @(
-            @{ Attribute = 'WebEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; Severity = 'Finding'; SeverityOnly = $true }
-            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'WebEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; ExcludePattern = '^(?!.*\bBasic\b).*\[EPA:\s*Service binding\]'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = 'via HTTP[^S]|via HTTP$'; ExcludePattern = '^(?!.*\bBasic\b).*\[EPA:\s*Service binding\]'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure'; SeverityOnly = $true }
             @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure'; SeverityOnly = $true }
             @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Disabled\]'; Severity = 'Finding'; SeverityOnly = $true }
@@ -20426,6 +20463,18 @@ function Test-CustomTrigger {
             if ([string]::IsNullOrWhiteSpace([string]$SourceObject.Vulnerabilities)) { return $false }
             if ([string]$SourceObject.Vulnerabilities -notmatch 'ESC13') { return $false }
             return (-not $linkFlag.Value)
+        }
+        'adcs_http_relayable' {
+            if (-not $SourceObject) { return $true }
+            $endpointLines = $SourceObject.PSObject.Properties['WebEnrollmentEndpoints']
+            if (-not $endpointLines -or -not $endpointLines.Value) { return $true }
+            $httpLines = @($endpointLines.Value | Where-Object { [string]$_ -match 'via HTTP( |$)' })
+            if ($httpLines.Count -eq 0) { return $true }
+            foreach ($line in $httpLines) {
+                if ([string]$line -match '\bBasic\b') { return $true }
+                if ([string]$line -notmatch '\[EPA:\s*Service binding\]') { return $true }
+            }
+            return $false
         }
         'esc_enrollment_rights_unread' {
             if (-not $SourceObject) { return $false }
@@ -61520,18 +61569,50 @@ function Split-EPAProbeAccount {
     }
     return [PSCustomObject]@{ UserName = $Account; Domain = $DefaultDomain }
 }
+function New-EPASspiIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Source = 'current Windows logon'
+    )
+    $currentUser = if ($env:USERDOMAIN) { "$($env:USERDOMAIN)\$($env:USERNAME)" } else { [string]$env:USERNAME }
+    try {
+        Initialize-EPASspiType
+        $sspi = New-Object adPEASNtlmSspi('HTTP/localhost')
+        try {
+            $credentialName = $sspi.CredentialName()
+            if ($credentialName) { $currentUser = $credentialName }
+        }
+        finally { $sspi.Dispose() }
+    }
+    catch {
+        Write-Log "[New-EPASspiIdentity] SSPI credential name not available: $($_.Exception.Message)"
+    }
+    return [PSCustomObject]@{
+        Kind     = 'Sspi'
+        Name     = $currentUser
+        Source   = $Source
+        UserName = $null
+        Domain   = $null
+        NTHash   = $null
+        Reason   = $null
+    }
+}
 function Resolve-EPAProbeIdentity {
     [CmdletBinding()]
     param()
-    $context = $Script:LDAPContext
-    $parameterSet = $null
-    $sessionDomain = ''
-    if ($context) {
-        $parameterSet = [string]$context['ParameterSet']
-        $sessionDomain = [string]$context['Domain']
+    $none = {
+        param([string]$Reason)
+        [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null; Reason = $Reason }
     }
+    $context = $Script:LDAPContext
+    if (-not $context) {
+        return (& $none 'there is no adPEAS session (Connect-adPEAS) to take the identity from')
+    }
+    $parameterSet = [string]$context['ParameterSet']
+    $sessionDomain = [string]$context['Domain']
     $credential = $null
-    if ($context -and $context['Credential'] -is [System.Management.Automation.PSCredential]) {
+    if ($context['Credential'] -is [System.Management.Automation.PSCredential]) {
         $credential = $context['Credential']
     }
     elseif ($Script:LDAPCredential -is [System.Management.Automation.PSCredential]) {
@@ -61563,38 +61644,104 @@ function Resolve-EPAProbeIdentity {
                 Reason   = $null
             }
         }
-        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
-            Reason = 'the NT hash of the session is not available' }
+        return (& $none 'the NT hash of the session is not available')
     }
     if ($parameterSet -in @('UsernamePassword', 'PSCredential')) {
-        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
-            Reason = 'the credential of the session is not available' }
+        return (& $none 'the credential of the session is not available')
     }
     if ($parameterSet -in @('AES256', 'AES128', 'Certificate', 'Kirbi', 'Ccache')) {
-        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
-            Reason = "the session authenticated with $parameterSet, which has no password or NT hash to answer an NTLM challenge" }
+        return (& $none "the session authenticated with $parameterSet, which has no password or NT hash to answer an NTLM challenge")
     }
-    $currentUser = if ($env:USERDOMAIN) { "$($env:USERDOMAIN)\$($env:USERNAME)" } else { [string]$env:USERNAME }
-    try {
-        Initialize-EPASspiType
-        $sspi = New-Object adPEASNtlmSspi('HTTP/localhost')
-        try {
-            $credentialName = $sspi.CredentialName()
-            if ($credentialName) { $currentUser = $credentialName }
+    return (New-EPASspiIdentity -Source 'session, current Windows logon')
+}
+function New-EPAProbeIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory = $false)]
+        [string]$Username,
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$Password,
+        [Parameter(Mandatory = $false)]
+        [string]$NTHash,
+        [Parameter(Mandatory = $false)]
+        [switch]$UseSession,
+        [Parameter(Mandatory = $false)]
+        [switch]$UseWindowsAuth
+    )
+    $forms = @()
+    if ($PSBoundParameters.ContainsKey('Credential') -and $Credential) { $forms += 'Credential' }
+    if ($PSBoundParameters.ContainsKey('Password')) { $forms += 'Password' }
+    if ($PSBoundParameters.ContainsKey('NTHash')) { $forms += 'NTHash' }
+    if ($UseSession) { $forms += 'UseSession' }
+    if ($UseWindowsAuth) { $forms += 'UseWindowsAuth' }
+    if ($forms.Count -eq 0) {
+        if ($PSBoundParameters.ContainsKey('Username')) {
+            throw '-Username needs -Password or -NTHash.'
         }
-        finally { $sspi.Dispose() }
+        throw '-TestEPA logs on to every NTLM endpoint of the target. Name the identity: -Credential, -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth.'
     }
-    catch {
-        Write-Log "[Resolve-EPAProbeIdentity] SSPI credential name not available: $($_.Exception.Message)"
+    if ($forms.Count -gt 1) {
+        throw "-TestEPA takes one identity, got -$($forms -join ', -')."
     }
-    return [PSCustomObject]@{
-        Kind     = 'Sspi'
-        Name     = $currentUser
-        Source   = 'current Windows logon'
-        UserName = $null
-        Domain   = $null
-        NTHash   = $null
-        Reason   = $null
+    if ($forms[0] -in @('Password', 'NTHash') -and [string]::IsNullOrWhiteSpace($Username)) {
+        throw "-$($forms[0]) needs -Username."
+    }
+    if ($forms[0] -in @('Credential', 'UseSession', 'UseWindowsAuth') -and $PSBoundParameters.ContainsKey('Username')) {
+        throw "-Username goes with -Password or -NTHash, not with -$($forms[0])."
+    }
+    switch ($forms[0]) {
+        'Credential' {
+            if ([string]::IsNullOrEmpty($Credential.UserName)) { throw '-Credential carries no user name.' }
+            $account = Split-EPAProbeAccount -Account $Credential.UserName
+            return [PSCustomObject]@{
+                Kind     = 'Hash'
+                Name     = $Credential.UserName
+                Source   = 'given credential'
+                UserName = $account.UserName
+                Domain   = $account.Domain
+                NTHash   = [byte[]](Get-NTHashFromPassword -PlainPassword $Credential.GetNetworkCredential().Password)
+                Reason   = $null
+            }
+        }
+        'Password' {
+            $account = Split-EPAProbeAccount -Account $Username
+            return [PSCustomObject]@{
+                Kind     = 'Hash'
+                Name     = $Username
+                Source   = 'given password'
+                UserName = $account.UserName
+                Domain   = $account.Domain
+                NTHash   = [byte[]](Get-NTHashFromPassword -PlainPassword $Password)
+                Reason   = $null
+            }
+        }
+        'NTHash' {
+            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { throw '-NTHash takes 32 hex characters.' }
+            $hashBytes = New-Object byte[] 16
+            for ($i = 0; $i -lt 16; $i++) { $hashBytes[$i] = [Convert]::ToByte($NTHash.Substring($i * 2, 2), 16) }
+            $account = Split-EPAProbeAccount -Account $Username
+            return [PSCustomObject]@{
+                Kind     = 'Hash'
+                Name     = $Username
+                Source   = 'given NT hash'
+                UserName = $account.UserName
+                Domain   = $account.Domain
+                NTHash   = $hashBytes
+                Reason   = $null
+            }
+        }
+        'UseSession' {
+            if (-not $Script:LDAPContext) {
+                throw '-UseSession needs an adPEAS session - run Connect-adPEAS first, or name the identity with -Credential, -Username with -Password or -NTHash, or -UseWindowsAuth.'
+            }
+            return (Resolve-EPAProbeIdentity)
+        }
+        'UseWindowsAuth' {
+            return (New-EPASspiIdentity -Source 'current Windows logon')
+        }
     }
 }
 function Open-EPAProbeConnection {
@@ -61605,9 +61752,36 @@ function Open-EPAProbeConnection {
         [Parameter(Mandatory = $true)]
         [int]$Port,
         [Parameter(Mandatory = $true)]
-        [int]$TimeoutSeconds
+        [int]$TimeoutSeconds,
+        [Parameter(Mandatory = $false)]
+        [switch]$Plain
     )
     $timeoutMs = $TimeoutSeconds * 1000
+    if ($Plain) {
+        $client = New-Object System.Net.Sockets.TcpClient
+        try {
+            $connect = $client.BeginConnect($HostName, $Port, $null, $null)
+            if (-not $connect.AsyncWaitHandle.WaitOne($timeoutMs)) {
+                throw "TCP connection to ${HostName}:$Port timed out"
+            }
+            $client.EndConnect($connect)
+            $client.NoDelay = $true
+            $network = $client.GetStream()
+            $network.ReadTimeout = $timeoutMs
+            $network.WriteTimeout = $timeoutMs
+            return [PSCustomObject]@{
+                Client         = $client
+                Stream         = $network
+                ChannelBinding = $null
+            }
+        }
+        catch {
+            $failure = $_
+            try { $client.Close() }
+            catch { Write-Log "[Open-EPAProbeConnection] Closing the failed connection: $($_.Exception.Message)" }
+            throw $failure
+        }
+    }
     $protocolChoices = @(
         ([System.Security.Authentication.SslProtocols]::Tls12 -bor [System.Security.Authentication.SslProtocols]::Tls11 -bor [System.Security.Authentication.SslProtocols]::Tls),
         [System.Security.Authentication.SslProtocols]::None
@@ -61770,7 +61944,7 @@ function Invoke-EPAProbeHandshake {
         [Parameter(Mandatory = $true)]
         $Identity,
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Bound', 'Unbound', 'Wrong', 'ChallengeOnly')]
+        [ValidateSet('Bound', 'Unbound', 'Wrong', 'ForeignSpn', 'ChallengeOnly')]
         [string]$Binding,
         [Parameter(Mandatory = $true)]
         [int]$TimeoutSeconds,
@@ -61787,17 +61961,29 @@ function Invoke-EPAProbeHandshake {
     $connection = $null
     $sspi = $null
     try {
-        $connection = Open-EPAProbeConnection -HostName $Uri.Host -Port $Uri.Port -TimeoutSeconds $TimeoutSeconds
+        $plain = ($Uri.Scheme -eq 'http')
+        $connection = Open-EPAProbeConnection -HostName $Uri.Host -Port $Uri.Port -TimeoutSeconds $TimeoutSeconds -Plain:$plain
         $hostHeader = if ($Uri.IsDefaultPort) { $Uri.Host } else { "$($Uri.Host):$($Uri.Port)" }
         $targetName = "HTTP/$($Uri.Host)"
+        if ($Binding -eq 'ForeignSpn') {
+            $targetName = 'HTTP/epa-probe-' + ([BitConverter]::ToString((Get-NTLMRandomBytes -Count 4)) -replace '-', '').ToLowerInvariant() + '.invalid'
+        }
+        $randomBinding = {
+            $applicationData = [byte[]]([System.Text.Encoding]::ASCII.GetBytes('tls-server-end-point:') + (Get-NTLMRandomBytes -Count 32))
+            New-SecChannelBindings -ApplicationData $applicationData
+        }
         $bindingStruct = $null
-        if ($Binding -eq 'Bound') {
-            if (-not $connection.ChannelBinding) { throw 'the TLS channel offered no channel binding' }
-            $bindingStruct = $connection.ChannelBinding
+        if ($Binding -in @('Bound', 'ForeignSpn')) {
+            if ($plain) {
+                $bindingStruct = & $randomBinding
+            }
+            else {
+                if (-not $connection.ChannelBinding) { throw 'the TLS channel offered no channel binding' }
+                $bindingStruct = $connection.ChannelBinding
+            }
         }
         elseif ($Binding -eq 'Wrong') {
-            $applicationData = [byte[]]([System.Text.Encoding]::ASCII.GetBytes('tls-server-end-point:') + (Get-NTLMRandomBytes -Count 32))
-            $bindingStruct = New-SecChannelBindings -ApplicationData $applicationData
+            $bindingStruct = & $randomBinding
         }
         $useSspi = ($Identity.Kind -eq 'Sspi') -and ($Binding -ne 'ChallengeOnly')
         if ($useSspi) {
@@ -61840,6 +62026,9 @@ function Invoke-EPAProbeHandshake {
                 ($domain -ieq $type2.DnsDomainName -or $domain -ieq $type2.NbDomainName)) {
                 $domain = $type2.NbDomainName
             }
+            elseif (-not $domain -and $Identity.UserName -notmatch '@' -and $type2.NbDomainName) {
+                $domain = $type2.NbDomainName
+            }
             $authenticateParams = @{
                 Type2Result = $type2
                 UserName    = $Identity.UserName
@@ -61874,8 +62063,13 @@ function Resolve-EPAProbeVerdict {
         [Parameter(Mandatory = $false)]
         $Wrong,
         [Parameter(Mandatory = $false)]
+        $ForeignSpn,
+        [Parameter(Mandatory = $false)]
         [ValidateSet('Absent', 'Zero')]
         [string]$UnboundForm = 'Absent',
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Https', 'Http')]
+        [string]$Transport = 'Https',
         [Parameter(Mandatory = $false)]
         [string]$IdentityName = 'the probe identity'
     )
@@ -61885,56 +62079,89 @@ function Resolve-EPAProbeVerdict {
         Mode           = $null
         DiagnosticInfo = $null
     }
-    foreach ($name in @('Bound', 'Unbound', 'Wrong')) {
+    foreach ($name in @('Bound', 'Unbound', 'Wrong', 'ForeignSpn')) {
         $value = Get-Variable -Name $name -ValueOnly
         if ($null -ne $value -and [int]$value -in @(502, 503, 504)) { Set-Variable -Name $name -Value $null }
     }
+    $setVerdict = {
+        param($Enabled, $Mode, $Text)
+        $verdict.EPAEnabled = $Enabled
+        $verdict.Confidence = 'High'
+        $verdict.Mode = $Mode
+        $verdict.DiagnosticInfo = $Text
+    }
+    $serviceBindingText = "service binding is enforced: the logon naming another host was rejected, and a logon relayed from a client that authenticated to the attacker names the attacker"
     if ($null -eq $Bound) {
-        $verdict.DiagnosticInfo = "the logon of $IdentityName with the channel binding did not complete"
+        $verdict.DiagnosticInfo = "the control logon of $IdentityName did not complete"
         return $verdict
     }
     if ([int]$Bound -eq 401) {
-        $verdict.DiagnosticInfo = "$IdentityName was rejected even with the correct channel binding - it cannot log on to this endpoint (wrong password, NTLM restricted, Protected Users), so a rejection without the binding would prove nothing"
+        $verdict.DiagnosticInfo = "$IdentityName was rejected even in the control logon - it cannot log on to this endpoint (wrong password, NTLM restricted, Protected Users), so a rejection of the other logons would prove nothing"
+        return $verdict
+    }
+    if ($Transport -eq 'Http') {
+        if ($null -eq $ForeignSpn) {
+            $verdict.DiagnosticInfo = "$IdentityName logged on (HTTP $Bound); the logon naming another host did not complete"
+        }
+        elseif ([int]$ForeignSpn -eq 401) {
+            & $setVerdict $true 'ServiceBinding' "$IdentityName was accepted over plain HTTP naming this server (HTTP $Bound) - $serviceBindingText"
+        }
+        else {
+            & $setVerdict $false 'Off' "$IdentityName was accepted over plain HTTP naming another host (HTTP $ForeignSpn) - neither a channel nor a service binding is checked"
+        }
         return $verdict
     }
     if ($null -eq $Unbound) {
         $verdict.DiagnosticInfo = "$IdentityName logged on with the channel binding (HTTP $Bound); the logon without it did not complete"
         return $verdict
     }
-    $verdict.Confidence = 'High'
-    if ($UnboundForm -eq 'Zero') {
-        if ([int]$Unbound -eq 401) {
-            $verdict.EPAEnabled = $true
-            $verdict.DiagnosticInfo = "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected with the zero binding of a Windows client without a channel - Extended Protection is Required or Accept, which an SSPI logon cannot tell apart"
+    $unboundRejected = ([int]$Unbound -eq 401)
+    $wrongAnswered = ($null -ne $Wrong)
+    $wrongRejected = ($wrongAnswered -and [int]$Wrong -eq 401)
+    if (-not $unboundRejected) {
+        if ($UnboundForm -eq 'Absent') {
+            if (-not $wrongAnswered) {
+                $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) - Extended Protection is not required; the logon with a foreign binding, which tells Accept from Off, did not complete"
+                return $verdict
+            }
+            if ($wrongRejected) {
+                & $setVerdict $true 'Accept' "$IdentityName was accepted without a channel binding (HTTP $Unbound) but rejected with a foreign one - Extended Protection is set to Accept: it takes the logon of a client that implements no channel binding and rejects a Windows client, which sends a binding"
+                return $verdict
+            }
+        }
+        if ($null -eq $ForeignSpn) {
+            $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound); the logon naming another host, which tells service binding from Off, did not complete"
+            return $verdict
+        }
+        if ([int]$ForeignSpn -eq 401) {
+            & $setVerdict $true 'ServiceBinding' "$IdentityName was accepted without verifying the channel binding - $serviceBindingText"
+            return $verdict
+        }
+        & $setVerdict $false 'Off' "$IdentityName was accepted without a channel binding (HTTP $Unbound), with a foreign one and naming another host - Extended Protection is off"
+        return $verdict
+    }
+    if (-not $wrongAnswered) {
+        & $setVerdict $true $null "$IdentityName was rejected without a channel binding - Extended Protection is enforced; the logon with a foreign binding, which tells channel from service binding, did not complete"
+        return $verdict
+    }
+    if ($wrongRejected) {
+        if ($UnboundForm -eq 'Zero') {
+            & $setVerdict $true $null "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected with the zero binding of a Windows client without a channel and with a foreign one - Extended Protection is Required or Accept, which an SSPI logon cannot tell apart"
         }
         else {
-            $verdict.EPAEnabled = $false
-            $verdict.Mode = 'Off'
-            $verdict.DiagnosticInfo = "$IdentityName was accepted with the zero binding of a Windows client without a channel (HTTP $Unbound) - Extended Protection is off"
+            & $setVerdict $true 'Required' "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected without it and with a foreign one - Extended Protection is required"
         }
         return $verdict
     }
-    if ([int]$Unbound -eq 401) {
-        $verdict.EPAEnabled = $true
-        $verdict.Mode = 'Required'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected without it - Extended Protection is required"
+    if ($null -eq $ForeignSpn) {
+        $verdict.DiagnosticInfo = "$IdentityName was rejected without a channel binding but accepted with a foreign one (HTTP $Wrong); the logon naming another host did not complete"
         return $verdict
     }
-    if ($null -eq $Wrong) {
-        $verdict.EPAEnabled = $null
-        $verdict.Confidence = 'Unknown'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) - Extended Protection is not required; the logon with a foreign binding, which tells Accept from Off, did not complete"
+    if ([int]$ForeignSpn -eq 401) {
+        & $setVerdict $true 'ServiceBinding' "$IdentityName was accepted with a foreign channel binding (HTTP $Wrong) - the binding is not verified, but $serviceBindingText"
+        return $verdict
     }
-    elseif ([int]$Wrong -eq 401) {
-        $verdict.EPAEnabled = $true
-        $verdict.Mode = 'Accept'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) but rejected with a foreign one - Extended Protection is set to Accept: it takes the logon of a client that implements no channel binding and rejects a Windows client, which sends a binding"
-    }
-    else {
-        $verdict.EPAEnabled = $false
-        $verdict.Mode = 'Off'
-        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) and with a foreign one (HTTP $Wrong) - Extended Protection is off"
-    }
+    $verdict.DiagnosticInfo = "$IdentityName was rejected without a channel binding but accepted with a foreign one and naming another host - a combination no measured IIS mode produces"
     return $verdict
 }
 function Get-EPAStatusLabel {
@@ -61945,6 +62172,7 @@ function Get-EPAStatusLabel {
         $EPAMode
     )
     if ($EPAMode -eq 'Accept') { return 'Accept' }
+    if ($EPAMode -eq 'ServiceBinding') { return 'Service binding' }
     if ($EPAEnabled -eq $true) { return 'Enabled' }
     if ($EPAEnabled -eq $false) { return 'Disabled' }
     if ($null -eq $EPAConfidence) { return 'Untested' }
@@ -61968,7 +62196,7 @@ function Test-ExtendedProtection {
         Confidence = "Unknown"
         Mode = $null
         Identity = $null
-        ProbeStatus = [PSCustomObject]@{ Bound = $null; Unbound = $null; Wrong = $null }
+        ProbeStatus = [PSCustomObject]@{ Bound = $null; Unbound = $null; Wrong = $null; ForeignSpn = $null }
         Type2Received = $false
         ErrorMessage = $null
         DiagnosticInfo = $null
@@ -61989,14 +62217,11 @@ function Test-ExtendedProtection {
         $result.DiagnosticInfo = $_.Exception.Message
         return $result
     }
-    if ($uri.Scheme -ne 'https') {
-        $result.Success = $true
-        $result.EPAEnabled = $null
-        $result.Confidence = "N/A"
-        $result.ErrorMessage = "EPA only applies to HTTPS connections. HTTP does not use Channel Binding."
-        $result.DiagnosticInfo = "HTTP has no TLS channel to bind to - NTLM relay is always possible over HTTP regardless of EPA settings"
+    if ($uri.Scheme -notin @('https', 'http')) {
+        $result.ErrorMessage = "Not an HTTP or HTTPS URL: $Url"
         return $result
     }
+    $transport = if ($uri.Scheme -eq 'http') { 'Http' } else { 'Https' }
     if ($null -eq $Identity) { $Identity = Resolve-EPAProbeIdentity }
     $result.Identity = $Identity.Name
     Write-Log "[Test-ExtendedProtection] Testing EPA for: $Url"
@@ -62014,32 +62239,44 @@ function Test-ExtendedProtection {
         Write-Log "[Test-ExtendedProtection] No probe logon - $($result.DiagnosticInfo)"
         return $result
     }
-    Write-Log "[Test-ExtendedProtection] Logging on as $($Identity.Name) ($($Identity.Source)), with the channel binding"
-    $bound = Invoke-EPAProbeHandshake @handshake -Binding 'Bound'
+    $logon = {
+        param([string]$Kind, [string]$What)
+        Write-Log "[Test-ExtendedProtection] Logging on $What"
+        $answer = Invoke-EPAProbeHandshake @handshake -Binding $Kind
+        $result.ProbeStatus.$Kind = $answer.StatusCode
+        if ($answer.Error) {
+            $result.ErrorMessage = "Logon $What failed: $($answer.Error)"
+            Write-Log "[Test-ExtendedProtection] $($result.ErrorMessage)"
+        }
+        $answer
+    }
+    $accepted = { param($Status) $null -ne $Status -and $Status -ne 401 -and $Status -notin @(502, 503, 504) }
+    $rejected = { param($Status) $Status -eq 401 }
+    Write-Log "[Test-ExtendedProtection] Logging on as $($Identity.Name) ($($Identity.Source))"
+    $bound = & $logon 'Bound' 'naming this server (control)'
     $result.Identity = $Identity.Name
     Set-EPAProbeServerFacts -Result $result -Type2Result $bound.Type2Result
-    $result.ProbeStatus.Bound = $bound.StatusCode
-    if ($bound.Error) {
-        $result.ErrorMessage = "Logon with the channel binding failed: $($bound.Error)"
-        Write-Log "[Test-ExtendedProtection] $($result.ErrorMessage)"
-    }
-    $unbound = $null
-    $wrong = $null
-    if ($null -ne $bound.StatusCode -and $bound.StatusCode -ne 401) {
-        Write-Log "[Test-ExtendedProtection] Accepted with the channel binding (HTTP $($bound.StatusCode)); logging on without it"
-        $unbound = Invoke-EPAProbeHandshake @handshake -Binding 'Unbound'
-        $result.ProbeStatus.Unbound = $unbound.StatusCode
-        if ($unbound.Error) { $result.ErrorMessage = "Logon without a channel binding failed: $($unbound.Error)" }
-        if ($null -ne $unbound.StatusCode -and $unbound.StatusCode -ne 401 -and $unbound.UnboundForm -eq 'Absent') {
-            Write-Log "[Test-ExtendedProtection] Accepted without the channel binding (HTTP $($unbound.StatusCode)); logging on with a foreign one"
-            $wrong = Invoke-EPAProbeHandshake @handshake -Binding 'Wrong'
-            $result.ProbeStatus.Wrong = $wrong.StatusCode
-            if ($wrong.Error) { $result.ErrorMessage = "Logon with a foreign channel binding failed: $($wrong.Error)" }
+    $unboundForm = if ($Identity.Kind -eq 'Sspi') { 'Zero' } else { 'Absent' }
+    if (& $accepted $result.ProbeStatus.Bound) {
+        if ($transport -eq 'Http') {
+            [void](& $logon 'ForeignSpn' 'naming another host')
+        }
+        else {
+            [void](& $logon 'Unbound' 'without a channel binding')
+            $unboundStatus = $result.ProbeStatus.Unbound
+            $runWrong = (& $rejected $unboundStatus) -or ((& $accepted $unboundStatus) -and $unboundForm -eq 'Absent')
+            if ($runWrong) {
+                [void](& $logon 'Wrong' 'with a foreign channel binding')
+            }
+            $runForeignSpn = (& $accepted $result.ProbeStatus.Wrong) -or ((& $accepted $unboundStatus) -and $unboundForm -eq 'Zero')
+            if ($runForeignSpn) {
+                [void](& $logon 'ForeignSpn' 'naming another host')
+            }
         }
     }
-    $unboundForm = if ($Identity.Kind -eq 'Sspi') { 'Zero' } else { 'Absent' }
     $verdict = Resolve-EPAProbeVerdict -Bound $result.ProbeStatus.Bound -Unbound $result.ProbeStatus.Unbound `
-        -Wrong $result.ProbeStatus.Wrong -UnboundForm $unboundForm -IdentityName $Identity.Name
+        -Wrong $result.ProbeStatus.Wrong -ForeignSpn $result.ProbeStatus.ForeignSpn `
+        -UnboundForm $unboundForm -Transport $transport -IdentityName $Identity.Name
     $result.Success = ($null -ne $result.ProbeStatus.Bound)
     $result.EPAEnabled = $verdict.EPAEnabled
     $result.Confidence = $verdict.Confidence
@@ -62103,18 +62340,48 @@ function Invoke-HTTPRequest {
         [string]$CAName,
         [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
-        [switch]$TestEPA
+        [switch]$TestEPA,
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [string]$Username,
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [AllowEmptyString()]
+        [string]$Password,
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [string]$NTHash,
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [switch]$UseSession,
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [switch]$UseWindowsAuth
     )
     process {
+        $identityParameters = @{}
+        foreach ($name in @('Credential', 'Username', 'Password', 'NTHash', 'UseSession', 'UseWindowsAuth')) {
+            if ($PSBoundParameters.ContainsKey($name)) { $identityParameters[$name] = $PSBoundParameters[$name] }
+        }
+        $epaIdentity = $null
+        if ($TestEPA) {
+            $epaIdentity = New-EPAProbeIdentity @identityParameters
+        }
+        elseif ($identityParameters.Count -gt 0) {
+            throw "-$(@($identityParameters.Keys)[0]) names the identity of the EPA probe and needs -TestEPA."
+        }
         $originalSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
         $originalCertCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
         try {
             Set-TLSConfiguration -IgnoreSSLErrors $IgnoreSSLErrors
             if ($PSCmdlet.ParameterSetName -eq 'Exchange') {
-                return Invoke-ExchangeScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -TestEPA:$TestEPA
+                return Invoke-ExchangeScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -TestEPA:$TestEPA -EPAIdentity $epaIdentity
             }
             if ($PSCmdlet.ParameterSetName -eq 'ADCS') {
-                return Invoke-ADCSScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -CAName $CAName -TestEPA:$TestEPA
+                return Invoke-ADCSScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -CAName $CAName -TestEPA:$TestEPA -EPAIdentity $epaIdentity
             }
             return Invoke-StandardHTTPRequest -Uri $Uri -Method $Method -Headers $Headers -Body $Body -ContentType $ContentType -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
         }
@@ -62322,7 +62589,9 @@ function Invoke-ExchangeScanInternal {
         [Parameter(Mandatory = $false)]
         [string]$UserAgent,
         [Parameter(Mandatory = $false)]
-        [switch]$TestEPA
+        [switch]$TestEPA,
+        [Parameter(Mandatory = $false)]
+        $EPAIdentity
     )
     $targetHost = $Hostname -replace '^https?://', ''
     $targetHost = $targetHost -replace '/.*$', ''
@@ -62353,6 +62622,7 @@ function Invoke-ExchangeScanInternal {
         EPAConfidence    = $null
         EPADiagnostic    = $null
         NTLMInfo         = $null
+        EPAIdentity      = $null
         Error            = $null
     }
     if ([string]::IsNullOrWhiteSpace($targetHost)) {
@@ -62632,12 +62902,14 @@ function Invoke-ExchangeScanInternal {
         Write-Log "[ScanExchange] Testing Extended Protection for Authentication (EPA) per endpoint..."
         $epaTimeout = [Math]::Max($TimeoutSeconds, 10)
         $legacyEPASet = $false
-        $epaIdentity = Resolve-EPAProbeIdentity
+        $epaIdentity = if ($EPAIdentity) { $EPAIdentity } else { Resolve-EPAProbeIdentity }
         if ($epaIdentity.Kind -eq 'None') {
             Write-Log "[ScanExchange] EPA probe has no identity to log on with: $($epaIdentity.Reason)"
+            $result.EPAIdentity = "none - $($epaIdentity.Reason)"
         }
         else {
             Write-Log "[ScanExchange] EPA probe logs on as $($epaIdentity.Name) ($($epaIdentity.Source))"
+            $result.EPAIdentity = "$($epaIdentity.Name) ($($epaIdentity.Source))"
         }
         $endpointUrls = @{
             'OWA'          = "https://$targetHost/owa/"
@@ -62961,7 +63233,9 @@ function Invoke-ADCSScanInternal {
         [Parameter(Mandatory = $false)]
         [string]$CAName,
         [Parameter(Mandatory = $false)]
-        [switch]$TestEPA
+        [switch]$TestEPA,
+        [Parameter(Mandatory = $false)]
+        $EPAIdentity
     )
     $targetHost = $Hostname -replace '^https?://', ''
     $targetHost = $targetHost -replace '/.*$', ''
@@ -62976,15 +63250,16 @@ function Invoke-ADCSScanInternal {
         HttpsStatusCode  = $null
         ServerHeader     = $null
         Endpoints        = [PSCustomObject]@{
-            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
-            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
-            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
-            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }
+            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }
+            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }
+            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }
         }
         EPAEnabled       = $null
         EPAConfidence    = $null
         EPADiagnostic    = $null
         NTLMInfo         = $null
+        EPAIdentity      = $null
         Error            = $null
     }
     if ([string]::IsNullOrWhiteSpace($targetHost)) {
@@ -63131,12 +63406,14 @@ function Invoke-ADCSScanInternal {
         Write-Log "[ScanADCS] Testing Extended Protection for Authentication (EPA) per endpoint..."
         $epaTimeout = [Math]::Max($TimeoutSeconds, 10)
         $legacyEPASet = $false
-        $epaIdentity = Resolve-EPAProbeIdentity
+        $epaIdentity = if ($EPAIdentity) { $EPAIdentity } else { Resolve-EPAProbeIdentity }
         if ($epaIdentity.Kind -eq 'None') {
             Write-Log "[ScanADCS] EPA probe has no identity to log on with: $($epaIdentity.Reason)"
+            $result.EPAIdentity = "none - $($epaIdentity.Reason)"
         }
         else {
             Write-Log "[ScanADCS] EPA probe logs on as $($epaIdentity.Name) ($($epaIdentity.Source))"
+            $result.EPAIdentity = "$($epaIdentity.Name) ($($epaIdentity.Source))"
         }
         foreach ($ep in @('CertSrv', 'CEP', 'CES', 'NDES')) {
             if ($result.Endpoints.$ep.Available -and $result.Endpoints.$ep.AuthMethods -match 'NTLM') {
@@ -63174,6 +63451,15 @@ function Invoke-ADCSScanInternal {
                 }
                 else {
                     Write-Log "[ScanADCS] $ep EPA test failed: $($epaResult.ErrorMessage)"
+                }
+                if ($result.Endpoints.$ep.AvailableHttp) {
+                    $httpTestUrl = $epaTestUrl -replace '^https://', 'http://'
+                    Write-Log "[ScanADCS] Testing service binding for $ep at $httpTestUrl"
+                    $httpEpaResult = Test-ExtendedProtection -Url $httpTestUrl -TimeoutSeconds $epaTimeout -UserAgent $UserAgent -Identity $epaIdentity
+                    $result.Endpoints.$ep.EPAHttpEnabled = $httpEpaResult.EPAEnabled
+                    $result.Endpoints.$ep.EPAHttpConfidence = $httpEpaResult.Confidence
+                    $result.Endpoints.$ep.EPAHttpMode = $httpEpaResult.Mode
+                    Write-Log "[ScanADCS] $ep over HTTP: $($httpEpaResult.DiagnosticInfo)$($httpEpaResult.ErrorMessage)"
                 }
                 if (-not $legacyEPASet) {
                     $result.EPAEnabled = $epaResult.EPAEnabled
@@ -87827,7 +88113,7 @@ function Get-ADCSVulnerabilities {
                     if (-not $skipHttpCheck) {
                         Write-Log "[Get-ADCSVulnerabilities] Checking web enrollment for $($ca.DNSHostName) (CA: $($ca.Name))..."
                         try {
-                            $webEnrollmentResult = Invoke-HTTPRequest -ScanADCS -Uri $ca.DNSHostName -CAName $ca.Name -TestEPA
+                            $webEnrollmentResult = Invoke-HTTPRequest -ScanADCS -Uri $ca.DNSHostName -CAName $ca.Name -TestEPA -UseSession
                             if ($webEnrollmentResult.Success) {
                                 Write-Log "[Get-ADCSVulnerabilities] Web enrollment check successful for $($ca.DNSHostName)"
                                 if ($null -ne $webEnrollmentResult.EPAEnabled) {
@@ -87970,6 +88256,10 @@ function Get-ADCSVulnerabilities {
                                         if ($authMethods) {
                                             $epString += " ($authMethods)"
                                         }
+                                        if ($null -ne $epData.EPAHttpConfidence) {
+                                            $httpEpaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAHttpEnabled -EPAConfidence $epData.EPAHttpConfidence -EPAMode $epData.EPAHttpMode
+                                            $epString += " [EPA: $httpEpaStatus]"
+                                        }
                                         $endpointsWithAuth += $epString
                                     }
                                     if ($epData.AvailableHttps) {
@@ -88067,6 +88357,10 @@ function Get-ADCSVulnerabilities {
                                     if ($epData.AvailableHttp) {
                                         $epString = "$ep via HTTP"
                                         if ($authMethods) { $epString += " ($authMethods)" }
+                                        if ($null -ne $epData.EPAHttpConfidence) {
+                                            $httpEpaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAHttpEnabled -EPAConfidence $epData.EPAHttpConfidence -EPAMode $epData.EPAHttpMode
+                                            $epString += " [EPA: $httpEpaStatus]"
+                                        }
                                         $endpointsWithAuth += $epString
                                     }
                                     if ($epData.AvailableHttps) {
@@ -89447,7 +89741,7 @@ function Get-ExchangeInfrastructure {
                                 } else {
                                     Write-Log "[Get-ExchangeInfrastructure] Detecting Exchange endpoints and EPA for $($exServer.DNSHostName)..."
                                     try {
-                                        $httpResult = Invoke-HTTPRequest -ScanExchange -Uri $exServer.DNSHostName -TestEPA
+                                        $httpResult = Invoke-HTTPRequest -ScanExchange -Uri $exServer.DNSHostName -TestEPA -UseSession
                                         $webEnrollmentResult = $httpResult
                                         if ($httpResult.Success) {
                                             $httpBuildNumber = $httpResult.BuildNumber
@@ -103919,7 +104213,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.10.1+20261115-1605"
+$Script:adPEASVersion = "2.10.1+20261115-1932"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

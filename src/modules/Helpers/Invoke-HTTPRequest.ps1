@@ -70,15 +70,41 @@
 
 .PARAMETER TestEPA
     When used with -ScanExchange or -ScanADCS: Test Extended Protection for Authentication (EPA).
-    Logs on to every endpoint that offers NTLM over HTTPS three times - with the channel
-    binding, without it, and with a foreign one - and reads EPA as Required, Accept or Off.
-    EPA protects against NTLM relay attacks over HTTPS.
+    Logs on to every endpoint that offers NTLM over HTTPS up to four times - with the
+    channel binding, without it, with a foreign one, and naming another host - and reads
+    EPA as Required, Accept, Service binding or Off. With -ScanADCS, an enrollment endpoint
+    reachable over plain HTTP is probed there too: only service binding (IIS Proxy flag
+    with an SPN list) can protect it. EPA protects against NTLM relay attacks.
 
-    The logon needs an identity that can log on: the password or NT hash of the
-    Connect-adPEAS session, or the current Windows logon when the session is the current
-    user or there is no session. A failed logon cannot show whether EPA is enforced - IIS
-    rejects it alike either way - so an endpoint without such an identity, or one the
-    identity cannot log on to, is reported as undetermined.
+    A failed logon cannot show whether EPA is enforced - IIS rejects it alike either way -
+    so the probe logs on with a real identity, and -TestEPA needs it named: -Credential,
+    -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth. Nothing named is an
+    error before any connection is made. The current Windows logon is never taken unasked:
+    pointed at a host of another organisation, it would hand that host the logon of the
+    tester's own account. An endpoint the identity cannot log on to reads undetermined.
+
+.PARAMETER Credential
+    With -TestEPA: the account the EPA probe logs on as, given as a PSCredential
+    (DOMAIN\user, user@domain, or a bare name, which logs on in the target's domain).
+
+.PARAMETER Username
+    With -TestEPA, together with -Password or -NTHash: the account the EPA probe logs on as.
+
+.PARAMETER Password
+    With -TestEPA and -Username: the account's password.
+
+.PARAMETER NTHash
+    With -TestEPA and -Username: the account's NT hash, 32 hex characters.
+
+.PARAMETER UseSession
+    With -TestEPA: log on as the account of the adPEAS session (Connect-adPEAS) - its
+    password or NT hash, or the current Windows logon for a -UseWindowsAuth session. A
+    session with an AES key, a certificate or a ticket has nothing to answer NTLM with, and
+    its endpoints read undetermined. The checks pass this.
+
+.PARAMETER UseWindowsAuth
+    With -TestEPA: log on as the current Windows logon, through SSPI - under runas /netonly,
+    as its network identity.
 
 .EXAMPLE
     Invoke-HTTPRequest -Uri "https://mail.contoso.com/owa/"
@@ -97,12 +123,23 @@
     Tests ADCS Web Enrollment availability via HTTP and HTTPS.
 
 .EXAMPLE
-    Invoke-HTTPRequest -ScanADCS -Uri "ca.contoso.com" -TestEPA
-    Tests ADCS Web Enrollment and checks if Extended Protection for Authentication is enabled.
+    Invoke-HTTPRequest -ScanADCS -Uri "ca.contoso.com" -TestEPA -Credential (Get-Credential)
+    Tests ADCS Web Enrollment and checks Extended Protection for Authentication, logging on
+    as the account entered.
 
 .EXAMPLE
-    Invoke-HTTPRequest -ScanADCS -Uri "ca.contoso.com" -CAName "Contoso-CA" -TestEPA
-    Tests ADCS endpoints including CES (Certificate Enrollment Service) using the CA name.
+    Invoke-HTTPRequest -ScanADCS -Uri "ca.contoso.com" -CAName "Contoso-CA" -TestEPA -Username "CONTOSO\alice" -NTHash "32ED87BDB5FDC5E9CBA88547376818D4"
+    Tests ADCS endpoints including CES (Certificate Enrollment Service), logging on with an NT hash.
+
+.EXAMPLE
+    Connect-adPEAS -Domain "contoso.com" -Credential (Get-Credential)
+    Invoke-HTTPRequest -ScanExchange -Uri "mail.contoso.com" -TestEPA -UseSession
+    Tests Extended Protection on every Exchange endpoint, as the account of the session.
+
+.EXAMPLE
+    Invoke-HTTPRequest -ScanExchange -Uri "mail.contoso.com" -TestEPA -UseWindowsAuth
+    Tests Extended Protection as the current Windows logon (or the network identity of
+    runas /netonly).
 
 .EXAMPLE
     Invoke-HTTPRequest -Uri "https://pki.contoso.com/certsrv/" -Method HEAD
@@ -111,8 +148,10 @@
 .OUTPUTS
     [PSCustomObject] with properties depending on mode:
     - Standard mode: Success, StatusCode, Headers, Content, Error
-    - ScanExchange: Success, Hostname, BuildNumber, Method, Endpoints, NTLMInfo, Error
-    - ScanADCS: Success, Hostname, HttpAvailable, HttpsAvailable, Endpoints, NTLMInfo, Error
+    - ScanExchange: Success, Hostname, BuildNumber, Method, Endpoints, NTLMInfo, EPAIdentity, Error
+    - ScanADCS: Success, Hostname, HttpAvailable, HttpsAvailable, Endpoints, NTLMInfo, EPAIdentity, Error
+
+    EPAIdentity names who the EPA probe logged on as, and how that identity was chosen.
 
     When -TestEPA is used, NTLMInfo contains NTLM Type2 challenge data:
     - NbComputerName: NetBIOS computer name
@@ -176,10 +215,50 @@ function Invoke-HTTPRequest {
 
         [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
         [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
-        [switch]$TestEPA
+        [switch]$TestEPA,
+
+        # The identity the EPA probe logs on as (New-EPAProbeIdentity): exactly one form
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [string]$Username,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [AllowEmptyString()]
+        [string]$Password,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [string]$NTHash,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [switch]$UseSession,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ADCS')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'Exchange')]
+        [switch]$UseWindowsAuth
     )
 
     process {
+        # The EPA probe logs on, so its identity is named before anything connects - and
+        # an identity named without -TestEPA would be ignored, which is a mistake to say
+        $identityParameters = @{}
+        foreach ($name in @('Credential', 'Username', 'Password', 'NTHash', 'UseSession', 'UseWindowsAuth')) {
+            if ($PSBoundParameters.ContainsKey($name)) { $identityParameters[$name] = $PSBoundParameters[$name] }
+        }
+        $epaIdentity = $null
+        if ($TestEPA) {
+            $epaIdentity = New-EPAProbeIdentity @identityParameters
+        }
+        elseif ($identityParameters.Count -gt 0) {
+            throw "-$(@($identityParameters.Keys)[0]) names the identity of the EPA probe and needs -TestEPA."
+        }
+
         # Save original settings to restore later (local variables for thread safety)
         $originalSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
         $originalCertCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
@@ -190,12 +269,12 @@ function Invoke-HTTPRequest {
 
             # ===== Exchange Version Detection Mode =====
             if ($PSCmdlet.ParameterSetName -eq 'Exchange') {
-                return Invoke-ExchangeScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -TestEPA:$TestEPA
+                return Invoke-ExchangeScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -TestEPA:$TestEPA -EPAIdentity $epaIdentity
             }
 
             # ===== ADCS Web Enrollment Detection Mode =====
             if ($PSCmdlet.ParameterSetName -eq 'ADCS') {
-                return Invoke-ADCSScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -CAName $CAName -TestEPA:$TestEPA
+                return Invoke-ADCSScanInternal -Hostname $Uri -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent -CAName $CAName -TestEPA:$TestEPA -EPAIdentity $epaIdentity
             }
 
             # ===== Standard HTTP Request Mode =====
@@ -517,7 +596,11 @@ function Invoke-ExchangeScanInternal {
         [string]$UserAgent,
 
         [Parameter(Mandatory = $false)]
-        [switch]$TestEPA
+        [switch]$TestEPA,
+
+        # The identity the EPA probe logs on as (New-EPAProbeIdentity). Omitted: the session's.
+        [Parameter(Mandatory = $false)]
+        $EPAIdentity
     )
 
     # Normalize hostname - extract FQDN only (remove protocol, path, port if present)
@@ -570,6 +653,7 @@ function Invoke-ExchangeScanInternal {
         EPADiagnostic    = $null         # Diagnostic info for EPA test
         # NTLM information from Type2 challenge (populated when -TestEPA is used)
         NTLMInfo         = $null         # PSCustomObject with NTLM details from first successful EPA test
+        EPAIdentity      = $null         # Who the EPA probe logged on as, and how that was chosen
         Error            = $null
     }
 
@@ -963,14 +1047,16 @@ function Invoke-ExchangeScanInternal {
         # Track if we've set the legacy EPA properties (first endpoint with NTLM)
         $legacyEPASet = $false
 
-        # One identity for every endpoint: the probe logs on as the session's account
-        # (Resolve-EPAProbeIdentity), since a failed logon cannot show whether EPA is enforced
-        $epaIdentity = Resolve-EPAProbeIdentity
+        # One identity for every endpoint, the one the caller named (New-EPAProbeIdentity);
+        # a failed logon cannot show whether EPA is enforced
+        $epaIdentity = if ($EPAIdentity) { $EPAIdentity } else { Resolve-EPAProbeIdentity }
         if ($epaIdentity.Kind -eq 'None') {
             Write-Log "[ScanExchange] EPA probe has no identity to log on with: $($epaIdentity.Reason)"
+            $result.EPAIdentity = "none - $($epaIdentity.Reason)"
         }
         else {
             Write-Log "[ScanExchange] EPA probe logs on as $($epaIdentity.Name) ($($epaIdentity.Source))"
+            $result.EPAIdentity = "$($epaIdentity.Name) ($($epaIdentity.Source))"
         }
 
         # Endpoint URL mapping for EPA testing
@@ -1426,7 +1512,11 @@ function Invoke-ADCSScanInternal {
         [string]$CAName,
 
         [Parameter(Mandatory = $false)]
-        [switch]$TestEPA
+        [switch]$TestEPA,
+
+        # The identity the EPA probe logs on as (New-EPAProbeIdentity). Omitted: the session's.
+        [Parameter(Mandatory = $false)]
+        $EPAIdentity
     )
 
     # Normalize hostname - extract FQDN only (remove protocol, path, port if present)
@@ -1451,10 +1541,10 @@ function Invoke-ADCSScanInternal {
         # the global HttpAvailable / HttpsAvailable flags. CEP/CES are HTTPS-only; CertSrv and
         # NDES can appear on either transport.
         Endpoints        = [PSCustomObject]@{
-            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /certsrv/
-            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /ADPolicyProvider_CEP_*/
-            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /<CAName>_CES_*/
-            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /CertSrv/mscep/
+            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }  # /certsrv/
+            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }  # /ADPolicyProvider_CEP_*/
+            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }  # /<CAName>_CES_*/
+            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null; EPAHttpEnabled = $null; EPAHttpConfidence = $null; EPAHttpMode = $null }  # /CertSrv/mscep/
         }
         # Legacy EPA properties (for backward compatibility) - reflects first endpoint with NTLM
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (ESC8 vulnerable), $null = not tested
@@ -1462,6 +1552,7 @@ function Invoke-ADCSScanInternal {
         EPADiagnostic    = $null         # Diagnostic info for EPA test
         # NTLM information from Type2 challenge (populated when -TestEPA is used)
         NTLMInfo         = $null         # PSCustomObject with NTLM details from first successful EPA test
+        EPAIdentity      = $null         # Who the EPA probe logged on as, and how that was chosen
         Error            = $null
     }
 
@@ -1666,14 +1757,16 @@ function Invoke-ADCSScanInternal {
         # Track if we've set the legacy EPA properties (first endpoint with NTLM)
         $legacyEPASet = $false
 
-        # One identity for every endpoint (Resolve-EPAProbeIdentity): only a logon that
-        # succeeds can show whether the channel binding is checked
-        $epaIdentity = Resolve-EPAProbeIdentity
+        # One identity for every endpoint, the one the caller named (New-EPAProbeIdentity):
+        # only a logon that succeeds can show whether the channel binding is checked
+        $epaIdentity = if ($EPAIdentity) { $EPAIdentity } else { Resolve-EPAProbeIdentity }
         if ($epaIdentity.Kind -eq 'None') {
             Write-Log "[ScanADCS] EPA probe has no identity to log on with: $($epaIdentity.Reason)"
+            $result.EPAIdentity = "none - $($epaIdentity.Reason)"
         }
         else {
             Write-Log "[ScanADCS] EPA probe logs on as $($epaIdentity.Name) ($($epaIdentity.Source))"
+            $result.EPAIdentity = "$($epaIdentity.Name) ($($epaIdentity.Source))"
         }
 
         # Test EPA for each available endpoint with NTLM over HTTPS
@@ -1722,6 +1815,19 @@ function Invoke-ADCSScanInternal {
                 }
                 else {
                     Write-Log "[ScanADCS] $ep EPA test failed: $($epaResult.ErrorMessage)"
+                }
+
+                # Plain HTTP has no channel to bind, so only service binding (IIS Proxy flag
+                # with an SPN list) can protect it; without that IIS takes every logon there,
+                # whatever tokenChecking says - probed on its own
+                if ($result.Endpoints.$ep.AvailableHttp) {
+                    $httpTestUrl = $epaTestUrl -replace '^https://', 'http://'
+                    Write-Log "[ScanADCS] Testing service binding for $ep at $httpTestUrl"
+                    $httpEpaResult = Test-ExtendedProtection -Url $httpTestUrl -TimeoutSeconds $epaTimeout -UserAgent $UserAgent -Identity $epaIdentity
+                    $result.Endpoints.$ep.EPAHttpEnabled = $httpEpaResult.EPAEnabled
+                    $result.Endpoints.$ep.EPAHttpConfidence = $httpEpaResult.Confidence
+                    $result.Endpoints.$ep.EPAHttpMode = $httpEpaResult.Mode
+                    Write-Log "[ScanADCS] $ep over HTTP: $($httpEpaResult.DiagnosticInfo)$($httpEpaResult.ErrorMessage)"
                 }
 
                 # Set legacy properties from first endpoint with NTLM (backward compatibility)
