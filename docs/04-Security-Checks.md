@@ -1639,12 +1639,45 @@ Analyzes enterprise application infrastructure.
 **What it checks**:
 - Exchange Organization presence (msExchOrganizationContainer)
 - Exchange server versions via LDAP attributes and HTTP endpoint probing
-- Extended Protection for Authentication (EPA) status on Exchange web endpoints
+- Extended Protection for Authentication (EPA) status on Exchange web endpoints (EWS, MRSProxy, API, Autodiscover, OAB, MAPI, RPC), see [How the EPA probe works](#how-the-epa-probe-works)
 - Exchange Trusted Subsystem group membership (high-privilege service accounts)
 - Exchange Windows Permissions group membership (can have DCSync rights via WriteDacl on domain root)
 - Organization Management group membership (full Exchange admin control)
 
 **Security Impact**: Exchange servers often have high privileges in AD. The "Exchange Windows Permissions" group has WriteDacl on the domain root by default, which can be abused for DCSync. "Exchange Trusted Subsystem" members can modify any Exchange object. Outdated Exchange versions have known vulnerabilities (ProxyLogon, ProxyShell). Missing EPA enables NTLM relay attacks against Exchange endpoints.
+
+#### How the EPA probe works
+
+The same probe serves Exchange and AD CS web enrollment (ESC8). A failed logon cannot
+show whether an endpoint enforces Extended Protection - IIS rejects a logon without a
+channel binding and a logon with a wrong password with the same `401` - so adPEAS logs on
+with a real identity, three times, each over its own TLS connection:
+
+| Logon | Accepted | Rejected |
+|---|---|---|
+| with the TLS channel binding (control) | continue | `[EPA: Undetermined]` - the identity cannot log on here |
+| without a channel binding pair | continue | `[EPA: Enabled]` - Required |
+| with the binding of another channel | `[EPA: Disabled]` - Off (Finding) | `[EPA: Accept]` (Hint) |
+
+What IIS does in each mode, measured:
+
+| tokenChecking | correct binding | no binding pair | zero binding | foreign binding |
+|---|---|---|---|---|
+| Require | accepted | rejected | rejected | rejected |
+| Allow (Accept) | accepted | accepted | rejected | rejected |
+| None (Off) | accepted | accepted | accepted | accepted |
+
+A Windows client that has no channel to bind sends the zero binding, so `Accept` rejects
+the relay of a coerced Windows machine or user; it only takes the logon of an NTLM client
+that implements no channel binding. It is reported as a hint, not as ESC8 or an Exchange
+relay finding. Microsoft recommends `Required`.
+
+The identity is the session's: the password or NT hash given to `Connect-adPEAS`, or the
+current Windows logon for `-UseWindowsAuth` and for `Invoke-HTTPRequest` without a session.
+A logon through SSPI always sends a binding, so it cannot tell `Required` from `Accept`;
+both read `[EPA: Enabled]` then. A session authenticated with an AES key, a certificate or
+a ticket has nothing to answer an NTLM challenge with; its endpoints are reported as
+`[EPA: Undetermined]`.
 
 **Usage**:
 ```powershell

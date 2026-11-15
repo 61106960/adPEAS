@@ -665,7 +665,7 @@ function Get-ADCSVulnerabilities {
                                         # where NTLM is on offer, and a missing marker read
                                         # exactly like a disabled one. "Undetermined" is the
                                         # answer of a probe that could not tell.
-                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence -EPAMode $epData.EPAMode
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
@@ -804,7 +804,7 @@ function Get-ADCSVulnerabilities {
                                         $epString = "$ep via HTTPS"
                                         if ($authMethods) { $epString += " ($authMethods)" }
                                         # Same four EPA states as the caComputer path above.
-                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence -EPAMode $epData.EPAMode
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }

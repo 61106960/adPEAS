@@ -1859,7 +1859,7 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         Title = "ESC8 - NTLM Relay to Web Enrollment"
         Risk = "Finding"
         BaseScore = 70
-        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA). Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced - IIS does not enforce EPA on web enrollment unless it was set, but read its tokenChecking setting before treating it as relayable."
+        Description = "The CA has Web Enrollment enabled without Extended Protection for Authentication (EPA) being required. Attackers can relay NTLM authentication to the CA's web interface to obtain certificates as the relayed user. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed machine logon therefore carries; it is listed as a hint of its own. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there. IIS does not enforce EPA on web enrollment unless it was set, so read the tokenChecking setting of such an endpoint before treating it as relayable."
         Impact = @(
             "NTLM authentication can be relayed to obtain certificates"
             "Domain Controller machine accounts can be relayed to get DC certificates"
@@ -1934,7 +1934,7 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
             # string lacked "[EPA: Enabled]" - and EPA is probed only where NTLM is offered,
             # so a Negotiate-only HTTPS endpoint carried no marker and came out red for
             # being configured the way Microsoft recommends.
-            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '(?i)NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept)\]'; Severity = 'Finding' }
         )
     }
 
@@ -12815,7 +12815,7 @@ $acl.Access | Where-Object {
         Title = "Extended Protection for Authentication Enabled"
         Risk = "Secure"
         BaseScore = 0
-        Description = "This web endpoint has Extended Protection for Authentication (EPA) enabled with NTLM authentication. EPA binds the authentication to the TLS channel, preventing NTLM relay attacks even when NTLM is used over HTTPS."
+        Description = "This web endpoint has Extended Protection for Authentication (EPA) enabled with NTLM authentication. EPA binds the authentication to the TLS channel, preventing NTLM relay attacks even when NTLM is used over HTTPS. adPEAS logged on with and without the channel binding: the endpoint requires it. When the scan logged on as the current Windows user, through SSPI, Enabled also covers the Accept setting - an SSPI logon always sends a binding and cannot tell the two apart."
         Impact = @(
             "NTLM relay attacks over HTTPS are blocked"
             "Authentication is cryptographically bound to TLS channel"
@@ -12849,6 +12849,43 @@ $acl.Access | Where-Object {
         )
     }
 
+    'WEB_ENDPOINT_EPA_ACCEPT' = @{
+        Title = "Extended Protection for Authentication Set to Accept"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "This web endpoint has Extended Protection for Authentication (EPA) set to Accept (IIS tokenChecking Allow) rather than Required. adPEAS logged on three times: with the TLS channel binding, without a binding, and with the binding of another channel. Accept took the logon without a binding and rejected the foreign one. Measured against IIS, Accept rejects a logon that carries a binding of no or another channel - every current Windows client sends one, a zero binding when it has no channel, so the relay of a coerced Windows machine or user fails - and takes only a logon that carries no binding at all, the logon of an NTLM client that implements no channel binding."
+        Impact = @(
+            "The relay of a Windows client's NTLM logon is rejected, whether it was captured over SMB, plain HTTP or another TLS channel"
+            "A logon from an NTLM client without channel binding support is accepted unbound and can be relayed to this endpoint"
+            "The configuration is one setting away from Required, which Microsoft recommends for Exchange and AD CS web enrollment"
+        )
+        Attack = @(
+            "1. Capture the NTLM logon of an account whose client implements no channel binding"
+            "2. Relay it to this endpoint, which accepts a logon without a binding"
+            "3. Act as the relayed identity against the endpoint"
+        )
+        Remediation = @(
+            "Set Extended Protection to Required on this virtual directory once every client that authenticates to it supports channel binding"
+            "Find the clients that still log on without a binding before switching - they are the ones Required will reject"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Require Extended Protection on an IIS virtual directory"
+                Command = "%windir%\system32\inetsrv\appcmd.exe set config 'Default Web Site/VDIR_NAME' -section:system.webServer/security/authentication/windowsAuthentication /extendedProtection.tokenChecking:Require /commit:apphost"
+            }
+        )
+        References = @(
+            @{ Title = "Extended Protection for Authentication - Microsoft"; Url = "https://docs.microsoft.com/en-us/dotnet/framework/wcf/feature-details/extended-protection-for-authentication-overview" }
+            @{ Title = "KB5005413: Mitigate NTLM Relay on ADCS - Microsoft"; Url = "https://support.microsoft.com/en-us/topic/kb5005413-mitigating-ntlm-relay-attacks-on-active-directory-certificate-services-ad-cs-3612b773-4043-4aa9-b23d-b87910cd3429" }
+            @{ Title = "Configure Extended Protection in Exchange Server"; Url = "https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection" }
+        )
+        Tools = @("ntlmrelayx")
+        MITRE = "T1187"
+        Triggers = @(
+            @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Accept\]'; Severity = 'Hint' }
+            @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Accept\]'; Severity = 'Hint' }
+        )
+    }
     # --- PKI / CA Certificate Secure Configurations ---
 
     'PKI_STRONG_SIGNATURE_ALGORITHM' = @{
@@ -14431,7 +14468,7 @@ $acl.Access | Where-Object {
         Title = "Exchange Web Endpoints Security"
         Risk = "Finding"
         BaseScore = 40
-        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. An endpoint marked [EPA: Undetermined] offers NTLM and rejected adPEAS's probe, which carries random credentials and is rejected whether or not EPA is enforced; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
+        Description = "Exchange web endpoints expose authentication interfaces. Endpoints using NTLM authentication are vulnerable to relay attacks unless Extended Protection for Authentication (EPA) is enabled. EPA binds authentication to the TLS channel, preventing relay. It is configured per virtual directory, so each endpoint listed carries its own verdict and one of them being protected says nothing about the others - MRSProxy in particular sits inside the EWS directory but is governed separately, and a pre-authentication remote code execution chain has been demonstrated against it on servers where only that endpoint was left unprotected. adPEAS decides EPA by logging on as the session's account three times: with the TLS channel binding, without it, and with the binding of another channel. An endpoint marked [EPA: Accept] is not reported here: Accept rejects a logon whose binding names no or another channel, which every current Windows client sends and a relayed logon therefore carries; it is listed as a hint of its own. [EPA: Undetermined] means the endpoint could not be tested: the session has no password or NT hash to log on with (a key, certificate or ticket), or the account could not log on there; Exchange 2019 CU14 and later enable Extended Protection by default, so read the state of such an endpoint on the server before treating it as relayable."
         Impact = @(
             "HTTP + NTLM endpoints are vulnerable to NTLM relay"
             "HTTPS + NTLM without EPA is also vulnerable"
@@ -14470,7 +14507,7 @@ $acl.Access | Where-Object {
             # must not carry the card: the row went green through the severity-only trigger
             # and kept the "NTLM endpoints are vulnerable to relay" write-up, while the
             # Secure definition that fits it was reachable from the AD CS attribute only.
-            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*Enabled\]'; Severity = 'Finding' }
+            @{ Attribute = 'WebEndpoints'; Pattern = 'NTLM'; ExcludePattern = '\[EPA:\s*(Enabled|Accept)\]'; Severity = 'Finding' }
         )
     }
 
@@ -15077,7 +15114,7 @@ $acl.Access | Where-Object {
             # EPA Enabled = Secure
             @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure'; SeverityOnly = $true }
             @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Enabled\]'; Severity = 'Secure'; SeverityOnly = $true }
-            # NTLM + EPA Disabled = Finding
+            # NTLM + EPA Disabled = Finding. Accept is a Hint, through WEB_ENDPOINT_EPA_ACCEPT
             @{ Attribute = 'WebEndpoints'; Pattern = '\[EPA:\s*Disabled\]'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'WebEnrollmentEndpoints'; Pattern = '\[EPA:\s*Disabled\]'; Severity = 'Finding'; SeverityOnly = $true }
         )

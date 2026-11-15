@@ -208,6 +208,8 @@ function Clear-SessionState {
     # Core session state
     $Script:LDAPContext = $null
     $Script:LDAPCredential = $null
+    # NT hash of an Overpass-the-Hash session, kept for the EPA probe (Connect-adPEAS)
+    $Script:LDAPNTHashIdentity = $null
     $Script:ConnectionState = $null
     $Script:LastLDAPErrorCode = $null
     $Script:LastLDAPErrorDetails = $null

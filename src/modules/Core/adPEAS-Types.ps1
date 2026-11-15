@@ -64,7 +64,10 @@ $Script:adPEASOptInModules = @('Shares')
 #                   so the two belong next to each other - an "EPA: Enabled" on EWS
 #                   says nothing about MRSProxy, and that gap is a published
 #                   pre-authentication relay path
+#   API             the REST API - mailbox access like EWS, its own virtual directory
 #   Autodiscover    hands out client configuration, and offers NTLM while doing it
+#   OAB             hands out the offline address book, the directory of the
+#                   organisation - Windows authentication with its own EPA setting
 #   MAPI, RPC       the Outlook transport protocols
 #   ActiveSync      mobile access, commonly Basic and commonly published externally
 #   PowerShell      remote management, normally Kerberos-only
@@ -81,7 +84,9 @@ $Script:ExchangeEndpointOrder = @(
     'ECP'
     'EWS'
     'MRSProxy'
+    'API'
     'Autodiscover'
+    'OAB'
     'MAPI'
     'RPC'
     'ActiveSync'

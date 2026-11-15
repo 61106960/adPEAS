@@ -70,9 +70,15 @@
 
 .PARAMETER TestEPA
     When used with -ScanExchange or -ScanADCS: Test Extended Protection for Authentication (EPA).
-    Performs an NTLM handshake without Channel Binding Token to detect if EPA is enabled.
+    Logs on to every endpoint that offers NTLM over HTTPS three times - with the channel
+    binding, without it, and with a foreign one - and reads EPA as Required, Accept or Off.
     EPA protects against NTLM relay attacks over HTTPS.
-    Only applicable when HTTPS + NTLM is available.
+
+    The logon needs an identity that can log on: the password or NT hash of the
+    Connect-adPEAS session, or the current Windows logon when the session is the current
+    user or there is no session. A failed logon cannot show whether EPA is enforced - IIS
+    rejects it alike either way - so an endpoint without such an identity, or one the
+    identity cannot log on to, is reported as undetermined.
 
 .EXAMPLE
     Invoke-HTTPRequest -Uri "https://mail.contoso.com/owa/"
@@ -480,7 +486,7 @@ function Invoke-StandardHTTPRequest {
     4. Fallback: X-OWA-Version via HTTP (non-SSL)
 
     Additionally detects:
-    - Available endpoints (OWA, ECP, EWS, Autodiscover, MAPI, RPC, PowerShell, ActiveSync, MRSProxy)
+    - Available endpoints (OWA, ECP, EWS, MRSProxy, API, Autodiscover, OAB, MAPI, RPC, ActiveSync, PowerShell)
     - Authentication methods (NTLM, Negotiate, Basic, Forms)
     - HTTP vs HTTPS availability
     - Extended Protection for Authentication (EPA) status per endpoint (with -TestEPA)
@@ -534,20 +540,25 @@ function Invoke-ExchangeScanInternal {
         # Declared in $Script:ExchangeEndpointOrder's order so the structure reads the way
         # the report does. Only that list decides the output order; this one is cosmetic.
         Endpoints        = [PSCustomObject]@{
-            OWA          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            ECP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            EWS          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            OWA          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            ECP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            EWS          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
             # MRSProxy is a WCF service inside the EWS virtual directory, and it carries its
             # own Extended Protection setting: Negotiate can be offered there without channel
             # binding even on a server whose OWA and EWS roots enforce EPA, which is a
             # published pre-authentication relay path. It has to be probed separately - the
             # EWS entry says nothing about it.
-            MRSProxy     = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            Autodiscover = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            MAPI         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            RPC          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            ActiveSync   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
-            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }
+            MRSProxy     = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            API          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            Autodiscover = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            # OAB hands out the offline address book, the API directory the REST API; both
+            # are Windows-authenticated virtual directories with an Extended Protection
+            # setting of their own, and neither was probed before.
+            OAB          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            MAPI         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            RPC          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            ActiveSync   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
+            PowerShell   = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }
         }
         # Protocol availability
         HttpAvailable    = $false
@@ -847,6 +858,24 @@ function Invoke-ExchangeScanInternal {
         Write-Log "[ScanExchange] ActiveSync endpoint responded but is not Exchange (likely load balancer redirect)"
     }
 
+    # ===== Test OAB and API endpoints =====
+    # Windows-authenticated virtual directories with their own Extended Protection setting
+    foreach ($extra in @(
+        @{ Name = 'OAB'; Url = "https://$targetHost/oab/" }
+        @{ Name = 'API'; Url = "https://$targetHost/api/" }
+    )) {
+        Write-Log "[ScanExchange] Testing $($extra.Name) endpoint: $($extra.Url)"
+        $extraResult = Test-ExchangeEndpoint -Url $extra.Url -EndpointName $extra.Name -TimeoutSeconds $TimeoutSeconds -UserAgent $UserAgent
+        if ($extraResult.IsExchangeEndpoint) {
+            $result.Endpoints.($extra.Name).Available = $true
+            $result.Endpoints.($extra.Name).AuthMethods = $extraResult.AuthMethods -join ', '
+            Write-Log "[ScanExchange] $($extra.Name) available (HTTP $($extraResult.StatusCode)), Auth: $($extraResult.AuthMethods -join ', ')"
+        }
+        elseif ($extraResult.Reachable) {
+            Write-Log "[ScanExchange] $($extra.Name) endpoint responded but is not Exchange (HTTP $($extraResult.StatusCode))"
+        }
+    }
+
     # ===== Test HTTP (non-SSL) OWA as last resort for version =====
     if (-not $result.Success) {
         Write-Log "[ScanExchange] Testing HTTP (non-SSL) for version"
@@ -874,9 +903,13 @@ function Invoke-ExchangeScanInternal {
 
     # Set success if any endpoint was found (even without version)
     if (-not $result.Success) {
-        $anyEndpoint = $result.Endpoints.OWA.Available -or $result.Endpoints.ECP.Available -or $result.Endpoints.EWS.Available -or
-                       $result.Endpoints.Autodiscover.Available -or $result.Endpoints.MAPI.Available -or $result.Endpoints.RPC.Available -or
-                       $result.Endpoints.PowerShell.Available -or $result.Endpoints.ActiveSync.Available -or $result.Endpoints.MRSProxy.Available
+        # OAB and API do not count: /api/ answering 401 is what any Windows-authenticated
+        # web application does, and neither path alone makes a host an Exchange server.
+        $anyEndpoint = $false
+        foreach ($epName in $Script:ExchangeEndpointOrder) {
+            if ($epName -in @('OAB', 'API')) { continue }
+            if ($result.Endpoints.$epName.Available) { $anyEndpoint = $true }
+        }
 
         if ($anyEndpoint) {
             $result.Success = $true
@@ -930,17 +963,29 @@ function Invoke-ExchangeScanInternal {
         # Track if we've set the legacy EPA properties (first endpoint with NTLM)
         $legacyEPASet = $false
 
+        # One identity for every endpoint: the probe logs on as the session's account
+        # (Resolve-EPAProbeIdentity), since a failed logon cannot show whether EPA is enforced
+        $epaIdentity = Resolve-EPAProbeIdentity
+        if ($epaIdentity.Kind -eq 'None') {
+            Write-Log "[ScanExchange] EPA probe has no identity to log on with: $($epaIdentity.Reason)"
+        }
+        else {
+            Write-Log "[ScanExchange] EPA probe logs on as $($epaIdentity.Name) ($($epaIdentity.Source))"
+        }
+
         # Endpoint URL mapping for EPA testing
         $endpointUrls = @{
             'OWA'          = "https://$targetHost/owa/"
             'ECP'          = "https://$targetHost/ecp/"
             'EWS'          = "https://$targetHost/ews/exchange.asmx"
+            'MRSProxy'     = "https://$targetHost/ews/mrsproxy.svc"
+            'API'          = "https://$targetHost/api/"
             'Autodiscover' = "https://$targetHost/autodiscover/autodiscover.xml"
+            'OAB'          = "https://$targetHost/oab/"
             'MAPI'         = "https://$targetHost/mapi/"
             'RPC'          = "https://$targetHost/rpc/"
             'PowerShell'   = "https://$targetHost/powershell/"
             'ActiveSync'   = "https://$targetHost/Microsoft-Server-ActiveSync/"
-            'MRSProxy'     = "https://$targetHost/ews/mrsproxy.svc"
         }
 
         # Test EPA for each available endpoint with NTLM over HTTPS
@@ -949,18 +994,19 @@ function Invoke-ExchangeScanInternal {
                 $epaTestUrl = $endpointUrls[$ep]
 
                 Write-Log "[ScanExchange] Testing EPA for $ep at $epaTestUrl"
-                $epaResult = Test-ExtendedProtection -Url $epaTestUrl -TimeoutSeconds $epaTimeout -UserAgent $UserAgent
+                $epaResult = Test-ExtendedProtection -Url $epaTestUrl -TimeoutSeconds $epaTimeout -UserAgent $UserAgent -Identity $epaIdentity
 
                 # Store EPA result in the endpoint object
                 $result.Endpoints.$ep.EPAEnabled = $epaResult.EPAEnabled
                 $result.Endpoints.$ep.EPAConfidence = $epaResult.Confidence
+                $result.Endpoints.$ep.EPAMode = $epaResult.Mode
 
                 if ($epaResult.Success) {
                     if ($epaResult.EPAEnabled -eq $true) {
                         Write-Log "[ScanExchange] $ep EPA ENABLED ($($epaResult.Confidence) confidence)"
                     }
                     elseif ($epaResult.EPAEnabled -eq $false) {
-                        Write-Log "[ScanExchange] $ep EPA DISABLED ($($epaResult.Confidence) confidence) - NTLM relay possible!"
+                        Write-Log "[ScanExchange] $ep EPA NOT ENFORCED (mode: $($epaResult.Mode)) - NTLM relay possible!"
                     }
                     else {
                         Write-Log "[ScanExchange] $ep EPA status: $($epaResult.DiagnosticInfo)"
@@ -1405,10 +1451,10 @@ function Invoke-ADCSScanInternal {
         # the global HttpAvailable / HttpsAvailable flags. CEP/CES are HTTPS-only; CertSrv and
         # NDES can appear on either transport.
         Endpoints        = [PSCustomObject]@{
-            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /certsrv/
-            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /ADPolicyProvider_CEP_*/
-            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /<CAName>_CES_*/
-            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null }  # /CertSrv/mscep/
+            CertSrv      = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /certsrv/
+            CEP          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /ADPolicyProvider_CEP_*/
+            CES          = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /<CAName>_CES_*/
+            NDES         = [PSCustomObject]@{ Available = $false; AvailableHttp = $false; AvailableHttps = $false; AuthMethods = ''; EPAEnabled = $null; EPAConfidence = $null; EPAMode = $null }  # /CertSrv/mscep/
         }
         # Legacy EPA properties (for backward compatibility) - reflects first endpoint with NTLM
         EPAEnabled       = $null         # $true = EPA active (secure), $false = EPA not active (ESC8 vulnerable), $null = not tested
@@ -1620,6 +1666,16 @@ function Invoke-ADCSScanInternal {
         # Track if we've set the legacy EPA properties (first endpoint with NTLM)
         $legacyEPASet = $false
 
+        # One identity for every endpoint (Resolve-EPAProbeIdentity): only a logon that
+        # succeeds can show whether the channel binding is checked
+        $epaIdentity = Resolve-EPAProbeIdentity
+        if ($epaIdentity.Kind -eq 'None') {
+            Write-Log "[ScanADCS] EPA probe has no identity to log on with: $($epaIdentity.Reason)"
+        }
+        else {
+            Write-Log "[ScanADCS] EPA probe logs on as $($epaIdentity.Name) ($($epaIdentity.Source))"
+        }
+
         # Test EPA for each available endpoint with NTLM over HTTPS
         foreach ($ep in @('CertSrv', 'CEP', 'CES', 'NDES')) {
             if ($result.Endpoints.$ep.Available -and $result.Endpoints.$ep.AuthMethods -match 'NTLM') {
@@ -1646,18 +1702,19 @@ function Invoke-ADCSScanInternal {
                 }
 
                 Write-Log "[ScanADCS] Testing EPA for $ep at $epaTestUrl"
-                $epaResult = Test-ExtendedProtection -Url $epaTestUrl -TimeoutSeconds $epaTimeout -UserAgent $UserAgent
+                $epaResult = Test-ExtendedProtection -Url $epaTestUrl -TimeoutSeconds $epaTimeout -UserAgent $UserAgent -Identity $epaIdentity
 
                 # Store EPA result in the endpoint object
                 $result.Endpoints.$ep.EPAEnabled = $epaResult.EPAEnabled
                 $result.Endpoints.$ep.EPAConfidence = $epaResult.Confidence
+                $result.Endpoints.$ep.EPAMode = $epaResult.Mode
 
                 if ($epaResult.Success) {
                     if ($epaResult.EPAEnabled -eq $true) {
                         Write-Log "[ScanADCS] $ep EPA ENABLED ($($epaResult.Confidence) confidence)"
                     }
                     elseif ($epaResult.EPAEnabled -eq $false) {
-                        Write-Log "[ScanADCS] $ep EPA DISABLED ($($epaResult.Confidence) confidence) - ESC8 vulnerable!"
+                        Write-Log "[ScanADCS] $ep EPA NOT ENFORCED (mode: $($epaResult.Mode)) - ESC8 vulnerable!"
                     }
                     else {
                         Write-Log "[ScanADCS] $ep EPA status: $($epaResult.DiagnosticInfo)"

@@ -2033,6 +2033,21 @@ function Connect-adPEAS {
                 }
             }
 
+            # Store the NT hash of an Overpass-the-Hash session for the EPA probe
+            # (Resolve-EPAProbeIdentity): only a logon that succeeds can show whether a web
+            # endpoint checks the TLS channel binding, and the NT hash is what answers an
+            # NTLM challenge for this account. Kept outside LDAPContext so that nothing that
+            # displays or exports the session context can carry it.
+            if ($AuthMethod -eq 'NTHash') {
+                $hashBytes = New-Object byte[] 16
+                for ($i = 0; $i -lt 16; $i++) { $hashBytes[$i] = [Convert]::ToByte($NTHash.Substring($i * 2, 2), 16) }
+                $Script:LDAPNTHashIdentity = @{
+                    UserName = $Username
+                    Domain   = $Domain
+                    NTHash   = $hashBytes
+                }
+            }
+
             # Store Certificate in LDAPContext for session reuse by Invoke-adPEAS
             if ($Certificate) {
                 $Script:LDAPContext['Certificate'] = $Certificate

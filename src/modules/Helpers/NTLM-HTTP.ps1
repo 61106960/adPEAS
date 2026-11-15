@@ -1,33 +1,43 @@
 <#
 .SYNOPSIS
-    NTLM over HTTP authentication helpers for Extended Protection for Authentication (EPA) testing.
+    NTLM over HTTP helpers for testing Extended Protection for Authentication (EPA).
 
 .DESCRIPTION
-    Implements NTLM Type1/Type2/Type3 message handling over HTTP to test whether Extended Protection
-    for Authentication (EPA/Channel Binding) is enabled.
+    EPA binds an NTLM logon to the TLS channel it travels on. The client puts a hash of the
+    server's certificate - the channel binding, MsvAvChannelBindings - into its NTLMv2
+    response, and IIS rejects a logon whose binding is missing or names another channel. A
+    relayed logon names the attacker's channel or none at all, so EPA stops the relay.
 
-    EPA binds NTLM authentication to the TLS channel, preventing relay attacks.
-    This module probes EPA with an NTLM authentication that carries random credentials and
-    no Channel Binding Token (CBT).
+    Only a logon that succeeds can show whether the binding was checked. IIS answers every
+    rejected logon with the same 401: a missing binding and a wrong password alike, with
+    byte-identical headers, an empty body and no measurable difference in timing (measured
+    against Exchange SE with random credentials and every binding variant, NTLMv1 and an
+    anonymous logon). A probe with invalid credentials therefore cannot tell, whatever it
+    sends - the probe this module used to run could only ever answer "undetermined".
 
-    Only an accepted probe is a verdict: nothing rejected the missing binding, so EPA is
-    not enforced. A rejected probe (401) is none - the random credentials fail whether or
-    not EPA is enforced, and the server answers both failures alike. Measured against an
-    Exchange SE server: the same valid account was accepted with the binding and rejected
-    without it on EWS, MRSProxy, MAPI and RPC, and the 401 it got without the binding was
-    the one random credentials get. See Resolve-EPAType3Answer.
+    The probe logs on with a real identity, three times, each over a TLS connection of its
+    own (Test-ExtendedProtection, Resolve-EPAProbeVerdict):
 
-    Success Flag Semantics:
-    - Success = $true:  the probe completed (a verdict, if it reached one, is in EPAEnabled)
-    - Success = $false: EPA test could not be completed (network error, no NTLM, etc.)
-    - EPAEnabled = $true:  EPA is active (secure against NTLM relay)
-    - EPAEnabled = $false: EPA is NOT active (vulnerable to NTLM relay)
-    - EPAEnabled = $null:  EPA status could not be determined or not applicable
+    - with the correct binding       the control - if this logon fails, the identity cannot
+                                     log on to this endpoint and nothing else is a verdict
+    - without a binding              rejected: EPA is required
+    - with the binding of another    rejected: EPA is set to Accept; accepted: EPA is off
+      channel
 
-    Timeout Semantics:
-    - TimeoutSeconds is a per-operation timeout, not a total timeout
-    - Each HTTP request (Type1 and Type3) has its own timeout
-    - Slow connections with many small packets may exceed TimeoutSeconds total
+    "Without a binding" means without the MsvAvChannelBindings pair at all, and the
+    difference matters (measured against IIS in all three modes): a Windows client that
+    has no channel to bind sends the pair with 16 zero bytes, and Accept rejects that just
+    like a foreign binding - it takes only a logon that carries no pair, the logon of a
+    client that implements no channel binding. Accept therefore stops the relay of a
+    coerced Windows machine, and only such clients remain relayable through it. SSPI
+    always sends the pair, so a logon through SSPI cannot tell Required from Accept.
+
+    The identity is the session's (Resolve-EPAProbeIdentity). A password or NT hash given to
+    Connect-adPEAS answers the challenge here, in New-NTLMAuthenticateMessage. A session
+    authenticated as the current Windows user, or no session at all, logs on through SSPI
+    with the current Windows logon. An identity that has no password or NT hash - AES key,
+    certificate, ticket - cannot answer an NTLM challenge, and its endpoints stay
+    undetermined.
 
 .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -48,6 +58,22 @@ function Get-NTLMSecureRNG {
         $Script:NTLM_RNG = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     }
     return $Script:NTLM_RNG
+}
+
+function Get-NTLMRandomBytes {
+    <#
+    .SYNOPSIS
+        Returns the given number of cryptographically random bytes.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Count
+    )
+
+    $bytes = New-Object byte[] $Count
+    (Get-NTLMSecureRNG).GetBytes($bytes)
+    return ,$bytes
 }
 
 # NTLM Message Type Constants
@@ -97,8 +123,8 @@ function New-NTLMType1Message {
     # Message type (1 = Negotiate)
     $messageType = [BitConverter]::GetBytes([uint32]1)
 
-    # Negotiate flags - request extended session security but NOT Channel Binding
-    # This is key for EPA testing - we explicitly don't include CBT
+    # Negotiate flags. Signing and sealing are not requested: the probe sends one request
+    # after the logon and needs no session security, so no session key is exchanged either.
     # Note: All flag constants are already [uint32], combine with -bor and ensure result stays [uint32]
     [uint32]$flags = $Script:NTLMSSP_NEGOTIATE_UNICODE -bor
                      $Script:NTLMSSP_REQUEST_TARGET -bor
@@ -142,7 +168,7 @@ $Script:MsvAvNbDomainName = 0x0002     # NetBIOS domain name
 $Script:MsvAvDnsComputerName = 0x0003  # DNS computer name (FQDN)
 $Script:MsvAvDnsDomainName = 0x0004    # DNS domain name
 $Script:MsvAvDnsTreeName = 0x0005      # DNS forest name
-$Script:MsvAvFlags = 0x0006            # Flags (bit 0x02 = EPA required)
+$Script:MsvAvFlags = 0x0006            # Flags, set by the CLIENT in its AUTHENTICATE message
 $Script:MsvAvTimestamp = 0x0007        # FILETIME timestamp
 $Script:MsvAvSingleHost = 0x0008       # Single host data
 $Script:MsvAvTargetName = 0x0009       # SPN target name
@@ -159,8 +185,13 @@ $Script:MsvAvChannelBindings = 0x000A  # Channel bindings MD5 hash
     - MsvAvDnsComputerName (0x0003): DNS hostname (FQDN)
     - MsvAvDnsDomainName (0x0004): DNS domain name
     - MsvAvDnsTreeName (0x0005): DNS forest/tree name
-    - MsvAvFlags (0x0006): Flags (bit 0x02 indicates EPA required)
     - MsvAvTimestamp (0x0007): Server timestamp (FILETIME)
+
+    Nothing in a Type2 says whether the server enforces EPA. MsvAvFlags is a field of the
+    client's AUTHENTICATE message (MS-NLMP 2.2.2.1: 0x02 means the client included a MIC),
+    and a Windows server sends none in its challenge. Its bit 0x02 used to be read here as
+    "EPA required" - a rule that could never fire against Windows and would have given a
+    server sending the flag an unearned "Enabled".
 .PARAMETER Type2Base64
     Base64-encoded NTLM Type2 message from server.
 .RETURNS
@@ -203,7 +234,7 @@ function Read-NTLMType2Message {
         $targetNameOffset = [BitConverter]::ToInt32($bytes, 16)
         # Read flags directly from bytes to avoid Int32/UInt32 conversion issues in PowerShell
         $flags = [uint32]$bytes[20] + ([uint32]$bytes[21] -shl 8) + ([uint32]$bytes[22] -shl 16) + ([uint32]$bytes[23] -shl 24)
-        $challenge = $bytes[24..31]
+        $challenge = [byte[]]$bytes[24..31]
 
         # Target info (if present)
         $targetInfoLen = 0
@@ -217,7 +248,7 @@ function Read-NTLMType2Message {
 
             # FIX: Allow offset 0 if length is also 0, otherwise validate bounds
             if ($targetInfoLen -gt 0 -and $targetInfoOffset -ge 0 -and ($targetInfoOffset + $targetInfoLen) -le $bytes.Length) {
-                $targetInfo = $bytes[$targetInfoOffset..($targetInfoOffset + $targetInfoLen - 1)]
+                $targetInfo = [byte[]]$bytes[$targetInfoOffset..($targetInfoOffset + $targetInfoLen - 1)]
 
                 # Parse AV_PAIRs from TargetInfo
                 $avPairs = Read-NTLMAvPairs -TargetInfoBytes $targetInfo
@@ -233,7 +264,6 @@ function Read-NTLMType2Message {
                 DnsDomainName = $null
                 DnsTreeName = $null
                 AvFlags = $null
-                EPARequired = $false
                 Timestamp = $null
                 TimestampUtc = $null
                 TargetSPN = $null
@@ -266,7 +296,6 @@ function Read-NTLMType2Message {
             Timestamp = $avPairs.Timestamp
             TimestampUtc = $avPairs.TimestampUtc
             AvFlags = $avPairs.AvFlags
-            EPARequired = $avPairs.EPARequired
             TargetSPN = $avPairs.TargetSPN
         }
     }
@@ -310,8 +339,7 @@ function Read-NTLMAvPairs {
         DnsComputerName = $null   # DNS computer name (FQDN)
         DnsDomainName = $null     # DNS domain name
         DnsTreeName = $null       # DNS forest name
-        AvFlags = $null           # Raw flags value
-        EPARequired = $false      # True if flag 0x02 is set
+        AvFlags = $null           # Raw flags value - carries no EPA statement (Read-NTLMType2Message)
         Timestamp = $null         # Raw FILETIME (Int64)
         TimestampUtc = $null      # Parsed DateTime in UTC
         TargetSPN = $null         # Target SPN (if present)
@@ -384,8 +412,6 @@ function Read-NTLMAvPairs {
                 # 4-byte flags value - read bytes directly to avoid conversion issues
                 if ($avLen -ge 4) {
                     $result.AvFlags = [uint32]$valueBytes[0] + ([uint32]$valueBytes[1] -shl 8) + ([uint32]$valueBytes[2] -shl 16) + ([uint32]$valueBytes[3] -shl 24)
-                    # Bit 0x02 = MIC present / EPA required
-                    $result.EPARequired = ($result.AvFlags -band 0x02) -ne 0
                     $result.RawPairs['MsvAvFlags'] = "0x{0:X8}" -f $result.AvFlags
                 }
             }
@@ -427,325 +453,1150 @@ function Read-NTLMAvPairs {
 
 <#
 .SYNOPSIS
-    Generates a random identifier for EPA testing.
+    Computes an NTLMv2 response (MS-NLMP 3.3.2).
 .DESCRIPTION
-    Creates a random identifier that looks like a typical Windows account name.
-    Uses a common prefix followed by random characters to blend in with normal log entries.
-    Uses cryptographically secure random number generation.
-.PARAMETER Type
-    Type of identifier to generate: "Username" or "Workstation".
-.RETURNS
-    Random identifier string (e.g., "svc.a7k2mq9", "WS-X4P2N8").
-#>
-function New-RandomEPAIdentifier {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$false)]
-        [ValidateSet('Username', 'Workstation')]
-        [string]$Type = 'Username'
-    )
+    NTOWFv2      = HMAC_MD5(NT hash, UNICODE(Uppercase(UserName) + Domain))
+    temp         = 0x01 0x01 Z(6) Timestamp ClientChallenge Z(4) AvPairs Z(4)
+    NTProofStr   = HMAC_MD5(NTOWFv2, ServerChallenge + temp)
+    response     = NTProofStr + temp
 
-    # Use shared cryptographically secure random number generator
-    $rng = Get-NTLMSecureRNG
-
-    if ($Type -eq 'Workstation') {
-        # Workstation prefixes that look like typical enterprise naming
-        $prefixes = @('WS', 'PC', 'DT', 'NB', 'VM', 'SRV')
-    }
-    else {
-        # Username prefixes that look like typical service/admin accounts
-        $prefixes = @('admin', 'user', 'test', 'svc', 'app', 'sys', 'dev', 'ops')
-    }
-
-    # Generate random bytes for prefix selection
-    $prefixBytes = New-Object byte[] 1
-    $rng.GetBytes($prefixBytes)
-    $prefix = $prefixes[$prefixBytes[0] % $prefixes.Count]
-
-    # Generate random suffix length (5-8 chars)
-    $lengthBytes = New-Object byte[] 1
-    $rng.GetBytes($lengthBytes)
-    $suffixLength = 5 + ($lengthBytes[0] % 4)
-
-    # Generate random suffix using CSPRNG
-    $chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-    if ($Type -eq 'Workstation') {
-        $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    }
-
-    # Rejection sampling rather than a plain modulo: 256 is not a multiple of the
-    # 36-character alphabet (256 mod 36 = 4), so mapping a random byte with "byte %
-    # length" gives the first four characters an extra chance each - measured at roughly
-    # 15% over-represented against roughly 11% under-represented across the rest, over
-    # 3000 generated identifiers. Not a secret, so the bias itself risks nothing, but
-    # New-SafePassword was already fixed for the identical reason and it would be
-    # inconsistent to leave the same anti-pattern sitting one file over.
-    $suffixLimit = 256 - (256 % $chars.Length)
-    $suffixChars = New-Object System.Text.StringBuilder $suffixLength
-    $suffixByte = New-Object byte[] 1
-    for ($i = 0; $i -lt $suffixLength; $i++) {
-        do {
-            $rng.GetBytes($suffixByte)
-        } while ([int]$suffixByte[0] -ge $suffixLimit)
-        [void]$suffixChars.Append($chars[[int]$suffixByte[0] % $chars.Length])
-    }
-    $suffix = $suffixChars.ToString()
-
-    if ($Type -eq 'Workstation') {
-        return "$prefix-$suffix"
-    }
-    else {
-        return "$prefix.$suffix"
-    }
-}
-
-<#
-.SYNOPSIS
-    Creates an NTLM Type3 (Authenticate) message WITHOUT Channel Binding Token.
-.DESCRIPTION
-    Builds an NTLM Type3 message with dummy credentials for EPA testing.
-    The message intentionally does NOT include a Channel Binding Token (MsvAvChannelBindings).
-    If EPA is enabled, the server will reject this authentication attempt.
-.PARAMETER Type2Result
-    Parsed Type2 message from Read-NTLMType2Message. Must have Success=$true and contain Flags property.
-.PARAMETER Username
-    Username for the dummy authentication. If not specified, a random username is generated
-    at runtime to avoid predictable patterns in server logs.
-.PARAMETER Domain
-    Domain for the dummy authentication (default: "WORKGROUP").
-.RETURNS
-    Base64-encoded NTLM Type3 message, or $null if Type2Result is invalid.
-#>
-function New-NTLMType3Message {
-    [CmdletBinding()]
-    param(
-        # AllowNull so the explicit "$null -eq $Type2Result" guard below is reachable -
-        # a mandatory parameter rejects $null before the function body runs even when,
-        # as here, it carries no type constraint to justify that.
-        [Parameter(Mandatory=$true)]
-        [AllowNull()]
-        $Type2Result,
-
-        [Parameter(Mandatory=$false)]
-        [string]$Username,
-
-        [Parameter(Mandatory=$false)]
-        [string]$Domain = "WORKGROUP"
-    )
-
-    # Validate Type2Result parameter
-    if ($null -eq $Type2Result) {
-        Write-Log "[New-NTLMType3Message] Error: Type2Result is null"
-        return $null
-    }
-    if ($Type2Result.PSObject.Properties['Success'] -and -not $Type2Result.Success) {
-        Write-Log "[New-NTLMType3Message] Error: Type2Result.Success is false"
-        return $null
-    }
-    if ($null -eq $Type2Result.Flags) {
-        Write-Log "[New-NTLMType3Message] Error: Type2Result.Flags is null"
-        return $null
-    }
-
-    # Generate random username if not provided
-    if ([string]::IsNullOrEmpty($Username)) {
-        $Username = New-RandomEPAIdentifier -Type 'Username'
-    }
-
-    # Generate random workstation name
-    $workstationName = New-RandomEPAIdentifier -Type 'Workstation'
-
-    # NTLMSSP signature
-    $signature = [System.Text.Encoding]::ASCII.GetBytes("NTLMSSP`0")
-
-    # Message type (3 = Authenticate)
-    $messageType = [BitConverter]::GetBytes([uint32]3)
-
-    # Use Unicode encoding
-    $domainBytes = [System.Text.Encoding]::Unicode.GetBytes($Domain)
-    $usernameBytes = [System.Text.Encoding]::Unicode.GetBytes($Username)
-    $workstationBytes = [System.Text.Encoding]::Unicode.GetBytes($workstationName)
-
-    # Generate dummy LM and NT responses using shared CSPRNG (cryptographically secure)
-    # For EPA testing, we just need to complete the handshake - the credentials are irrelevant
-    $lmResponse = New-Object byte[] 24
-    $ntResponse = New-Object byte[] 24
-    $rng = Get-NTLMSecureRNG
-    $rng.GetBytes($lmResponse)
-    $rng.GetBytes($ntResponse)
-
-    # Calculate offsets
-    # Type3 header structure (MS-NLMP 2.2.1.3):
-    # - Signature: 8 bytes (0-7)
-    # - MessageType: 4 bytes (8-11)
-    # - LmChallengeResponse: 8 bytes (12-19) - len/maxlen/offset
-    # - NtChallengeResponse: 8 bytes (20-27)
-    # - DomainName: 8 bytes (28-35)
-    # - UserName: 8 bytes (36-43)
-    # - Workstation: 8 bytes (44-51)
-    # - EncryptedRandomSessionKey: 8 bytes (52-59)
-    # - NegotiateFlags: 4 bytes (60-63)
-    # Total fixed header: 64 bytes
-    # Optional Version: 8 bytes (64-71) - if NTLMSSP_NEGOTIATE_VERSION
-    # Optional MIC: 16 bytes (72-87) - if MsvAvFlags indicates MIC required
-    # We include Version but no MIC since we don't have valid credentials
-    $headerSize = 72  # 64 + 8 for version
-    $currentOffset = $headerSize
-
-    $lmResponseOffset = $currentOffset
-    $currentOffset += $lmResponse.Length
-
-    $ntResponseOffset = $currentOffset
-    $currentOffset += $ntResponse.Length
-
-    $domainOffset = $currentOffset
-    $currentOffset += $domainBytes.Length
-
-    $usernameOffset = $currentOffset
-    $currentOffset += $usernameBytes.Length
-
-    $workstationOffset = $currentOffset
-    $currentOffset += $workstationBytes.Length
-
-    # Negotiate flags - match Type2 response but ensure UNICODE and VERSION
-    # Explicitly cast to [uint32] to prevent Int32 overflow issues with high-bit flags
-    [uint32]$flags = [uint32]$Type2Result.Flags -bor $Script:NTLMSSP_NEGOTIATE_UNICODE -bor $Script:NTLMSSP_NEGOTIATE_VERSION
-
-    # Build the message
-    $message = New-Object System.Collections.Generic.List[byte]
-
-    # Header
-    $message.AddRange($signature)                                           # 0-7:   Signature
-    $message.AddRange($messageType)                                         # 8-11:  Type (3)
-
-    # LM Response
-    $message.AddRange([BitConverter]::GetBytes([uint16]$lmResponse.Length)) # 12-13: LM length
-    $message.AddRange([BitConverter]::GetBytes([uint16]$lmResponse.Length)) # 14-15: LM max length
-    $message.AddRange([BitConverter]::GetBytes([uint32]$lmResponseOffset))  # 16-19: LM offset
-
-    # NT Response
-    $message.AddRange([BitConverter]::GetBytes([uint16]$ntResponse.Length)) # 20-21: NT length
-    $message.AddRange([BitConverter]::GetBytes([uint16]$ntResponse.Length)) # 22-23: NT max length
-    $message.AddRange([BitConverter]::GetBytes([uint32]$ntResponseOffset))  # 24-27: NT offset
-
-    # Domain
-    $message.AddRange([BitConverter]::GetBytes([uint16]$domainBytes.Length))  # 28-29: Domain length
-    $message.AddRange([BitConverter]::GetBytes([uint16]$domainBytes.Length))  # 30-31: Domain max length
-    $message.AddRange([BitConverter]::GetBytes([uint32]$domainOffset))        # 32-35: Domain offset
-
-    # Username
-    $message.AddRange([BitConverter]::GetBytes([uint16]$usernameBytes.Length))  # 36-37: User length
-    $message.AddRange([BitConverter]::GetBytes([uint16]$usernameBytes.Length))  # 38-39: User max length
-    $message.AddRange([BitConverter]::GetBytes([uint32]$usernameOffset))        # 40-43: User offset
-
-    # Workstation
-    $message.AddRange([BitConverter]::GetBytes([uint16]$workstationBytes.Length))  # 44-45: WS length
-    $message.AddRange([BitConverter]::GetBytes([uint16]$workstationBytes.Length))  # 46-47: WS max length
-    $message.AddRange([BitConverter]::GetBytes([uint32]$workstationOffset))        # 48-51: WS offset
-
-    # Encrypted random session key (empty for EPA test)
-    $message.AddRange([BitConverter]::GetBytes([uint16]0))                  # 52-53: Session key length
-    $message.AddRange([BitConverter]::GetBytes([uint16]0))                  # 54-55: Session key max length
-    $message.AddRange([BitConverter]::GetBytes([uint32]0))                  # 56-59: Session key offset
-
-    # Flags
-    $message.AddRange([BitConverter]::GetBytes([uint32]$flags))             # 60-63: Flags
-
-    # Version (8 bytes) - Windows 10 version info
-    # ProductMajorVersion: 10 (0x0A)
-    # ProductMinorVersion: 0 (0x00)
-    # ProductBuild: 19041 (0x4A61)
-    # Reserved: 0x000000
-    # NTLMRevisionCurrent: 15 (0x0F) = NTLMSSP_REVISION_W2K3
-    $version = [byte[]]@(0x0A, 0x00, 0x61, 0x4A, 0x00, 0x00, 0x00, 0x0F)
-    $message.AddRange($version)                                             # 64-71: Version
-
-    # Payload
-    $message.AddRange($lmResponse)
-    $message.AddRange($ntResponse)
-    $message.AddRange($domainBytes)
-    $message.AddRange($usernameBytes)
-    $message.AddRange($workstationBytes)
-
-    return [Convert]::ToBase64String($message.ToArray())
-}
-
-<#
-.SYNOPSIS
-    Reads what the answer to an NTLM Type3 without channel binding says about EPA.
-.DESCRIPTION
-    The Type3 Test-ExtendedProtection sends carries random credentials and no Channel
-    Binding Token. Its acceptance is a verdict: nothing rejected the missing binding, so
-    EPA is not enforced. A 401 is none - the random credentials fail whether or not EPA is
-    enforced, and the server answers both failures alike, offering its authentication
-    schemes again.
-
-    The 401 used to be split by the schemes it offered: a bare "NTLM" or a new NTLM blob
-    read as EPA enabled, "Negotiate" as EPA disabled. Measured against an Exchange SE
-    server, the same valid account was accepted with the binding and rejected without it
-    on EWS, MRSProxy, MAPI and RPC - EPA enforced - and the 401 it got without the binding
-    offered "Negotiate,NTLM", the answer the split read as disabled. The schemes in a 401
-    are the endpoint's configuration, not the outcome of the binding check.
-.PARAMETER StatusCode
-    HTTP status of the answer to the Type3.
-.PARAMETER WwwAuthenticate
-    The WWW-Authenticate header of that answer, if it had one.
+    The domain goes in as given, in its case: it is the same string the AUTHENTICATE
+    message carries, and the domain controller recomputes NTOWFv2 from that string.
+.PARAMETER NTHash
+    16-byte NT hash of the account's password.
+.PARAMETER AvPairs
+    The AV_PAIR list the response carries, terminated by MsvAvEOL.
 .OUTPUTS
-    PSCustomObject with Success, EPAEnabled, Confidence, Type3Response, DiagnosticInfo and
-    ErrorMessage, named as on the result of Test-ExtendedProtection.
+    PSCustomObject with NTOWFv2, NTProofStr and NtChallengeResponse (byte arrays).
 #>
-function Resolve-EPAType3Answer {
+function Get-NTLMv2Response {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [int]$StatusCode,
+        [byte[]]$NTHash,
 
-        [Parameter(Mandatory = $false)]
-        [string]$WwwAuthenticate
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$UserName,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Domain,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]]$ServerChallenge,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]]$ClientChallenge,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Timestamp,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$AvPairs
     )
 
-    if ($StatusCode -ge 200 -and $StatusCode -lt 400) {
-        return [PSCustomObject]@{
-            Success        = $true
-            EPAEnabled     = $false
-            Confidence     = 'High'
-            Type3Response  = "Success ($StatusCode)"
-            DiagnosticInfo = "Type3 accepted (HTTP $StatusCode) - EPA is NOT blocking missing CBT"
-            ErrorMessage   = $null
+    $identity = [System.Text.Encoding]::Unicode.GetBytes($UserName.ToUpperInvariant() + $Domain)
+    $hmac = [System.Security.Cryptography.HMACMD5]::new($NTHash)
+    try { $ntowfv2 = $hmac.ComputeHash($identity) } finally { $hmac.Dispose() }
+
+    $temp = New-Object System.Collections.Generic.List[byte]
+    $temp.AddRange([byte[]](1, 1, 0, 0, 0, 0, 0, 0))
+    $temp.AddRange($Timestamp)
+    $temp.AddRange($ClientChallenge)
+    $temp.AddRange([byte[]](0, 0, 0, 0))
+    $temp.AddRange($AvPairs)
+    $temp.AddRange([byte[]](0, 0, 0, 0))
+    $tempBytes = $temp.ToArray()
+
+    $proofInput = New-Object byte[] ($ServerChallenge.Length + $tempBytes.Length)
+    [Array]::Copy($ServerChallenge, 0, $proofInput, 0, $ServerChallenge.Length)
+    [Array]::Copy($tempBytes, 0, $proofInput, $ServerChallenge.Length, $tempBytes.Length)
+    $hmac = [System.Security.Cryptography.HMACMD5]::new($ntowfv2)
+    try { $ntProofStr = $hmac.ComputeHash($proofInput) } finally { $hmac.Dispose() }
+
+    $response = New-Object byte[] ($ntProofStr.Length + $tempBytes.Length)
+    [Array]::Copy($ntProofStr, 0, $response, 0, $ntProofStr.Length)
+    [Array]::Copy($tempBytes, 0, $response, $ntProofStr.Length, $tempBytes.Length)
+
+    return [PSCustomObject]@{
+        NTOWFv2             = $ntowfv2
+        NTProofStr          = $ntProofStr
+        NtChallengeResponse = $response
+    }
+}
+
+<#
+.SYNOPSIS
+    Computes the MsvAvChannelBindings value for a channel binding.
+.DESCRIPTION
+    MS-NLMP 2.2.2.1: the MD5 hash of a gss_channel_bindings_struct (RFC 2744). For a TLS
+    server end point binding (RFC 5929) the initiator and acceptor addresses are empty, so
+    the struct is 16 zero bytes - address type and length of each - followed by the
+    length of the application data and the application data itself,
+    "tls-server-end-point:" + the hash of the server certificate.
+.PARAMETER ApplicationData
+    The application data of the binding.
+.OUTPUTS
+    [byte[]] 16-byte MD5 hash.
+#>
+function Get-NTLMChannelBindingHash {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$ApplicationData
+    )
+
+    $struct = New-Object byte[] (20 + $ApplicationData.Length)
+    [Array]::Copy([BitConverter]::GetBytes([uint32]$ApplicationData.Length), 0, $struct, 16, 4)
+    [Array]::Copy($ApplicationData, 0, $struct, 20, $ApplicationData.Length)
+
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    try { $hash = $md5.ComputeHash($struct) } finally { $md5.Dispose() }
+    return ,$hash
+}
+
+<#
+.SYNOPSIS
+    Reads the application data out of a SEC_CHANNEL_BINDINGS structure.
+.DESCRIPTION
+    SEC_CHANNEL_BINDINGS is eight 32-bit fields - initiator and acceptor address type,
+    length and offset, then the length and the offset of the application data - followed
+    by the data the offsets point into. Windows hands a TLS channel's binding out in this
+    form (SslStream.TransportContext.GetChannelBinding), and SSPI takes it in this form.
+.PARAMETER SecChannelBindings
+    The structure, as raw bytes.
+.OUTPUTS
+    [byte[]] the application data.
+#>
+function Get-ChannelBindingApplicationData {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$SecChannelBindings
+    )
+
+    if ($SecChannelBindings.Length -lt 32) {
+        throw "SEC_CHANNEL_BINDINGS too short ($($SecChannelBindings.Length) bytes)"
+    }
+    $length = [BitConverter]::ToUInt32($SecChannelBindings, 24)
+    $offset = [BitConverter]::ToUInt32($SecChannelBindings, 28)
+    if (($offset + $length) -gt $SecChannelBindings.Length) {
+        throw "SEC_CHANNEL_BINDINGS application data runs past the structure"
+    }
+
+    $data = New-Object byte[] $length
+    [Array]::Copy($SecChannelBindings, [int]$offset, $data, 0, [int]$length)
+    return ,$data
+}
+
+<#
+.SYNOPSIS
+    Builds a SEC_CHANNEL_BINDINGS structure that carries only application data.
+.DESCRIPTION
+    The form SSPI takes a channel binding in (Get-ChannelBindingApplicationData). Used to
+    hand SSPI the binding of a channel the probe is NOT on.
+.PARAMETER ApplicationData
+    The application data of the binding.
+.OUTPUTS
+    [byte[]] the structure.
+#>
+function New-SecChannelBindings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$ApplicationData
+    )
+
+    $struct = New-Object byte[] (32 + $ApplicationData.Length)
+    [Array]::Copy([BitConverter]::GetBytes([uint32]$ApplicationData.Length), 0, $struct, 24, 4)
+    [Array]::Copy([BitConverter]::GetBytes([uint32]32), 0, $struct, 28, 4)
+    [Array]::Copy($ApplicationData, 0, $struct, 32, $ApplicationData.Length)
+    return ,$struct
+}
+
+<#
+.SYNOPSIS
+    Creates an NTLMv2 Type3 (Authenticate) message for a real account.
+.DESCRIPTION
+    Answers the server's challenge with the account's NT hash and puts the given channel
+    binding into the response. Without -ChannelBindingHash the binding is 16 zero bytes,
+    which is what a Windows client sends when it has no channel to bind. With
+    -OmitChannelBindings there is no MsvAvChannelBindings pair at all, the logon of a
+    client that implements no channel binding - the one logon IIS in Accept mode takes
+    without a binding (Test-ExtendedProtection).
+
+    No session key is exchanged and no MIC is computed: the probe sends one request after
+    the logon and needs no session security, and MS-NLMP leaves both to the client.
+.PARAMETER Type2Result
+    Parsed Type2 message from Read-NTLMType2Message.
+.PARAMETER UserName
+    Account name, or a UPN with an empty Domain.
+.PARAMETER Domain
+    Domain of the account, as the AUTHENTICATE message carries it.
+.PARAMETER NTHash
+    16-byte NT hash of the account's password.
+.PARAMETER ChannelBindingHash
+    MsvAvChannelBindings value (Get-NTLMChannelBindingHash). Omitted: 16 zero bytes, the
+    binding of a Windows client without a channel.
+.PARAMETER OmitChannelBindings
+    Send no MsvAvChannelBindings pair at all.
+.PARAMETER TargetName
+    The SPN the client means to reach (MsvAvTargetName), e.g. HTTP/mail.contoso.com.
+.PARAMETER ClientChallenge
+    8-byte client challenge. Omitted: random. Given only by tests.
+.PARAMETER Timestamp
+    8-byte FILETIME. Omitted: the server's MsvAvTimestamp, else the current time.
+.OUTPUTS
+    [byte[]] the Type3 message.
+#>
+function New-NTLMAuthenticateMessage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Type2Result,
+
+        [Parameter(Mandatory = $true)]
+        [string]$UserName,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Domain,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]]$NTHash,
+
+        [Parameter(Mandatory = $false)]
+        [byte[]]$ChannelBindingHash,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$OmitChannelBindings,
+
+        [Parameter(Mandatory = $false)]
+        [string]$TargetName,
+
+        [Parameter(Mandatory = $false)]
+        [byte[]]$ClientChallenge,
+
+        [Parameter(Mandatory = $false)]
+        [byte[]]$Timestamp
+    )
+
+    if (-not $ChannelBindingHash) { $ChannelBindingHash = New-Object byte[] 16 }
+    if ($ChannelBindingHash.Length -ne 16) { throw "ChannelBindingHash must be 16 bytes, got $($ChannelBindingHash.Length)" }
+    if (-not $ClientChallenge) { $ClientChallenge = Get-NTLMRandomBytes -Count 8 }
+    if (-not $Timestamp) {
+        if ($null -ne $Type2Result.Timestamp) {
+            $Timestamp = [BitConverter]::GetBytes([long]$Type2Result.Timestamp)
+        }
+        else {
+            $Timestamp = [BitConverter]::GetBytes([DateTime]::UtcNow.ToFileTimeUtc())
         }
     }
 
-    if ($StatusCode -eq 401) {
-        return [PSCustomObject]@{
-            Success        = $true
-            EPAEnabled     = $null
-            Confidence     = 'Unknown'
-            Type3Response  = '401 Unauthorized'
-            DiagnosticInfo = "Type3 rejected (WWW-Authenticate: '$WwwAuthenticate') - the random credentials fail whether or not EPA is enforced, so the rejection does not tell which"
-            ErrorMessage   = $null
+    # The server's AV_PAIRs, then the client's own. Pairs only a client sets are dropped
+    # from the server's list so that none appears twice.
+    $avPairs = New-Object System.Collections.Generic.List[byte]
+    # Assigned, not taken from an if-expression: that would unroll the byte[] into an
+    # object[], which BitConverter does not take.
+    [byte[]]$targetInfo = @()
+    if ($Type2Result.TargetInfo) { $targetInfo = [byte[]]$Type2Result.TargetInfo }
+    $offset = 0
+    while ($offset + 4 -le $targetInfo.Length) {
+        $avId = [BitConverter]::ToUInt16($targetInfo, $offset)
+        $avLen = [BitConverter]::ToUInt16($targetInfo, $offset + 2)
+        if ($avId -eq $Script:MsvAvEOL -or ($offset + 4 + $avLen) -gt $targetInfo.Length) { break }
+        if ($avId -notin @($Script:MsvAvFlags, $Script:MsvAvTargetName, $Script:MsvAvChannelBindings)) {
+            for ($i = 0; $i -lt (4 + $avLen); $i++) { $avPairs.Add($targetInfo[$offset + $i]) }
         }
+        $offset += 4 + $avLen
+    }
+    if ($TargetName) {
+        $targetBytes = [System.Text.Encoding]::Unicode.GetBytes($TargetName)
+        $avPairs.AddRange([BitConverter]::GetBytes([uint16]$Script:MsvAvTargetName))
+        $avPairs.AddRange([BitConverter]::GetBytes([uint16]$targetBytes.Length))
+        $avPairs.AddRange($targetBytes)
+    }
+    if (-not $OmitChannelBindings) {
+        $avPairs.AddRange([BitConverter]::GetBytes([uint16]$Script:MsvAvChannelBindings))
+        $avPairs.AddRange([BitConverter]::GetBytes([uint16]16))
+        $avPairs.AddRange($ChannelBindingHash)
+    }
+    $avPairs.AddRange([byte[]](0, 0, 0, 0))
+
+    $ntlmv2 = Get-NTLMv2Response -NTHash $NTHash -UserName $UserName -Domain $Domain `
+        -ServerChallenge ([byte[]]$Type2Result.Challenge) -ClientChallenge $ClientChallenge `
+        -Timestamp $Timestamp -AvPairs $avPairs.ToArray()
+
+    # With a server timestamp the LM response is Z(24) (MS-NLMP 3.1.5.1.2)
+    $lmResponse = New-Object byte[] 24
+    $ntResponse = $ntlmv2.NtChallengeResponse
+    $domainBytes = [System.Text.Encoding]::Unicode.GetBytes($Domain)
+    $userBytes = [System.Text.Encoding]::Unicode.GetBytes($UserName)
+    $workstationBytes = New-Object byte[] 0
+
+    # The flags the server agreed to, minus key exchange (no session key is sent), plus
+    # Unicode and the version field this message carries.
+    [uint32]$allowed = $Script:NTLMSSP_NEGOTIATE_UNICODE -bor
+                       $Script:NTLMSSP_REQUEST_TARGET -bor
+                       $Script:NTLMSSP_NEGOTIATE_NTLM -bor
+                       $Script:NTLMSSP_NEGOTIATE_ALWAYS_SIGN -bor
+                       $Script:NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY -bor
+                       $Script:NTLMSSP_NEGOTIATE_TARGET_INFO -bor
+                       $Script:NTLMSSP_NEGOTIATE_128 -bor
+                       $Script:NTLMSSP_NEGOTIATE_56
+    [uint32]$flags = ([uint32]$Type2Result.Flags -band $allowed) -bor $Script:NTLMSSP_NEGOTIATE_UNICODE -bor $Script:NTLMSSP_NEGOTIATE_VERSION
+
+    # Header: 64 bytes of fields, 8 bytes of version, no MIC (MS-NLMP 2.2.1.3)
+    $offset = 72
+    $fields = New-Object System.Collections.Generic.List[byte]
+    foreach ($payload in @($lmResponse, $ntResponse, $domainBytes, $userBytes, $workstationBytes)) {
+        $fields.AddRange([BitConverter]::GetBytes([uint16]$payload.Length))
+        $fields.AddRange([BitConverter]::GetBytes([uint16]$payload.Length))
+        $fields.AddRange([BitConverter]::GetBytes([uint32]$offset))
+        $offset += $payload.Length
+    }
+    # EncryptedRandomSessionKey: empty
+    $fields.AddRange([BitConverter]::GetBytes([uint16]0))
+    $fields.AddRange([BitConverter]::GetBytes([uint16]0))
+    $fields.AddRange([BitConverter]::GetBytes([uint32]$offset))
+
+    $message = New-Object System.Collections.Generic.List[byte]
+    $message.AddRange([System.Text.Encoding]::ASCII.GetBytes("NTLMSSP`0"))
+    $message.AddRange([BitConverter]::GetBytes([uint32]3))
+    $message.AddRange($fields)
+    $message.AddRange([BitConverter]::GetBytes($flags))
+    # Version: Windows 10 (10.0.19041), NTLMSSP_REVISION_W2K3
+    $message.AddRange([byte[]](0x0A, 0x00, 0x61, 0x4A, 0x00, 0x00, 0x00, 0x0F))
+    $message.AddRange($lmResponse)
+    $message.AddRange($ntResponse)
+    $message.AddRange($domainBytes)
+    $message.AddRange($userBytes)
+    $message.AddRange($workstationBytes)
+
+    return ,$message.ToArray()
+}
+
+# C# client for the current Windows logon: NTLM through SSPI, with the channel binding
+# handed in as SECBUFFER_CHANNEL_BINDINGS - or not handed in, which makes SSPI send the
+# zero binding of a client that has none. Compiled on first use (Initialize-EPASspiType).
+$Script:EPASspiTypeDefinition = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public sealed class adPEASNtlmSspi : IDisposable
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecHandle { public IntPtr Lower; public IntPtr Upper; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecBuffer { public int Size; public int Type; public IntPtr Buffer; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecBufferDesc { public int Version; public int Count; public IntPtr Buffers; }
+
+    [DllImport("secur32.dll", CharSet = CharSet.Unicode)]
+    private static extern int AcquireCredentialsHandleW(string principal, string package, int credentialUse,
+        IntPtr logonId, IntPtr authData, IntPtr getKeyFn, IntPtr getKeyArgument, ref SecHandle credential, out long expiry);
+
+    [DllImport("secur32.dll", CharSet = CharSet.Unicode, EntryPoint = "InitializeSecurityContextW")]
+    private static extern int InitializeFirst(ref SecHandle credential, IntPtr context, string targetName, int contextReq,
+        int reserved1, int targetDataRep, IntPtr input, int reserved2, ref SecHandle newContext, ref SecBufferDesc output,
+        out int contextAttributes, out long expiry);
+
+    [DllImport("secur32.dll", CharSet = CharSet.Unicode, EntryPoint = "InitializeSecurityContextW")]
+    private static extern int InitializeNext(ref SecHandle credential, ref SecHandle context, string targetName, int contextReq,
+        int reserved1, int targetDataRep, ref SecBufferDesc input, int reserved2, ref SecHandle newContext, ref SecBufferDesc output,
+        out int contextAttributes, out long expiry);
+
+    [DllImport("secur32.dll")] private static extern int FreeCredentialsHandle(ref SecHandle credential);
+    [DllImport("secur32.dll")] private static extern int DeleteSecurityContext(ref SecHandle context);
+
+    // SecPkgCredentials_NamesW is a single pointer, so the call writes it straight into namePointer
+    [DllImport("secur32.dll", CharSet = CharSet.Unicode)]
+    private static extern int QueryCredentialsAttributesW(ref SecHandle credential, int attribute, out IntPtr namePointer);
+    [DllImport("secur32.dll")] private static extern int FreeContextBuffer(IntPtr buffer);
+    private const int SECPKG_CRED_ATTR_NAMES = 1;
+
+    private const int SECPKG_CRED_OUTBOUND = 2;
+    private const int SECBUFFER_TOKEN = 2;
+    private const int SECBUFFER_CHANNEL_BINDINGS = 14;
+    private const int SECURITY_NATIVE_DREP = 0x10;
+    private const int ISC_REQ_CONNECTION = 0x800;
+
+    private SecHandle credential;
+    private SecHandle context;
+    private bool haveCredential;
+    private bool haveContext;
+    private readonly string targetName;
+
+    public adPEASNtlmSspi(string targetName)
+    {
+        this.targetName = targetName;
+        long expiry;
+        int status = AcquireCredentialsHandleW(null, "NTLM", SECPKG_CRED_OUTBOUND, IntPtr.Zero, IntPtr.Zero,
+            IntPtr.Zero, IntPtr.Zero, ref credential, out expiry);
+        if (status != 0) { throw new InvalidOperationException("AcquireCredentialsHandle failed: 0x" + status.ToString("X8")); }
+        haveCredential = true;
+    }
+
+    // The account the credential logs on as - under runas /netonly the network identity,
+    // not the user of the process. Null if the package does not say.
+    public string CredentialName()
+    {
+        IntPtr namePointer;
+        if (QueryCredentialsAttributesW(ref credential, SECPKG_CRED_ATTR_NAMES, out namePointer) != 0 || namePointer == IntPtr.Zero) { return null; }
+        try { return Marshal.PtrToStringUni(namePointer); }
+        finally { FreeContextBuffer(namePointer); }
+    }
+
+    public byte[] Negotiate() { return Step(null, null); }
+
+    public byte[] Authenticate(byte[] challenge, byte[] channelBindings)
+    {
+        if (!haveContext) { throw new InvalidOperationException("Negotiate must run first"); }
+        return Step(challenge, channelBindings);
+    }
+
+    private byte[] Step(byte[] input, byte[] channelBindings)
+    {
+        int bufferSize = Marshal.SizeOf(typeof(SecBuffer));
+        byte[] output = new byte[16384];
+        List<GCHandle> pins = new List<GCHandle>();
+        IntPtr outputBuffer = Marshal.AllocHGlobal(bufferSize);
+        IntPtr inputBuffers = IntPtr.Zero;
+        try
+        {
+            GCHandle outputPin = GCHandle.Alloc(output, GCHandleType.Pinned); pins.Add(outputPin);
+            SecBuffer outBuf = new SecBuffer { Size = output.Length, Type = SECBUFFER_TOKEN, Buffer = outputPin.AddrOfPinnedObject() };
+            Marshal.StructureToPtr(outBuf, outputBuffer, false);
+            SecBufferDesc outputDesc = new SecBufferDesc { Version = 0, Count = 1, Buffers = outputBuffer };
+
+            int attributes; long expiry; int status;
+            SecHandle current = context;
+            if (input == null)
+            {
+                status = InitializeFirst(ref credential, IntPtr.Zero, targetName, ISC_REQ_CONNECTION, 0,
+                    SECURITY_NATIVE_DREP, IntPtr.Zero, 0, ref current, ref outputDesc, out attributes, out expiry);
+            }
+            else
+            {
+                int count = channelBindings == null ? 1 : 2;
+                inputBuffers = Marshal.AllocHGlobal(bufferSize * count);
+                GCHandle inputPin = GCHandle.Alloc(input, GCHandleType.Pinned); pins.Add(inputPin);
+                Marshal.StructureToPtr(new SecBuffer { Size = input.Length, Type = SECBUFFER_TOKEN, Buffer = inputPin.AddrOfPinnedObject() }, inputBuffers, false);
+                if (channelBindings != null)
+                {
+                    GCHandle bindingPin = GCHandle.Alloc(channelBindings, GCHandleType.Pinned); pins.Add(bindingPin);
+                    Marshal.StructureToPtr(new SecBuffer { Size = channelBindings.Length, Type = SECBUFFER_CHANNEL_BINDINGS, Buffer = bindingPin.AddrOfPinnedObject() },
+                        new IntPtr(inputBuffers.ToInt64() + bufferSize), false);
+                }
+                SecBufferDesc inputDesc = new SecBufferDesc { Version = 0, Count = count, Buffers = inputBuffers };
+                status = InitializeNext(ref credential, ref current, targetName, ISC_REQ_CONNECTION, 0,
+                    SECURITY_NATIVE_DREP, ref inputDesc, 0, ref current, ref outputDesc, out attributes, out expiry);
+            }
+            context = current;
+            haveContext = true;
+            if (status < 0) { throw new InvalidOperationException("InitializeSecurityContext failed: 0x" + status.ToString("X8")); }
+
+            SecBuffer written = (SecBuffer)Marshal.PtrToStructure(outputBuffer, typeof(SecBuffer));
+            byte[] token = new byte[written.Size];
+            Array.Copy(output, token, written.Size);
+            return token;
+        }
+        finally
+        {
+            foreach (GCHandle pin in pins) { pin.Free(); }
+            Marshal.FreeHGlobal(outputBuffer);
+            if (inputBuffers != IntPtr.Zero) { Marshal.FreeHGlobal(inputBuffers); }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (haveContext) { DeleteSecurityContext(ref context); haveContext = false; }
+        if (haveCredential) { FreeCredentialsHandle(ref credential); haveCredential = false; }
+    }
+}
+'@
+
+<#
+.SYNOPSIS
+    Compiles the SSPI client of the current Windows logon, once per process.
+#>
+function Initialize-EPASspiType {
+    [CmdletBinding()]
+    param()
+
+    if (([System.Management.Automation.PSTypeName]'adPEASNtlmSspi').Type) { return }
+    try {
+        Add-Type -TypeDefinition $Script:EPASspiTypeDefinition -ErrorAction Stop
+        Write-Log "[Initialize-EPASspiType] adPEASNtlmSspi type compiled"
+    }
+    catch {
+        if (-not ([System.Management.Automation.PSTypeName]'adPEASNtlmSspi').Type) {
+            throw "Failed to compile the SSPI client: $($_.Exception.Message)"
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+    Splits an account name into the user and domain an NTLM logon carries.
+.DESCRIPTION
+    DOMAIN\user carries both; a UPN goes as the user name with an empty domain (MS-NLMP
+    allows that, and the DC resolves the suffix); a bare name takes the default domain.
+.PARAMETER Account
+    The account as given: DOMAIN\user, user@domain or user.
+.PARAMETER DefaultDomain
+    Domain for a bare name - the session's.
+#>
+function Split-EPAProbeAccount {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Account,
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$DefaultDomain = ''
+    )
+
+    if ($Account -match '^([^\\]+)\\(.+)$') {
+        return [PSCustomObject]@{ UserName = $Matches[2]; Domain = $Matches[1] }
+    }
+    if ($Account -match '@') {
+        return [PSCustomObject]@{ UserName = $Account; Domain = '' }
+    }
+    return [PSCustomObject]@{ UserName = $Account; Domain = $DefaultDomain }
+}
+
+<#
+.SYNOPSIS
+    Chooses the identity the EPA probe logs on with.
+.DESCRIPTION
+    The session's own, so the probe answers for the account the scan runs as:
+    - a password given to Connect-adPEAS (Credential, Username/Password): its NT hash
+    - an NT hash given to Connect-adPEAS: that hash
+    - an AES key, a certificate or a ticket: none - they have nothing to answer an NTLM
+      challenge with, and the endpoints stay undetermined
+    - a session as the current Windows user, or no session at all: the current Windows
+      logon, through SSPI
+
+    The session's identity rather than the process's on purpose: the process may run as a
+    local account on a host outside the domain, and a password session has said who it
+    is. A session that forced Kerberos for LDAP still has a password and is probed with
+    it - EPA is a question about NTLM, and only an NTLM logon answers it.
+.OUTPUTS
+    PSCustomObject with Kind ('Hash', 'Sspi' or 'None'), Name, Source, UserName, Domain,
+    NTHash (Kind Hash only) and Reason (Kind None only).
+#>
+function Resolve-EPAProbeIdentity {
+    [CmdletBinding()]
+    param()
+
+    $context = $Script:LDAPContext
+    $parameterSet = $null
+    $sessionDomain = ''
+    if ($context) {
+        $parameterSet = [string]$context['ParameterSet']
+        $sessionDomain = [string]$context['Domain']
+    }
+
+    $credential = $null
+    if ($context -and $context['Credential'] -is [System.Management.Automation.PSCredential]) {
+        $credential = $context['Credential']
+    }
+    elseif ($Script:LDAPCredential -is [System.Management.Automation.PSCredential]) {
+        $credential = $Script:LDAPCredential
+    }
+
+    if ($credential -and -not [string]::IsNullOrEmpty($credential.UserName)) {
+        $account = Split-EPAProbeAccount -Account $credential.UserName -DefaultDomain $sessionDomain
+        return [PSCustomObject]@{
+            Kind     = 'Hash'
+            Name     = $credential.UserName
+            Source   = 'session password'
+            UserName = $account.UserName
+            Domain   = $account.Domain
+            NTHash   = [byte[]](Get-NTHashFromPassword -PlainPassword $credential.GetNetworkCredential().Password)
+            Reason   = $null
+        }
+    }
+
+    if ($parameterSet -eq 'NTHash') {
+        $stored = $Script:LDAPNTHashIdentity
+        if ($stored -and $stored.NTHash) {
+            $account = Split-EPAProbeAccount -Account $stored.UserName -DefaultDomain ([string]$stored.Domain)
+            return [PSCustomObject]@{
+                Kind     = 'Hash'
+                Name     = $stored.UserName
+                Source   = 'session NT hash'
+                UserName = $account.UserName
+                Domain   = $account.Domain
+                NTHash   = [byte[]]$stored.NTHash
+                Reason   = $null
+            }
+        }
+        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
+            Reason = 'the NT hash of the session is not available' }
+    }
+
+    # A password session whose credential is gone must not fall through to the Windows
+    # logon below: that is another account, and the verdict would be about it.
+    if ($parameterSet -in @('UsernamePassword', 'PSCredential')) {
+        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
+            Reason = 'the credential of the session is not available' }
+    }
+
+    if ($parameterSet -in @('AES256', 'AES128', 'Certificate', 'Kirbi', 'Ccache')) {
+        return [PSCustomObject]@{ Kind = 'None'; Name = $null; Source = $null; UserName = $null; Domain = $null; NTHash = $null
+            Reason = "the session authenticated with $parameterSet, which has no password or NT hash to answer an NTLM challenge" }
+    }
+
+    # The account SSPI logs on as: under runas /netonly it is the network identity, which the
+    # environment does not know; the environment's name is the fallback
+    $currentUser = if ($env:USERDOMAIN) { "$($env:USERDOMAIN)\$($env:USERNAME)" } else { [string]$env:USERNAME }
+    try {
+        Initialize-EPASspiType
+        $sspi = New-Object adPEASNtlmSspi('HTTP/localhost')
+        try {
+            $credentialName = $sspi.CredentialName()
+            if ($credentialName) { $currentUser = $credentialName }
+        }
+        finally { $sspi.Dispose() }
+    }
+    catch {
+        Write-Log "[Resolve-EPAProbeIdentity] SSPI credential name not available: $($_.Exception.Message)"
+    }
+    return [PSCustomObject]@{
+        Kind     = 'Sspi'
+        Name     = $currentUser
+        Source   = 'current Windows logon'
+        UserName = $null
+        Domain   = $null
+        NTHash   = $null
+        Reason   = $null
+    }
+}
+
+<#
+.SYNOPSIS
+    Opens a TLS connection for one EPA probe logon.
+.DESCRIPTION
+    A connection of its own rather than HttpWebRequest: NTLM authenticates a connection,
+    so Type1, Type3 and nothing else have to travel on the same one, and the channel
+    binding has to be the binding of exactly that channel. HttpWebRequest decides itself
+    which pooled connection a request takes, and it adds the binding on its own. Proxies
+    are not used: the binding is the server's certificate, and the probe asks the server.
+.OUTPUTS
+    PSCustomObject with Client, Stream (SslStream) and ChannelBinding (SEC_CHANNEL_BINDINGS
+    bytes of the TLS server end point binding, $null if the channel offered none).
+#>
+function Open-EPAProbeConnection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HostName,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSeconds
+    )
+
+    $timeoutMs = $TimeoutSeconds * 1000
+    # TLS 1.0 to 1.2 first, which every .NET Framework names; the operating system's own
+    # choice second, for a server that speaks nothing older than TLS 1.3.
+    $protocolChoices = @(
+        ([System.Security.Authentication.SslProtocols]::Tls12 -bor [System.Security.Authentication.SslProtocols]::Tls11 -bor [System.Security.Authentication.SslProtocols]::Tls),
+        [System.Security.Authentication.SslProtocols]::None
+    )
+
+    $lastError = $null
+    foreach ($protocols in $protocolChoices) {
+        $client = New-Object System.Net.Sockets.TcpClient
+        try {
+            $connect = $client.BeginConnect($HostName, $Port, $null, $null)
+            if (-not $connect.AsyncWaitHandle.WaitOne($timeoutMs)) {
+                throw "TCP connection to ${HostName}:$Port timed out"
+            }
+            $client.EndConnect($connect)
+            $client.NoDelay = $true
+            $network = $client.GetStream()
+            $network.ReadTimeout = $timeoutMs
+            $network.WriteTimeout = $timeoutMs
+
+            $tls = New-Object System.Net.Security.SslStream($network, $false, (New-AcceptAnyCertificateCallback))
+            $tls.AuthenticateAsClient($HostName, $null, $protocols, $false)
+
+            $bindingBytes = $null
+            $binding = $tls.TransportContext.GetChannelBinding([System.Security.Authentication.ExtendedProtection.ChannelBindingKind]::Endpoint)
+            if ($binding -and $binding.Size -gt 0) {
+                $bindingBytes = New-Object byte[] $binding.Size
+                [System.Runtime.InteropServices.Marshal]::Copy($binding.DangerousGetHandle(), $bindingBytes, 0, $binding.Size)
+            }
+
+            return [PSCustomObject]@{
+                Client         = $client
+                Stream         = $tls
+                ChannelBinding = $bindingBytes
+            }
+        }
+        catch {
+            $lastError = $_.Exception
+            try { $client.Close() } catch { }
+            # A connection that never came up will not come up with other TLS versions
+            if ($lastError.Message -match 'timed out' -or $lastError -is [System.Net.Sockets.SocketException] -or
+                $lastError.InnerException -is [System.Net.Sockets.SocketException]) {
+                break
+            }
+        }
+    }
+    throw $lastError
+}
+
+<#
+.SYNOPSIS
+    Closes a connection from Open-EPAProbeConnection.
+#>
+function Close-EPAProbeConnection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $Connection
+    )
+
+    if (-not $Connection) { return }
+    try { $Connection.Stream.Dispose() } catch { }
+    try { $Connection.Client.Close() } catch { }
+}
+
+<#
+.SYNOPSIS
+    Reads one HTTP response off a stream: status, headers, and the body skipped.
+.DESCRIPTION
+    The body is read only to keep the connection in step for the next request; nothing
+    the probe decides depends on it. Content-Length and chunked bodies are read; a
+    response with neither carries none (a 401 always has a Content-Length).
+.OUTPUTS
+    PSCustomObject with StatusCode and Headers (a list of Name/Value objects).
+#>
+function Read-EPAProbeResponse {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Stream
+    )
+
+    # Header block: up to the empty line
+    $header = New-Object System.IO.MemoryStream
+    $state = 0
+    while ($state -lt 4) {
+        $b = $Stream.ReadByte()
+        if ($b -lt 0) { throw 'the server closed the connection' }
+        $header.WriteByte([byte]$b)
+        if ($header.Length -gt 65536) { throw 'response header larger than 64 KB' }
+        if ($b -eq 13) {
+            if ($state -eq 0 -or $state -eq 2) { $state++ } else { $state = 1 }
+        }
+        elseif ($b -eq 10 -and ($state -eq 1 -or $state -eq 3)) {
+            $state++
+        }
+        else {
+            $state = 0
+        }
+    }
+
+    $lines = [System.Text.Encoding]::ASCII.GetString($header.ToArray()) -split "`r`n"
+    if ($lines[0] -notmatch '^HTTP/\d\.\d\s+(\d{3})') { throw "not an HTTP response: '$($lines[0])'" }
+    $statusCode = [int]$Matches[1]
+
+    $headers = New-Object System.Collections.Generic.List[object]
+    foreach ($line in ($lines | Select-Object -Skip 1)) {
+        $colon = $line.IndexOf(':')
+        if ($colon -gt 0) {
+            $headers.Add([PSCustomObject]@{ Name = $line.Substring(0, $colon).Trim(); Value = $line.Substring($colon + 1).Trim() })
+        }
+    }
+
+    $contentLength = $headers | Where-Object { $_.Name -eq 'Content-Length' } | Select-Object -First 1
+    $transferEncoding = $headers | Where-Object { $_.Name -eq 'Transfer-Encoding' } | Select-Object -First 1
+    $skip = New-Object byte[] 8192
+    if ($transferEncoding -and $transferEncoding.Value -match 'chunked') {
+        while ($true) {
+            $sizeLine = Read-EPAProbeLine -Stream $Stream
+            $size = [Convert]::ToInt32(($sizeLine -split ';')[0].Trim(), 16)
+            if ($size -eq 0) {
+                while ((Read-EPAProbeLine -Stream $Stream).Length -gt 0) { }
+                break
+            }
+            Skip-EPAProbeBytes -Stream $Stream -Count $size -Buffer $skip
+            [void](Read-EPAProbeLine -Stream $Stream)
+        }
+    }
+    elseif ($contentLength) {
+        Skip-EPAProbeBytes -Stream $Stream -Count ([int]$contentLength.Value) -Buffer $skip
     }
 
     return [PSCustomObject]@{
-        Success        = $false
+        StatusCode = $statusCode
+        Headers    = $headers
+    }
+}
+
+function Read-EPAProbeLine {
+    <#
+    .SYNOPSIS
+        Reads one CRLF-terminated line off a stream, without the line break.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $Stream)
+
+    $line = New-Object System.Text.StringBuilder
+    while ($true) {
+        $b = $Stream.ReadByte()
+        if ($b -lt 0) { throw 'the server closed the connection' }
+        if ($b -eq 10) { break }
+        if ($b -ne 13) { [void]$line.Append([char]$b) }
+    }
+    return $line.ToString()
+}
+
+function Skip-EPAProbeBytes {
+    <#
+    .SYNOPSIS
+        Reads and discards the given number of bytes off a stream.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $Stream,
+        [Parameter(Mandatory = $true)] [int]$Count,
+        [Parameter(Mandatory = $true)] [byte[]]$Buffer
+    )
+
+    $remaining = $Count
+    while ($remaining -gt 0) {
+        $read = $Stream.Read($Buffer, 0, [Math]::Min($Buffer.Length, $remaining))
+        if ($read -le 0) { throw 'the server closed the connection in the middle of a body' }
+        $remaining -= $read
+    }
+}
+
+<#
+.SYNOPSIS
+    Sends one GET over a probe connection and reads the answer.
+#>
+function Send-EPAProbeRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Connection,
+
+        [Parameter(Mandatory = $true)]
+        [string]$HostHeader,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Authorization,
+
+        [Parameter(Mandatory = $true)]
+        [string]$UserAgent
+    )
+
+    $request = "GET $Path HTTP/1.1`r`nHost: $HostHeader`r`nUser-Agent: $UserAgent`r`nAccept: */*`r`nConnection: keep-alive`r`nAuthorization: $Authorization`r`n`r`n"
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes($request)
+    $Connection.Stream.Write($bytes, 0, $bytes.Length)
+    $Connection.Stream.Flush()
+    return Read-EPAProbeResponse -Stream $Connection.Stream
+}
+
+<#
+.SYNOPSIS
+    Runs one NTLM logon of the EPA probe, over a TLS connection of its own.
+.DESCRIPTION
+    Type1, the server's challenge, Type3 - with the channel binding the -Binding asks for:
+    - Bound         the binding of this connection
+    - Unbound       none. The own message leaves the MsvAvChannelBindings pair out
+                    (UnboundForm Absent); SSPI cannot, it sends the zero binding of a
+                    Windows client without a channel (UnboundForm Zero)
+    - Wrong         the binding of a channel the probe is not on
+    - ChallengeOnly stop after the challenge; the server facts it carries, no logon
+.OUTPUTS
+    PSCustomObject with Binding, UnboundForm, StatusCode (of the answer to the Type3,
+    $null if none came), Type2Result and Error.
+#>
+function Invoke-EPAProbeHandshake {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Uri]$Uri,
+
+        [Parameter(Mandatory = $true)]
+        $Identity,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Bound', 'Unbound', 'Wrong', 'ChallengeOnly')]
+        [string]$Binding,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSeconds,
+
+        [Parameter(Mandatory = $true)]
+        [string]$UserAgent
+    )
+
+    $result = [PSCustomObject]@{
+        Binding     = $Binding
+        UnboundForm = $(if ($Identity.Kind -eq 'Sspi') { 'Zero' } else { 'Absent' })
+        StatusCode  = $null
+        Type2Result = $null
+        Error       = $null
+    }
+
+    $connection = $null
+    $sspi = $null
+    try {
+        $connection = Open-EPAProbeConnection -HostName $Uri.Host -Port $Uri.Port -TimeoutSeconds $TimeoutSeconds
+        $hostHeader = if ($Uri.IsDefaultPort) { $Uri.Host } else { "$($Uri.Host):$($Uri.Port)" }
+        $targetName = "HTTP/$($Uri.Host)"
+
+        $bindingStruct = $null
+        if ($Binding -eq 'Bound') {
+            if (-not $connection.ChannelBinding) { throw 'the TLS channel offered no channel binding' }
+            $bindingStruct = $connection.ChannelBinding
+        }
+        elseif ($Binding -eq 'Wrong') {
+            $applicationData = [byte[]]([System.Text.Encoding]::ASCII.GetBytes('tls-server-end-point:') + (Get-NTLMRandomBytes -Count 32))
+            $bindingStruct = New-SecChannelBindings -ApplicationData $applicationData
+        }
+
+        $useSspi = ($Identity.Kind -eq 'Sspi') -and ($Binding -ne 'ChallengeOnly')
+        if ($useSspi) {
+            Initialize-EPASspiType
+            $sspi = New-Object adPEASNtlmSspi($targetName)
+            # The name the environment gives is the process's user; the credential's is
+            # the account that actually logs on (they differ under runas /netonly)
+            $credentialName = $sspi.CredentialName()
+            if ($credentialName) { $Identity.Name = $credentialName }
+            $type1 = [Convert]::ToBase64String($sspi.Negotiate())
+        }
+        else {
+            $type1 = New-NTLMType1Message
+        }
+
+        $challengeAnswer = Send-EPAProbeRequest -Connection $connection -HostHeader $hostHeader -Path $Uri.PathAndQuery `
+            -Authorization "NTLM $type1" -UserAgent $UserAgent
+        if ($challengeAnswer.StatusCode -ne 401) {
+            throw "the Type1 was answered with HTTP $($challengeAnswer.StatusCode), not with an NTLM challenge"
+        }
+        $type2Base64 = $null
+        foreach ($headerLine in $challengeAnswer.Headers) {
+            if ($headerLine.Name -eq 'WWW-Authenticate' -and $headerLine.Value -match '^NTLM\s+([A-Za-z0-9+/=]+)') {
+                $type2Base64 = $Matches[1]
+                break
+            }
+        }
+        if (-not $type2Base64) { throw 'the 401 carried no NTLM challenge' }
+        $type2 = Read-NTLMType2Message -Type2Base64 $type2Base64
+        if (-not $type2.Success) { throw "unreadable NTLM challenge: $($type2.Error)" }
+        $result.Type2Result = $type2
+
+        if ($Binding -eq 'ChallengeOnly') { return $result }
+
+        if ($useSspi) {
+            $type3 = $sspi.Authenticate([Convert]::FromBase64String($type2Base64), $bindingStruct)
+        }
+        else {
+            $bindingHash = $null
+            if ($bindingStruct) {
+                $bindingHash = Get-NTLMChannelBindingHash -ApplicationData (Get-ChannelBindingApplicationData -SecChannelBindings $bindingStruct)
+            }
+            # The domain in the form the server names it, when it is the server's own
+            $domain = $Identity.Domain
+            if ($domain -and $type2.NbDomainName -and
+                ($domain -ieq $type2.DnsDomainName -or $domain -ieq $type2.NbDomainName)) {
+                $domain = $type2.NbDomainName
+            }
+            $authenticateParams = @{
+                Type2Result = $type2
+                UserName    = $Identity.UserName
+                Domain      = [string]$domain
+                NTHash      = $Identity.NTHash
+                TargetName  = $targetName
+            }
+            if ($bindingHash) { $authenticateParams['ChannelBindingHash'] = $bindingHash }
+            if ($Binding -eq 'Unbound') { $authenticateParams['OmitChannelBindings'] = $true }
+            $type3 = New-NTLMAuthenticateMessage @authenticateParams
+        }
+
+        $logonAnswer = Send-EPAProbeRequest -Connection $connection -HostHeader $hostHeader -Path $Uri.PathAndQuery `
+            -Authorization ("NTLM " + [Convert]::ToBase64String($type3)) -UserAgent $UserAgent
+        $result.StatusCode = $logonAnswer.StatusCode
+    }
+    catch {
+        $result.Error = $_.Exception.Message
+    }
+    finally {
+        if ($sspi) { try { $sspi.Dispose() } catch { } }
+        Close-EPAProbeConnection -Connection $connection
+    }
+
+    return $result
+}
+
+<#
+.SYNOPSIS
+    Reads the three logons of the EPA probe as a verdict.
+.DESCRIPTION
+    A logon counts as accepted when it is answered with anything but 401: a 200, a 403
+    or a 500 all come from past the authentication, and which one depends on the
+    endpoint and the account, not on EPA. A 502, 503 or 504 counts as no answer.
+
+    What IIS does in each mode (measured, Exchange and AD CS web enrollment):
+
+                          correct binding   no binding pair   zero binding   foreign binding
+        Require           accepted          rejected          rejected       rejected
+        Allow (Accept)    accepted          accepted          rejected       rejected
+        None (Off)        accepted          accepted          accepted       accepted
+
+    With the pair left out (UnboundForm Absent, the probe's own message):
+    - Bound rejected or missing      no verdict - the identity cannot log on here, so the
+                                     rejection of the other two would prove nothing
+    - Unbound rejected               Required
+    - Unbound accepted, Wrong        Accept
+      rejected
+    - Unbound and Wrong accepted     Off
+    - Unbound accepted, Wrong        EPA not required; Accept or Off unknown
+      missing
+
+    With the zero binding (UnboundForm Zero, SSPI, which cannot leave the pair out):
+    - Unbound rejected               enabled - Required or Accept, which this logon
+                                     cannot tell apart
+    - Unbound accepted               Off - Accept would have rejected the zero binding
+.PARAMETER Bound
+    Status code of the logon with the correct binding, $null if it did not complete.
+.PARAMETER Unbound
+    Status code of the logon without a binding, $null if not run or not completed.
+.PARAMETER Wrong
+    Status code of the logon with a foreign binding, $null if not run or not completed.
+.PARAMETER UnboundForm
+    How the unbound logon went without a binding: Absent (no pair) or Zero (zero binding).
+.PARAMETER IdentityName
+    Who logged on, for the diagnostic.
+.OUTPUTS
+    PSCustomObject with EPAEnabled, Confidence, Mode and DiagnosticInfo. EPAEnabled is
+    $true for Required and for Accept - both reject the logon of a client that sends a
+    binding of no or another channel - and $false for Off.
+#>
+function Resolve-EPAProbeVerdict {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $Bound,
+
+        [Parameter(Mandatory = $false)]
+        $Unbound,
+
+        [Parameter(Mandatory = $false)]
+        $Wrong,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Absent', 'Zero')]
+        [string]$UnboundForm = 'Absent',
+
+        [Parameter(Mandatory = $false)]
+        [string]$IdentityName = 'the probe identity'
+    )
+
+    $verdict = [PSCustomObject]@{
         EPAEnabled     = $null
         Confidence     = 'Unknown'
-        Type3Response  = "HTTP $StatusCode"
+        Mode           = $null
         DiagnosticInfo = $null
-        ErrorMessage   = "Unexpected status code on Type3: $StatusCode"
     }
+
+    # 502, 503 and 504 say nothing about the logon: a gateway, a load balancer or an
+    # application pool that is not up answers them, and three of them would otherwise
+    # read as three accepted logons - EPA off - on a server that was merely starting.
+    foreach ($name in @('Bound', 'Unbound', 'Wrong')) {
+        $value = Get-Variable -Name $name -ValueOnly
+        if ($null -ne $value -and [int]$value -in @(502, 503, 504)) { Set-Variable -Name $name -Value $null }
+    }
+
+    if ($null -eq $Bound) {
+        $verdict.DiagnosticInfo = "the logon of $IdentityName with the channel binding did not complete"
+        return $verdict
+    }
+    if ([int]$Bound -eq 401) {
+        $verdict.DiagnosticInfo = "$IdentityName was rejected even with the correct channel binding - it cannot log on to this endpoint (wrong password, NTLM restricted, Protected Users), so a rejection without the binding would prove nothing"
+        return $verdict
+    }
+    if ($null -eq $Unbound) {
+        $verdict.DiagnosticInfo = "$IdentityName logged on with the channel binding (HTTP $Bound); the logon without it did not complete"
+        return $verdict
+    }
+
+    $verdict.Confidence = 'High'
+
+    if ($UnboundForm -eq 'Zero') {
+        if ([int]$Unbound -eq 401) {
+            $verdict.EPAEnabled = $true
+            $verdict.DiagnosticInfo = "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected with the zero binding of a Windows client without a channel - Extended Protection is Required or Accept, which an SSPI logon cannot tell apart"
+        }
+        else {
+            $verdict.EPAEnabled = $false
+            $verdict.Mode = 'Off'
+            $verdict.DiagnosticInfo = "$IdentityName was accepted with the zero binding of a Windows client without a channel (HTTP $Unbound) - Extended Protection is off"
+        }
+        return $verdict
+    }
+
+    if ([int]$Unbound -eq 401) {
+        $verdict.EPAEnabled = $true
+        $verdict.Mode = 'Required'
+        $verdict.DiagnosticInfo = "$IdentityName was accepted with the channel binding (HTTP $Bound) and rejected without it - Extended Protection is required"
+        return $verdict
+    }
+    if ($null -eq $Wrong) {
+        $verdict.EPAEnabled = $null
+        $verdict.Confidence = 'Unknown'
+        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) - Extended Protection is not required; the logon with a foreign binding, which tells Accept from Off, did not complete"
+    }
+    elseif ([int]$Wrong -eq 401) {
+        $verdict.EPAEnabled = $true
+        $verdict.Mode = 'Accept'
+        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) but rejected with a foreign one - Extended Protection is set to Accept: it takes the logon of a client that implements no channel binding and rejects a Windows client, which sends a binding"
+    }
+    else {
+        $verdict.EPAEnabled = $false
+        $verdict.Mode = 'Off'
+        $verdict.DiagnosticInfo = "$IdentityName was accepted without a channel binding (HTTP $Unbound) and with a foreign one (HTTP $Wrong) - Extended Protection is off"
+    }
+    return $verdict
 }
 
 <#
 .SYNOPSIS
     Names the EPA state of one web endpoint for its "[EPA: ...]" marker.
 .DESCRIPTION
-    Four states, because two of them used to share one word:
-    - Enabled / Disabled: the probe reached a verdict
+    Five states:
+    - Enabled: Extended Protection is required - or, from an SSPI logon, required or set
+      to Accept, which such a logon cannot tell apart
+    - Accept: Extended Protection rejects a logon that brings a zero or foreign binding,
+      as every Windows client does, and takes one that brings no binding at all, as a
+      client without channel binding support does
+    - Disabled: Extended Protection is off
     - Untested: the endpoint was never probed - EPA is probed only where NTLM is offered
       over HTTPS
-    - Undetermined: the endpoint was probed and the probe could not tell, which is what a
-      rejected probe means (Resolve-EPAType3Answer)
+    - Undetermined: the endpoint was probed and the probe could not tell - no identity to
+      log on with, or the identity could not log on there
     A probed endpoint always carries a confidence and a never-probed one none, which is
     what tells the last two apart. Both used to read "Untested", so an endpoint that had
     been asked and gave no answer looked like one nobody asked.
@@ -753,14 +1604,19 @@ function Resolve-EPAType3Answer {
     The endpoint's verdict: $true, $false or $null.
 .PARAMETER EPAConfidence
     The endpoint's confidence, $null when it was never probed.
+.PARAMETER EPAMode
+    The endpoint's Extended Protection mode, when the probe established it: Required,
+    Accept or Off.
 #>
 function Get-EPAStatusLabel {
     [CmdletBinding()]
     param(
         $EPAEnabled,
-        $EPAConfidence
+        $EPAConfidence,
+        $EPAMode
     )
 
+    if ($EPAMode -eq 'Accept') { return 'Accept' }
     if ($EPAEnabled -eq $true) { return 'Enabled' }
     if ($EPAEnabled -eq $false) { return 'Disabled' }
     if ($null -eq $EPAConfidence) { return 'Untested' }
@@ -769,36 +1625,36 @@ function Get-EPAStatusLabel {
 
 <#
 .SYNOPSIS
-    Tests whether Extended Protection for Authentication (EPA) is enabled on an HTTPS endpoint.
+    Tests whether an HTTPS endpoint enforces Extended Protection for Authentication (EPA).
 .DESCRIPTION
-    Performs a full NTLM handshake over HTTPS with random credentials and without a
-    Channel Binding Token (CBT). A server that enforces EPA rejects the Type3 for the
-    missing CBT - and one that does not rejects it for the credentials, so only an
-    accepted Type3 is a verdict.
+    Logs on with a real identity up to three times (Invoke-EPAProbeHandshake) and reads
+    the answers as a verdict (Resolve-EPAProbeVerdict): with the correct channel binding
+    as the control, then without one, then - only if that was accepted and left the
+    binding pair out - with the binding of another channel. It stops as soon as the
+    verdict is reached.
 
-    This function maintains proper NTLM connection state by using a single ServicePoint
-    and limiting connections to ensure Type1->Type2->Type3 flow over the same TCP connection.
-
-    EPA Detection Logic (in priority order):
-    1. MsvAvFlags in Type2 with bit 0x02 set = EPA ENABLED (High confidence)
-    2. Type3 accepted (2xx/3xx) = EPA DISABLED (High confidence)
-    3. Type3 rejected (401), whatever its WWW-Authenticate header = undetermined
-    4. Connection dropped after Type3 = undetermined, the probe failed
-    Resolve-EPAType3Answer reads the answer to the Type3 and says why a rejection
-    decides nothing.
-
+    A probe with invalid credentials cannot decide this - IIS answers every failed logon
+    alike - which is why the probe needs an identity that can log on (Resolve-EPAProbeIdentity).
+    Without one, the endpoint is undetermined, and the server facts of its NTLM challenge
+    are still read.
 .PARAMETER Url
     The HTTPS URL to test (must be HTTPS for EPA to be relevant).
 .PARAMETER TimeoutSeconds
-    HTTP request timeout in seconds (default: 10).
+    Timeout of each connection and read, in seconds (default: 10).
 .PARAMETER UserAgent
-    HTTP User-Agent header (default: "Mozilla/5.0").
+    HTTP User-Agent header.
+.PARAMETER Identity
+    The identity to log on with (Resolve-EPAProbeIdentity). Omitted: resolved here.
 .RETURNS
     PSCustomObject with:
-    - Success: $true if EPA test completed, $false if test could not run
-    - EPAEnabled: $true (EPA active/secure), $false (EPA inactive/vulnerable), $null (unknown/N/A)
+    - Success: $true if the probe got an answer to its logon, $false if it could not run
+    - EPAEnabled: $true (Required or Accept), $false (Off), $null (unknown/N/A)
     - Confidence: "High" (a verdict), "Unknown" (no verdict), "N/A" (EPA does not apply)
-    - Type2Received, Type3Response, Type3StatusCode, ErrorMessage, DiagnosticInfo
+    - Mode: Required, Accept, Off, or $null when the probe could not tell (an SSPI
+      logon cannot tell Required from Accept)
+    - Identity: who logged on
+    - ProbeStatus: status codes of the Bound, Unbound and Wrong logons
+    - Type2Received, ErrorMessage, DiagnosticInfo
     - Server info from NTLM Type2 AV_PAIRs (NbComputerName, DnsComputerName, etc.)
 #>
 function Test-ExtendedProtection {
@@ -811,16 +1667,20 @@ function Test-ExtendedProtection {
         [int]$TimeoutSeconds = 10,
 
         [Parameter(Mandatory=$false)]
-        [string]$UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        [string]$UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+
+        [Parameter(Mandatory=$false)]
+        $Identity
     )
 
     $result = [PSCustomObject]@{
-        Success = $false           # True if EPA test completed (not if EPA is enabled)
-        EPAEnabled = $null         # $true = EPA active (secure), $false = EPA not active (vulnerable), $null = unknown/N/A
+        Success = $false           # True if the probe got an answer to its logon (not if EPA is enabled)
+        EPAEnabled = $null         # $true = EPA required (secure), $false = not enforced (relayable), $null = unknown/N/A
         Confidence = "Unknown"     # "High", "Unknown", "N/A"
+        Mode = $null               # Required, Accept, Off
+        Identity = $null           # Who logged on
+        ProbeStatus = [PSCustomObject]@{ Bound = $null; Unbound = $null; Wrong = $null }
         Type2Received = $false
-        Type3Response = $null
-        Type3StatusCode = $null
         ErrorMessage = $null
         DiagnosticInfo = $null
         # Server information from NTLM Type2 AV_PAIRs
@@ -833,7 +1693,6 @@ function Test-ExtendedProtection {
         NTLMChallenge = $null      # NTLM challenge (hex)
     }
 
-    # FIX: Validate URL syntax before processing
     $uri = $null
     try {
         $uri = [System.Uri]$Url
@@ -844,231 +1703,108 @@ function Test-ExtendedProtection {
         return $result
     }
 
-    # Validate URL is HTTPS (EPA only applies to TLS connections)
-    # FIX: For HTTP, EPA is not applicable, so EPAEnabled should be $null (not $false)
+    # EPA only applies to TLS connections: for HTTP it is not applicable, not "disabled"
     if ($uri.Scheme -ne 'https') {
-        $result.Success = $true    # Test completed (we know the answer)
-        $result.EPAEnabled = $null # Not applicable (not "disabled")
+        $result.Success = $true
+        $result.EPAEnabled = $null
         $result.Confidence = "N/A"
         $result.ErrorMessage = "EPA only applies to HTTPS connections. HTTP does not use Channel Binding."
         $result.DiagnosticInfo = "HTTP has no TLS channel to bind to - NTLM relay is always possible over HTTP regardless of EPA settings"
         return $result
     }
 
+    if ($null -eq $Identity) { $Identity = Resolve-EPAProbeIdentity }
+    $result.Identity = $Identity.Name
+
     Write-Log "[Test-ExtendedProtection] Testing EPA for: $Url"
 
-    # Save original TLS settings to restore later
-    $originalSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
-    $originalCertCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+    $handshake = @{ Uri = $uri; Identity = $Identity; TimeoutSeconds = $TimeoutSeconds; UserAgent = $UserAgent }
 
-    # Track ServicePoint and its original connection limit for cleanup
-    $servicePoint = $null
-    $originalConnectionLimit = $null
-
-    try {
-        # Configure TLS - enable all versions and ignore certificate errors
-        try {
-            $protocols = [System.Net.SecurityProtocolType]::Tls12
-            try { $protocols = $protocols -bor [System.Net.SecurityProtocolType]::Tls11 } catch { }
-            try { $protocols = $protocols -bor [System.Net.SecurityProtocolType]::Tls } catch { }
-            try {
-                $protocols = $protocols -bor [System.Net.SecurityProtocolType]::Tls13
-            }
-            catch {
-                # TLS 1.3 not available on this .NET version - this is expected on older systems
-                Write-Log "[Test-ExtendedProtection] TLS 1.3 not available: $($_.Exception.Message)"
-            }
-            [System.Net.ServicePointManager]::SecurityProtocol = $protocols
+    if ($Identity.Kind -eq 'None') {
+        $challenge = Invoke-EPAProbeHandshake @handshake -Binding 'ChallengeOnly'
+        Set-EPAProbeServerFacts -Result $result -Type2Result $challenge.Type2Result
+        if ($challenge.Error) {
+            $result.ErrorMessage = $challenge.Error
         }
-        catch {
-            Write-Log "[Test-ExtendedProtection] Failed to configure TLS: $($_.Exception.Message)"
-        }
-
-        # Ignore SSL certificate errors (self-signed, expired, etc.). A compiled delegate,
-        # not a script block: see New-AcceptAnyCertificateCallback for why pwsh 7 needs it.
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = New-AcceptAnyCertificateCallback
-
-        # FIX: NTLM is connection-oriented - we need Type1->Type2->Type3 on SAME TCP connection
-        # Limit connections to 1 for this ServicePoint to ensure connection reuse
-        $servicePoint = [System.Net.ServicePointManager]::FindServicePoint($uri)
-        if ($servicePoint) {
-            $originalConnectionLimit = $servicePoint.ConnectionLimit
-            $servicePoint.ConnectionLimit = 1
-        }
-
-        # Step 1: Send Type1 to get Type2 challenge
-        Write-Log "[Test-ExtendedProtection] Step 1: Sending Type1 to initiate NTLM handshake"
-
-        $type1Message = New-NTLMType1Message
-        $type2Base64 = $null
-        $type2Result = $null
-
-        try {
-            $request1 = [System.Net.HttpWebRequest]::Create($Url)
-            $request1.Method = 'GET'
-            $request1.Timeout = $TimeoutSeconds * 1000
-            $request1.ReadWriteTimeout = $TimeoutSeconds * 1000
-            $request1.UserAgent = $UserAgent
-            $request1.KeepAlive = $true
-            $request1.Headers.Add("Authorization", "NTLM $type1Message")
-            # Ensure we don't use pre-authenticated connections
-            $request1.PreAuthenticate = $false
-            $request1.UnsafeAuthenticatedConnectionSharing = $true
-
-            $response1 = $request1.GetResponse()
-            # If we got 200 OK with just Type1, endpoint allows anonymous access or doesn't require NTLM
+        else {
             $result.Success = $true
-            $result.EPAEnabled = $null
-            $result.Confidence = "N/A"
-            $result.DiagnosticInfo = "Endpoint returned 200 OK - anonymous access allowed or no NTLM auth required. EPA test not applicable."
-            $response1.Close()
-            $response1.Dispose()
-            return $result
         }
-        catch [System.Net.WebException] {
-            $webEx = $_.Exception
-            if ($webEx.Response) {
-                $statusCode = [int]$webEx.Response.StatusCode
+        $result.DiagnosticInfo = "no identity to log on with: $($Identity.Reason)"
+        Write-Log "[Test-ExtendedProtection] No probe logon - $($result.DiagnosticInfo)"
+        return $result
+    }
 
-                if ($statusCode -eq 401) {
-                    # Expected - look for Type2 in WWW-Authenticate header
-                    $wwwAuth = $webEx.Response.Headers['WWW-Authenticate']
+    Write-Log "[Test-ExtendedProtection] Logging on as $($Identity.Name) ($($Identity.Source)), with the channel binding"
+    $bound = Invoke-EPAProbeHandshake @handshake -Binding 'Bound'
+    # An SSPI logon names its account only once the credential exists
+    $result.Identity = $Identity.Name
+    Set-EPAProbeServerFacts -Result $result -Type2Result $bound.Type2Result
+    $result.ProbeStatus.Bound = $bound.StatusCode
+    if ($bound.Error) {
+        $result.ErrorMessage = "Logon with the channel binding failed: $($bound.Error)"
+        Write-Log "[Test-ExtendedProtection] $($result.ErrorMessage)"
+    }
 
-                    if ($wwwAuth -match 'NTLM\s+([A-Za-z0-9+/=]+)') {
-                        $type2Base64 = $Matches[1]
-                        $result.Type2Received = $true
-                        Write-Log "[Test-ExtendedProtection] Step 2: Received Type2 challenge"
-                    }
-                    else {
-                        $result.ErrorMessage = "Server returned 401 but no NTLM Type2 challenge in WWW-Authenticate header"
-                        $result.DiagnosticInfo = "WWW-Authenticate: $wwwAuth"
-                    }
-                }
-                else {
-                    $result.ErrorMessage = "Unexpected status code: $statusCode"
-                }
+    $unbound = $null
+    $wrong = $null
+    if ($null -ne $bound.StatusCode -and $bound.StatusCode -ne 401) {
+        Write-Log "[Test-ExtendedProtection] Accepted with the channel binding (HTTP $($bound.StatusCode)); logging on without it"
+        $unbound = Invoke-EPAProbeHandshake @handshake -Binding 'Unbound'
+        $result.ProbeStatus.Unbound = $unbound.StatusCode
+        if ($unbound.Error) { $result.ErrorMessage = "Logon without a channel binding failed: $($unbound.Error)" }
 
-                # FIX: DO NOT close the response here - closing can terminate the TCP connection
-                # which breaks NTLM's connection-oriented state machine.
-                # The response will be garbage collected and the connection pool manages lifecycle.
-                # Only close on the outer exception handler if we're returning early.
-            }
-            else {
-                $result.ErrorMessage = "Connection failed: $($webEx.Message)"
-            }
-        }
-
-        if (-not $result.Type2Received) {
-            Write-Log "[Test-ExtendedProtection] Failed to receive Type2 challenge"
-            return $result
-        }
-
-        # Step 2: Parse Type2 message
-        $type2Result = Read-NTLMType2Message -Type2Base64 $type2Base64
-        if (-not $type2Result.Success) {
-            $result.ErrorMessage = "Failed to parse Type2: $($type2Result.Error)"
-            return $result
-        }
-
-        # Copy AV_PAIR values to result
-        $result.NbComputerName = $type2Result.NbComputerName
-        $result.NbDomainName = $type2Result.NbDomainName
-        $result.DnsComputerName = $type2Result.DnsComputerName
-        $result.DnsDomainName = $type2Result.DnsDomainName
-        $result.DnsTreeName = $type2Result.DnsTreeName
-        $result.ServerTimestamp = $type2Result.TimestampUtc
-        $result.NTLMChallenge = $type2Result.ChallengeHex
-
-        Write-Log "[Test-ExtendedProtection] Type2 parsed - Target: $($type2Result.TargetName), Challenge: $($type2Result.ChallengeHex)"
-        if ($type2Result.DnsComputerName) {
-            Write-Log "[Test-ExtendedProtection] Server: $($type2Result.DnsComputerName) ($($type2Result.NbComputerName))"
-        }
-        if ($type2Result.DnsDomainName) {
-            Write-Log "[Test-ExtendedProtection] Domain: $($type2Result.DnsDomainName) (Forest: $($type2Result.DnsTreeName))"
-        }
-
-        # FIX: Check MsvAvFlags for EPA requirement BEFORE sending Type3
-        # This is the most reliable indicator - the server explicitly tells us EPA is required
-        if ($type2Result.EPARequired) {
-            Write-Log "[Test-ExtendedProtection] MsvAvFlags indicates EPA required (bit 0x02 set) - DEFINITIVE EPA ENABLED"
-            $result.Success = $true
-            $result.EPAEnabled = $true
-            $result.Confidence = "High"
-            $result.DiagnosticInfo = "MsvAvFlags in Type2 contains bit 0x02 (MIC/EPA required) - server definitively requires Channel Binding"
-            return $result
-        }
-
-        # Step 3: Create Type3 message WITHOUT Channel Binding Token
-        $type3Message = New-NTLMType3Message -Type2Result $type2Result
-        if ($null -eq $type3Message) {
-            $result.ErrorMessage = "Failed to create Type3 message"
-            return $result
-        }
-        Write-Log "[Test-ExtendedProtection] Step 3: Sending Type3 (without CBT) to test EPA"
-
-        # Step 4: Send Type3 and analyze response
-        try {
-            $request2 = [System.Net.HttpWebRequest]::Create($Url)
-            $request2.Method = 'GET'
-            $request2.Timeout = $TimeoutSeconds * 1000
-            $request2.ReadWriteTimeout = $TimeoutSeconds * 1000
-            $request2.UserAgent = $UserAgent
-            $request2.KeepAlive = $true
-            $request2.Headers.Add("Authorization", "NTLM $type3Message")
-            $request2.PreAuthenticate = $false
-            $request2.UnsafeAuthenticatedConnectionSharing = $true
-
-            $response2 = $request2.GetResponse()
-            $result.Type3StatusCode = [int]$response2.StatusCode
-            $answer = Resolve-EPAType3Answer -StatusCode $result.Type3StatusCode
-            foreach ($field in @('Success', 'EPAEnabled', 'Confidence', 'Type3Response', 'DiagnosticInfo', 'ErrorMessage')) {
-                $result.$field = $answer.$field
-            }
-
-            Write-Log "[Test-ExtendedProtection] Type3 accepted - EPA NOT enabled"
-
-            $response2.Close()
-            $response2.Dispose()
-        }
-        catch [System.Net.WebException] {
-            $webEx = $_.Exception
-            if ($webEx.Response) {
-                $statusCode = [int]$webEx.Response.StatusCode
-                $result.Type3StatusCode = $statusCode
-                $answer = Resolve-EPAType3Answer -StatusCode $statusCode -WwwAuthenticate $webEx.Response.Headers['WWW-Authenticate']
-                foreach ($field in @('Success', 'EPAEnabled', 'Confidence', 'Type3Response', 'DiagnosticInfo', 'ErrorMessage')) {
-                    $result.$field = $answer.$field
-                }
-                Write-Log "[Test-ExtendedProtection] Type3 answered HTTP $statusCode - $($answer.DiagnosticInfo)$($answer.ErrorMessage)"
-
-                try { $webEx.Response.Close() } catch {}
-            }
-            else {
-                # A connection that drops after the Type3 is no EPA verdict either. It was
-                # read as EPA enabled; an IIS that enforces EPA answers the missing binding
-                # with a 401 like any failed logon (Resolve-EPAType3Answer), and a proxy,
-                # a load balancer or a timeout drops connections too.
-                $result.ErrorMessage = "Connection failed on Type3: $($webEx.Message)"
-            }
+        # The foreign binding tells Accept from Off, and only after a logon that left the
+        # pair out: Accept rejects the zero binding SSPI sends, so an accepted zero
+        # binding is Off already
+        if ($null -ne $unbound.StatusCode -and $unbound.StatusCode -ne 401 -and $unbound.UnboundForm -eq 'Absent') {
+            Write-Log "[Test-ExtendedProtection] Accepted without the channel binding (HTTP $($unbound.StatusCode)); logging on with a foreign one"
+            $wrong = Invoke-EPAProbeHandshake @handshake -Binding 'Wrong'
+            $result.ProbeStatus.Wrong = $wrong.StatusCode
+            if ($wrong.Error) { $result.ErrorMessage = "Logon with a foreign channel binding failed: $($wrong.Error)" }
         }
     }
-    catch {
-        $result.ErrorMessage = "Unexpected error: $($_.Exception.Message)"
-        Write-Log "[Test-ExtendedProtection] Error: $($_.Exception.Message)"
-    }
-    finally {
-        # FIX: Proper null check for originalConnectionLimit
-        # $originalConnectionLimit could be 0 (though unlikely), so check for $null explicitly
-        if ($servicePoint -and $null -ne $originalConnectionLimit) {
-            try { $servicePoint.ConnectionLimit = $originalConnectionLimit } catch { }
-        }
 
-        # Restore original TLS settings
-        try {
-            [System.Net.ServicePointManager]::SecurityProtocol = $originalSecurityProtocol
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $originalCertCallback
-        } catch { }
-    }
+    $unboundForm = if ($Identity.Kind -eq 'Sspi') { 'Zero' } else { 'Absent' }
+    $verdict = Resolve-EPAProbeVerdict -Bound $result.ProbeStatus.Bound -Unbound $result.ProbeStatus.Unbound `
+        -Wrong $result.ProbeStatus.Wrong -UnboundForm $unboundForm -IdentityName $Identity.Name
+    $result.Success = ($null -ne $result.ProbeStatus.Bound)
+    $result.EPAEnabled = $verdict.EPAEnabled
+    $result.Confidence = $verdict.Confidence
+    $result.Mode = $verdict.Mode
+    $result.DiagnosticInfo = $verdict.DiagnosticInfo
+    Write-Log "[Test-ExtendedProtection] $($verdict.DiagnosticInfo)"
 
     return $result
+}
+
+<#
+.SYNOPSIS
+    Copies the server facts of an NTLM challenge onto a Test-ExtendedProtection result.
+#>
+function Set-EPAProbeServerFacts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result,
+
+        [Parameter(Mandatory = $false)]
+        $Type2Result
+    )
+
+    if (-not $Type2Result) { return }
+    $Result.Type2Received = $true
+    $Result.NbComputerName = $Type2Result.NbComputerName
+    $Result.NbDomainName = $Type2Result.NbDomainName
+    $Result.DnsComputerName = $Type2Result.DnsComputerName
+    $Result.DnsDomainName = $Type2Result.DnsDomainName
+    $Result.DnsTreeName = $Type2Result.DnsTreeName
+    $Result.ServerTimestamp = $Type2Result.TimestampUtc
+    $Result.NTLMChallenge = $Type2Result.ChallengeHex
+
+    if ($Type2Result.DnsComputerName) {
+        Write-Log "[Test-ExtendedProtection] Server: $($Type2Result.DnsComputerName) ($($Type2Result.NbComputerName))"
+    }
+    if ($Type2Result.DnsDomainName) {
+        Write-Log "[Test-ExtendedProtection] Domain: $($Type2Result.DnsDomainName) (Forest: $($Type2Result.DnsTreeName))"
+    }
 }

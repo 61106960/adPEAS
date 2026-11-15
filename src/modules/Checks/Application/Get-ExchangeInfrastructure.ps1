@@ -629,7 +629,7 @@ function Get-ExchangeInfrastructure {
                                         # endpoint a missing marker read as "nothing found"
                                         # instead of "not asked". "Undetermined" is the
                                         # answer of a probe that could not tell.
-                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence
+                                        $epaStatus = Get-EPAStatusLabel -EPAEnabled $epData.EPAEnabled -EPAConfidence $epData.EPAConfidence -EPAMode $epData.EPAMode
                                         $epString += " [EPA: $epaStatus]"
                                         $endpointsWithAuth += $epString
                                     }
