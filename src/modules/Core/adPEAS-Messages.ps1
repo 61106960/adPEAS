@@ -1402,6 +1402,10 @@ function Show-ScanLogo {
 .PARAMETER NoTrailingLine
     Suppresses the trailing empty line after the message.
 
+.PARAMETER NoCollect
+    Keeps the message out of the findings collection - for usage mistakes, which are
+    no security finding.
+
 .EXAMPLE
     Show-Message -Type Error -Title "CONNECTION FAILED" -Details @("Server not responding", "Check firewall settings")
     # Output:
@@ -1448,7 +1452,10 @@ function Show-Message {
         [switch]$NoLeadingLine,
 
         [Parameter(Mandatory=$false)]
-        [switch]$NoTrailingLine
+        [switch]$NoTrailingLine,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$NoCollect
     )
 
     # Leading empty line (unless suppressed)
@@ -1465,13 +1472,13 @@ function Show-Message {
     }
 
     # Output title (with class prefix, e.g., [!] for Error)
-    Show-Line $Title -Class $titleClass
+    Show-Line $Title -Class $titleClass -NoCollect:$NoCollect
 
     # Output details (no prefix - visually subordinate to title)
     if ($Details -and $Details.Count -gt 0) {
         Show-EmptyLine
         foreach ($detail in $Details) {
-            Show-Line $detail
+            Show-Line $detail -NoCollect:$NoCollect
         }
     }
 
@@ -1479,7 +1486,7 @@ function Show-Message {
     if ($Hints -and $Hints.Count -gt 0) {
         Show-EmptyLine
         foreach ($hint in $Hints) {
-            Show-Line $hint -Class Hint
+            Show-Line $hint -Class Hint -NoCollect:$NoCollect
         }
     }
 

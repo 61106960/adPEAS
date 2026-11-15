@@ -25427,7 +25427,9 @@ function Show-Message {
         [Parameter(Mandatory=$false)]
         [switch]$NoLeadingLine,
         [Parameter(Mandatory=$false)]
-        [switch]$NoTrailingLine
+        [switch]$NoTrailingLine,
+        [Parameter(Mandatory=$false)]
+        [switch]$NoCollect
     )
     if (-not $NoLeadingLine) {
         Show-EmptyLine
@@ -25438,17 +25440,17 @@ function Show-Message {
         'Success' { 'Note' }
         'Info'    { 'Info' }
     }
-    Show-Line $Title -Class $titleClass
+    Show-Line $Title -Class $titleClass -NoCollect:$NoCollect
     if ($Details -and $Details.Count -gt 0) {
         Show-EmptyLine
         foreach ($detail in $Details) {
-            Show-Line $detail
+            Show-Line $detail -NoCollect:$NoCollect
         }
     }
     if ($Hints -and $Hints.Count -gt 0) {
         Show-EmptyLine
         foreach ($hint in $Hints) {
-            Show-Line $hint -Class Hint
+            Show-Line $hint -Class Hint -NoCollect:$NoCollect
         }
     }
     if (-not $NoTrailingLine) {
@@ -61671,6 +61673,7 @@ function New-EPAProbeIdentity {
         [Parameter(Mandatory = $false)]
         [switch]$UseWindowsAuth
     )
+    $usageError = { param([string]$Message) throw (New-Object System.ArgumentException -ArgumentList $Message) }
     $forms = @()
     if ($PSBoundParameters.ContainsKey('Credential') -and $Credential) { $forms += 'Credential' }
     if ($PSBoundParameters.ContainsKey('Password')) { $forms += 'Password' }
@@ -61679,22 +61682,22 @@ function New-EPAProbeIdentity {
     if ($UseWindowsAuth) { $forms += 'UseWindowsAuth' }
     if ($forms.Count -eq 0) {
         if ($PSBoundParameters.ContainsKey('Username')) {
-            throw '-Username needs -Password or -NTHash.'
+            & $usageError '-Username needs -Password or -NTHash'
         }
-        throw '-TestEPA logs on to every NTLM endpoint of the target. Name the identity: -Credential, -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth.'
+        & $usageError '-TestEPA needs an identity to log on with'
     }
     if ($forms.Count -gt 1) {
-        throw "-TestEPA takes one identity, got -$($forms -join ', -')."
+        & $usageError "-TestEPA takes one identity, got -$($forms -join ', -')"
     }
     if ($forms[0] -in @('Password', 'NTHash') -and [string]::IsNullOrWhiteSpace($Username)) {
-        throw "-$($forms[0]) needs -Username."
+        & $usageError "-$($forms[0]) needs -Username"
     }
     if ($forms[0] -in @('Credential', 'UseSession', 'UseWindowsAuth') -and $PSBoundParameters.ContainsKey('Username')) {
-        throw "-Username goes with -Password or -NTHash, not with -$($forms[0])."
+        & $usageError "-Username goes with -Password or -NTHash, not with -$($forms[0])"
     }
     switch ($forms[0]) {
         'Credential' {
-            if ([string]::IsNullOrEmpty($Credential.UserName)) { throw '-Credential carries no user name.' }
+            if ([string]::IsNullOrEmpty($Credential.UserName)) { & $usageError '-Credential carries no user name' }
             $account = Split-EPAProbeAccount -Account $Credential.UserName
             return [PSCustomObject]@{
                 Kind     = 'Hash'
@@ -61719,7 +61722,7 @@ function New-EPAProbeIdentity {
             }
         }
         'NTHash' {
-            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { throw '-NTHash takes 32 hex characters.' }
+            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { & $usageError '-NTHash takes 32 hex characters' }
             $hashBytes = New-Object byte[] 16
             for ($i = 0; $i -lt 16; $i++) { $hashBytes[$i] = [Convert]::ToByte($NTHash.Substring($i * 2, 2), 16) }
             $account = Split-EPAProbeAccount -Account $Username
@@ -61735,7 +61738,7 @@ function New-EPAProbeIdentity {
         }
         'UseSession' {
             if (-not $Script:LDAPContext) {
-                throw '-UseSession needs an adPEAS session - run Connect-adPEAS first, or name the identity with -Credential, -Username with -Password or -NTHash, or -UseWindowsAuth.'
+                & $usageError '-UseSession needs an adPEAS session - run Connect-adPEAS first'
             }
             return (Resolve-EPAProbeIdentity)
         }
@@ -61743,6 +61746,28 @@ function New-EPAProbeIdentity {
             return (New-EPASspiIdentity -Source 'current Windows logon')
         }
     }
+}
+function Show-EPAProbeIdentityError {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+        [Parameter(Mandatory = $false)]
+        [string[]]$Hint
+    )
+    if ($Hint) {
+        Show-Message -Type Error -Title $Message -Hints $Hint -NoCollect
+        return
+    }
+    Show-Message -Type Error -Title $Message -NoCollect `
+        -Details @('The EPA probe logs on to every NTLM endpoint of the target, as one of:') `
+        -Hints @(
+            '-Credential (Get-Credential)'
+            "-Username 'DOMAIN\user' -Password '<password>'"
+            "-Username 'DOMAIN\user' -NTHash '<32 hex characters>'"
+            '-UseSession       the account of the adPEAS session (Connect-adPEAS)'
+            '-UseWindowsAuth   the current Windows logon'
+        )
 }
 function Open-EPAProbeConnection {
     [CmdletBinding()]
@@ -62363,15 +62388,26 @@ function Invoke-HTTPRequest {
     )
     process {
         $identityParameters = @{}
+        $namedIdentity = @()
         foreach ($name in @('Credential', 'Username', 'Password', 'NTHash', 'UseSession', 'UseWindowsAuth')) {
-            if ($PSBoundParameters.ContainsKey($name)) { $identityParameters[$name] = $PSBoundParameters[$name] }
+            if ($PSBoundParameters.ContainsKey($name)) {
+                $identityParameters[$name] = $PSBoundParameters[$name]
+                $namedIdentity += $name
+            }
         }
         $epaIdentity = $null
         if ($TestEPA) {
-            $epaIdentity = New-EPAProbeIdentity @identityParameters
+            try {
+                $epaIdentity = New-EPAProbeIdentity @identityParameters
+            }
+            catch [System.ArgumentException] {
+                Show-EPAProbeIdentityError -Message $_.Exception.Message
+                return
+            }
         }
-        elseif ($identityParameters.Count -gt 0) {
-            throw "-$(@($identityParameters.Keys)[0]) names the identity of the EPA probe and needs -TestEPA."
+        elseif ($namedIdentity.Count -gt 0) {
+            Show-EPAProbeIdentityError -Message "-$($namedIdentity[0]) names the identity of the EPA probe and needs -TestEPA" -Hint "Add -TestEPA, or leave -$($namedIdentity[0]) out"
+            return
         }
         $originalSecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
         $originalCertCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
@@ -104213,7 +104249,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.10.1+20261115-1932"
+$Script:adPEASVersion = "2.10.1+20261115-2140"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

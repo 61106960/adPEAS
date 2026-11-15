@@ -1704,9 +1704,9 @@ Invoke-HTTPRequest -ScanExchange -Uri mail.contoso.com -TestEPA -UseSession     
 Invoke-HTTPRequest -ScanExchange -Uri mail.contoso.com -TestEPA -UseWindowsAuth   # current Windows logon, or runas /netonly
 ```
 
-Without one the call stops before it connects. The current Windows logon is never taken
-unasked: pointed at a host of another organisation, it would hand that host the logon of the
-tester's own account. A user name without a domain logs on in the target's domain. The
+Without one the call connects nowhere: it lists these forms and returns nothing. The
+current Windows logon is never taken unasked: pointed at a host of another organisation, it
+would hand that host the logon of the tester's own account. A user name without a domain logs on in the target's domain. The
 result names the account in `EPAIdentity`. A logon through SSPI (`-UseWindowsAuth`) always
 sends a binding, so it cannot tell `Required` from `Accept`; both read `[EPA: Enabled]`.
 

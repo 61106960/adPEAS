@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-11-15 19:32:42
-    Version: 2.10.1+20261115-1932
+    Build: 2026-11-15 21:40:24
+    Version: 2.10.1+20261115-2140
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -34443,6 +34443,10 @@ function Show-ScanLogo {
 .PARAMETER NoTrailingLine
     Suppresses the trailing empty line after the message.
 
+.PARAMETER NoCollect
+    Keeps the message out of the findings collection - for usage mistakes, which are
+    no security finding.
+
 .EXAMPLE
     Show-Message -Type Error -Title "CONNECTION FAILED" -Details @("Server not responding", "Check firewall settings")
     # Output:
@@ -34489,7 +34493,10 @@ function Show-Message {
         [switch]$NoLeadingLine,
 
         [Parameter(Mandatory=$false)]
-        [switch]$NoTrailingLine
+        [switch]$NoTrailingLine,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$NoCollect
     )
 
     # Leading empty line (unless suppressed)
@@ -34506,13 +34513,13 @@ function Show-Message {
     }
 
     # Output title (with class prefix, e.g., [!] for Error)
-    Show-Line $Title -Class $titleClass
+    Show-Line $Title -Class $titleClass -NoCollect:$NoCollect
 
     # Output details (no prefix - visually subordinate to title)
     if ($Details -and $Details.Count -gt 0) {
         Show-EmptyLine
         foreach ($detail in $Details) {
-            Show-Line $detail
+            Show-Line $detail -NoCollect:$NoCollect
         }
     }
 
@@ -34520,7 +34527,7 @@ function Show-Message {
     if ($Hints -and $Hints.Count -gt 0) {
         Show-EmptyLine
         foreach ($hint in $Hints) {
-            Show-Line $hint -Class Hint
+            Show-Line $hint -Class Hint -NoCollect:$NoCollect
         }
     }
 
@@ -96281,7 +96288,9 @@ function Resolve-EPAProbeIdentity {
     - -UseWindowsAuth                 the current Windows logon, through SSPI
 
     Nothing named is an error before any connection is made, and so is more than one
-    (decided 2026-11-15). The current Windows logon is never taken without being named:
+    (decided 2026-11-15). Such a usage mistake throws System.ArgumentException, which
+    Invoke-HTTPRequest shows with Show-EPAProbeIdentityError; any other exception is a
+    failure and passes through. The current Windows logon is never taken without being named:
     run by hand against a host of another organisation, it would hand that host the logon
     of the tester's own account. AES keys, certificates and tickets are not offered - NTLM
     is answered with a password or an NT hash, nothing else.
@@ -96314,6 +96323,9 @@ function New-EPAProbeIdentity {
         [switch]$UseWindowsAuth
     )
 
+    # A usage mistake, told apart from a failure by its type - see the description
+    $usageError = { param([string]$Message) throw (New-Object System.ArgumentException -ArgumentList $Message) }
+
     $forms = @()
     if ($PSBoundParameters.ContainsKey('Credential') -and $Credential) { $forms += 'Credential' }
     if ($PSBoundParameters.ContainsKey('Password')) { $forms += 'Password' }
@@ -96323,23 +96335,23 @@ function New-EPAProbeIdentity {
 
     if ($forms.Count -eq 0) {
         if ($PSBoundParameters.ContainsKey('Username')) {
-            throw '-Username needs -Password or -NTHash.'
+            & $usageError '-Username needs -Password or -NTHash'
         }
-        throw '-TestEPA logs on to every NTLM endpoint of the target. Name the identity: -Credential, -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth.'
+        & $usageError '-TestEPA needs an identity to log on with'
     }
     if ($forms.Count -gt 1) {
-        throw "-TestEPA takes one identity, got -$($forms -join ', -')."
+        & $usageError "-TestEPA takes one identity, got -$($forms -join ', -')"
     }
     if ($forms[0] -in @('Password', 'NTHash') -and [string]::IsNullOrWhiteSpace($Username)) {
-        throw "-$($forms[0]) needs -Username."
+        & $usageError "-$($forms[0]) needs -Username"
     }
     if ($forms[0] -in @('Credential', 'UseSession', 'UseWindowsAuth') -and $PSBoundParameters.ContainsKey('Username')) {
-        throw "-Username goes with -Password or -NTHash, not with -$($forms[0])."
+        & $usageError "-Username goes with -Password or -NTHash, not with -$($forms[0])"
     }
 
     switch ($forms[0]) {
         'Credential' {
-            if ([string]::IsNullOrEmpty($Credential.UserName)) { throw '-Credential carries no user name.' }
+            if ([string]::IsNullOrEmpty($Credential.UserName)) { & $usageError '-Credential carries no user name' }
             $account = Split-EPAProbeAccount -Account $Credential.UserName
             return [PSCustomObject]@{
                 Kind     = 'Hash'
@@ -96364,7 +96376,7 @@ function New-EPAProbeIdentity {
             }
         }
         'NTHash' {
-            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { throw '-NTHash takes 32 hex characters.' }
+            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { & $usageError '-NTHash takes 32 hex characters' }
             $hashBytes = New-Object byte[] 16
             for ($i = 0; $i -lt 16; $i++) { $hashBytes[$i] = [Convert]::ToByte($NTHash.Substring($i * 2, 2), 16) }
             $account = Split-EPAProbeAccount -Account $Username
@@ -96380,7 +96392,7 @@ function New-EPAProbeIdentity {
         }
         'UseSession' {
             if (-not $Script:LDAPContext) {
-                throw '-UseSession needs an adPEAS session - run Connect-adPEAS first, or name the identity with -Credential, -Username with -Password or -NTHash, or -UseWindowsAuth.'
+                & $usageError '-UseSession needs an adPEAS session - run Connect-adPEAS first'
             }
             return (Resolve-EPAProbeIdentity)
         }
@@ -96388,6 +96400,40 @@ function New-EPAProbeIdentity {
             return (New-EPASspiIdentity -Source 'current Windows logon')
         }
     }
+}
+
+<#
+.SYNOPSIS
+    Shows a mistake in naming the EPA probe identity, with the forms it takes.
+.DESCRIPTION
+    Invoke-HTTPRequest -TestEPA is run by hand, so a missing or wrong identity is a usage
+    mistake: an adPEAS message lists the forms, where a PowerShell exception would point
+    at a line inside adPEAS.ps1. -Hint replaces the forms when the mistake is not about
+    them. Not collected - a usage message is no finding.
+#>
+function Show-EPAProbeIdentityError {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Hint
+    )
+
+    if ($Hint) {
+        Show-Message -Type Error -Title $Message -Hints $Hint -NoCollect
+        return
+    }
+    Show-Message -Type Error -Title $Message -NoCollect `
+        -Details @('The EPA probe logs on to every NTLM endpoint of the target, as one of:') `
+        -Hints @(
+            '-Credential (Get-Credential)'
+            "-Username 'DOMAIN\user' -Password '<password>'"
+            "-Username 'DOMAIN\user' -NTHash '<32 hex characters>'"
+            '-UseSession       the account of the adPEAS session (Connect-adPEAS)'
+            '-UseWindowsAuth   the current Windows logon'
+        )
 }
 
 <#
@@ -97339,10 +97385,11 @@ function Set-EPAProbeServerFacts {
 
     A failed logon cannot show whether EPA is enforced - IIS rejects it alike either way -
     so the probe logs on with a real identity, and -TestEPA needs it named: -Credential,
-    -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth. Nothing named is an
-    error before any connection is made. The current Windows logon is never taken unasked:
-    pointed at a host of another organisation, it would hand that host the logon of the
-    tester's own account. An endpoint the identity cannot log on to reads undetermined.
+    -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth. With nothing named
+    the call connects nowhere: it shows the forms and returns nothing. The current Windows
+    logon is never taken unasked: pointed at a host of another organisation, it would hand
+    that host the logon of the tester's own account. An endpoint the identity cannot log on
+    to reads undetermined.
 
 .PARAMETER Credential
     With -TestEPA: the account the EPA probe logs on as, given as a PSCredential
@@ -97507,17 +97554,30 @@ function Invoke-HTTPRequest {
 
     process {
         # The EPA probe logs on, so its identity is named before anything connects - and
-        # an identity named without -TestEPA would be ignored, which is a mistake to say
+        # an identity named without -TestEPA would be ignored, which is a mistake to say.
+        # Both are usage mistakes of a call made by hand: shown as a message, and the call
+        # returns nothing.
         $identityParameters = @{}
+        $namedIdentity = @()
         foreach ($name in @('Credential', 'Username', 'Password', 'NTHash', 'UseSession', 'UseWindowsAuth')) {
-            if ($PSBoundParameters.ContainsKey($name)) { $identityParameters[$name] = $PSBoundParameters[$name] }
+            if ($PSBoundParameters.ContainsKey($name)) {
+                $identityParameters[$name] = $PSBoundParameters[$name]
+                $namedIdentity += $name
+            }
         }
         $epaIdentity = $null
         if ($TestEPA) {
-            $epaIdentity = New-EPAProbeIdentity @identityParameters
+            try {
+                $epaIdentity = New-EPAProbeIdentity @identityParameters
+            }
+            catch [System.ArgumentException] {
+                Show-EPAProbeIdentityError -Message $_.Exception.Message
+                return
+            }
         }
-        elseif ($identityParameters.Count -gt 0) {
-            throw "-$(@($identityParameters.Keys)[0]) names the identity of the EPA probe and needs -TestEPA."
+        elseif ($namedIdentity.Count -gt 0) {
+            Show-EPAProbeIdentityError -Message "-$($namedIdentity[0]) names the identity of the EPA probe and needs -TestEPA" -Hint "Add -TestEPA, or leave -$($namedIdentity[0]) out"
+            return
         }
 
         # Save original settings to restore later (local variables for thread safety)
@@ -163527,7 +163587,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.10.1+20261115-1932"
+$Script:adPEASVersion = "2.10.1+20261115-2140"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set

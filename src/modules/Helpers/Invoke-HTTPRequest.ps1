@@ -78,10 +78,11 @@
 
     A failed logon cannot show whether EPA is enforced - IIS rejects it alike either way -
     so the probe logs on with a real identity, and -TestEPA needs it named: -Credential,
-    -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth. Nothing named is an
-    error before any connection is made. The current Windows logon is never taken unasked:
-    pointed at a host of another organisation, it would hand that host the logon of the
-    tester's own account. An endpoint the identity cannot log on to reads undetermined.
+    -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth. With nothing named
+    the call connects nowhere: it shows the forms and returns nothing. The current Windows
+    logon is never taken unasked: pointed at a host of another organisation, it would hand
+    that host the logon of the tester's own account. An endpoint the identity cannot log on
+    to reads undetermined.
 
 .PARAMETER Credential
     With -TestEPA: the account the EPA probe logs on as, given as a PSCredential
@@ -246,17 +247,30 @@ function Invoke-HTTPRequest {
 
     process {
         # The EPA probe logs on, so its identity is named before anything connects - and
-        # an identity named without -TestEPA would be ignored, which is a mistake to say
+        # an identity named without -TestEPA would be ignored, which is a mistake to say.
+        # Both are usage mistakes of a call made by hand: shown as a message, and the call
+        # returns nothing.
         $identityParameters = @{}
+        $namedIdentity = @()
         foreach ($name in @('Credential', 'Username', 'Password', 'NTHash', 'UseSession', 'UseWindowsAuth')) {
-            if ($PSBoundParameters.ContainsKey($name)) { $identityParameters[$name] = $PSBoundParameters[$name] }
+            if ($PSBoundParameters.ContainsKey($name)) {
+                $identityParameters[$name] = $PSBoundParameters[$name]
+                $namedIdentity += $name
+            }
         }
         $epaIdentity = $null
         if ($TestEPA) {
-            $epaIdentity = New-EPAProbeIdentity @identityParameters
+            try {
+                $epaIdentity = New-EPAProbeIdentity @identityParameters
+            }
+            catch [System.ArgumentException] {
+                Show-EPAProbeIdentityError -Message $_.Exception.Message
+                return
+            }
         }
-        elseif ($identityParameters.Count -gt 0) {
-            throw "-$(@($identityParameters.Keys)[0]) names the identity of the EPA probe and needs -TestEPA."
+        elseif ($namedIdentity.Count -gt 0) {
+            Show-EPAProbeIdentityError -Message "-$($namedIdentity[0]) names the identity of the EPA probe and needs -TestEPA" -Hint "Add -TestEPA, or leave -$($namedIdentity[0]) out"
+            return
         }
 
         # Save original settings to restore later (local variables for thread safety)

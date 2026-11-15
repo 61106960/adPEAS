@@ -1122,7 +1122,9 @@ function Resolve-EPAProbeIdentity {
     - -UseWindowsAuth                 the current Windows logon, through SSPI
 
     Nothing named is an error before any connection is made, and so is more than one
-    (decided 2026-11-15). The current Windows logon is never taken without being named:
+    (decided 2026-11-15). Such a usage mistake throws System.ArgumentException, which
+    Invoke-HTTPRequest shows with Show-EPAProbeIdentityError; any other exception is a
+    failure and passes through. The current Windows logon is never taken without being named:
     run by hand against a host of another organisation, it would hand that host the logon
     of the tester's own account. AES keys, certificates and tickets are not offered - NTLM
     is answered with a password or an NT hash, nothing else.
@@ -1155,6 +1157,9 @@ function New-EPAProbeIdentity {
         [switch]$UseWindowsAuth
     )
 
+    # A usage mistake, told apart from a failure by its type - see the description
+    $usageError = { param([string]$Message) throw (New-Object System.ArgumentException -ArgumentList $Message) }
+
     $forms = @()
     if ($PSBoundParameters.ContainsKey('Credential') -and $Credential) { $forms += 'Credential' }
     if ($PSBoundParameters.ContainsKey('Password')) { $forms += 'Password' }
@@ -1164,23 +1169,23 @@ function New-EPAProbeIdentity {
 
     if ($forms.Count -eq 0) {
         if ($PSBoundParameters.ContainsKey('Username')) {
-            throw '-Username needs -Password or -NTHash.'
+            & $usageError '-Username needs -Password or -NTHash'
         }
-        throw '-TestEPA logs on to every NTLM endpoint of the target. Name the identity: -Credential, -Username with -Password or -NTHash, -UseSession or -UseWindowsAuth.'
+        & $usageError '-TestEPA needs an identity to log on with'
     }
     if ($forms.Count -gt 1) {
-        throw "-TestEPA takes one identity, got -$($forms -join ', -')."
+        & $usageError "-TestEPA takes one identity, got -$($forms -join ', -')"
     }
     if ($forms[0] -in @('Password', 'NTHash') -and [string]::IsNullOrWhiteSpace($Username)) {
-        throw "-$($forms[0]) needs -Username."
+        & $usageError "-$($forms[0]) needs -Username"
     }
     if ($forms[0] -in @('Credential', 'UseSession', 'UseWindowsAuth') -and $PSBoundParameters.ContainsKey('Username')) {
-        throw "-Username goes with -Password or -NTHash, not with -$($forms[0])."
+        & $usageError "-Username goes with -Password or -NTHash, not with -$($forms[0])"
     }
 
     switch ($forms[0]) {
         'Credential' {
-            if ([string]::IsNullOrEmpty($Credential.UserName)) { throw '-Credential carries no user name.' }
+            if ([string]::IsNullOrEmpty($Credential.UserName)) { & $usageError '-Credential carries no user name' }
             $account = Split-EPAProbeAccount -Account $Credential.UserName
             return [PSCustomObject]@{
                 Kind     = 'Hash'
@@ -1205,7 +1210,7 @@ function New-EPAProbeIdentity {
             }
         }
         'NTHash' {
-            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { throw '-NTHash takes 32 hex characters.' }
+            if ($NTHash -notmatch '^[0-9a-fA-F]{32}$') { & $usageError '-NTHash takes 32 hex characters' }
             $hashBytes = New-Object byte[] 16
             for ($i = 0; $i -lt 16; $i++) { $hashBytes[$i] = [Convert]::ToByte($NTHash.Substring($i * 2, 2), 16) }
             $account = Split-EPAProbeAccount -Account $Username
@@ -1221,7 +1226,7 @@ function New-EPAProbeIdentity {
         }
         'UseSession' {
             if (-not $Script:LDAPContext) {
-                throw '-UseSession needs an adPEAS session - run Connect-adPEAS first, or name the identity with -Credential, -Username with -Password or -NTHash, or -UseWindowsAuth.'
+                & $usageError '-UseSession needs an adPEAS session - run Connect-adPEAS first'
             }
             return (Resolve-EPAProbeIdentity)
         }
@@ -1229,6 +1234,40 @@ function New-EPAProbeIdentity {
             return (New-EPASspiIdentity -Source 'current Windows logon')
         }
     }
+}
+
+<#
+.SYNOPSIS
+    Shows a mistake in naming the EPA probe identity, with the forms it takes.
+.DESCRIPTION
+    Invoke-HTTPRequest -TestEPA is run by hand, so a missing or wrong identity is a usage
+    mistake: an adPEAS message lists the forms, where a PowerShell exception would point
+    at a line inside adPEAS.ps1. -Hint replaces the forms when the mistake is not about
+    them. Not collected - a usage message is no finding.
+#>
+function Show-EPAProbeIdentityError {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Hint
+    )
+
+    if ($Hint) {
+        Show-Message -Type Error -Title $Message -Hints $Hint -NoCollect
+        return
+    }
+    Show-Message -Type Error -Title $Message -NoCollect `
+        -Details @('The EPA probe logs on to every NTLM endpoint of the target, as one of:') `
+        -Hints @(
+            '-Credential (Get-Credential)'
+            "-Username 'DOMAIN\user' -Password '<password>'"
+            "-Username 'DOMAIN\user' -NTHash '<32 hex characters>'"
+            '-UseSession       the account of the adPEAS session (Connect-adPEAS)'
+            '-UseWindowsAuth   the current Windows logon'
+        )
 }
 
 <#
