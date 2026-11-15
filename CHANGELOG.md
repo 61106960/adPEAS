@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.10.2] - 2026-11-15
+
+### Added
+
+- **`Invoke-HTTPRequest -TestEPA` logs on as an identity the caller names.** Run by hand, the
+  EPA probe takes exactly one of `-Credential`, `-Username` with `-Password` or `-NTHash`,
+  `-UseSession` (the account of the adPEAS session) or `-UseWindowsAuth` (the current Windows
+  logon). Without one it lists these forms and connects nowhere - the current Windows logon is
+  never sent to a host unasked. A user name without a domain logs on in the target's domain;
+  the result names the account in `EPAIdentity`.
+
+### Fixed
+
+- **Extended Protection is measured with a real logon.** The probe sent random credentials in
+  an NTLMv1-shaped message and read the 401 - but IIS answers every failed logon the same way,
+  with or without a channel binding, so every Exchange and AD CS endpoint offering NTLM came
+  out `[EPA: Undetermined]`. Its one shortcut, MsvAvFlags 0x02 in the challenge, is a client
+  flag a Windows server never sends. The Exchange and AD CS checks now log on to each NTLM
+  endpoint up to four times as the session's account, each over a TLS connection of its own:
+  with the channel binding, without the binding pair, with a foreign binding and, where a
+  binding went unverified, naming another host. The verdict is `Required`, `Accept`,
+  `Service binding` or `Off`. The identity is the session's password or NT hash (own NTLMv2
+  response, also for a `-ForceKerberos` session) or, for a `-UseWindowsAuth` session, the
+  Windows logon through SSPI - which always sends a binding and reads `Required` and `Accept`
+  both as `Enabled`. A key, certificate or ticket session has nothing to answer NTLM with; its
+  endpoints stay undetermined.
+- **Accept and service binding are hints, not relay findings.** IIS `tokenChecking` Allow
+  (`[EPA: Accept]`) rejects the zero binding a Windows client sends without a channel, so a
+  coerced Windows machine cannot be relayed; the Proxy flag with an SPN list
+  (`[EPA: Service binding]`) refuses a logon made for another host name. Neither is reported
+  as ESC8 or as the Exchange relay finding. Allow with Proxy had read as `Off`.
+- **AD CS enrollment over plain HTTP is probed too.** Without a channel only service binding
+  protects it; an HTTP endpoint reading `[EPA: Service binding]` is a hint instead of a
+  finding, unless it also offers Basic.
+- **Exchange OAB and REST API are probed.** `/oab/` and `/api/` were not checked at all; they
+  are listed with their EPA state like the other endpoints.
+
 ## [2.10.1] - 2026-11-12
 
 ### Added
