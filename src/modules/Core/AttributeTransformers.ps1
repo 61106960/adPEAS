@@ -1498,11 +1498,26 @@ function Convert-FileTimeSentinelToRenderValues {
         'pwdLastSet' {
             $source = if ($Context) { $Context.SourceObject } else { $null }
             $uac = if ($source) { $source.userAccountControl } else { $null }
-            $neverExpires = (@($uac) -contains 'DONT_EXPIRE_PASSWORD')
-            if (-not $neverExpires -and $null -ne $uac -and "$uac" -match '^\d+$') {
-                $neverExpires = (([int64]"$uac") -band 0x10000) -ne 0
+            # userAccountControl arrives as flag names, or as the number from a -Raw query.
+            $uacFlags = @($uac)
+            $uacNumber = $null
+            if ($null -ne $uac -and "$uac" -match '^\d+$') { $uacNumber = [int64]"$uac" }
+            $hasFlag = {
+                param([string]$FlagName, [int64]$Bit)
+                ($uacFlags -contains $FlagName) -or ($null -ne $uacNumber -and ($uacNumber -band $Bit) -ne 0)
             }
-            if ($neverExpires) { 'Never' } else { 'Never - must change at next logon' }
+            $neverExpires = & $hasFlag 'DONT_EXPIRE_PASSWORD' 0x10000
+            $isComputerAccount = (& $hasFlag 'WORKSTATION_TRUST_ACCOUNT' 0x1000) -or (& $hasFlag 'SERVER_TRUST_ACCOUNT' 0x2000)
+            $passwordNotRequired = & $hasFlag 'PASSWD_NOTREQD' 0x20
+
+            # A computer account with PASSWD_NOTREQD and pwdLastSet 0 never had a password:
+            # "dsadd computer" creates one that way, and it logs on over NTLM with an empty
+            # password (Get-ComputerInitialPassword). "Must change at next logon" is a user's
+            # box and said the opposite, right above that check's verdict. A user keeps the
+            # documented reading.
+            if ($isComputerAccount -and $passwordNotRequired) { 'Never set' }
+            elseif ($neverExpires) { 'Never' }
+            else { 'Never - must change at next logon' }
         }
         'lockoutTime' { 'Not locked out' }
         default       { 'Never' }
