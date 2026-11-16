@@ -1886,6 +1886,23 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         PrimaryFindingId = 'COMPUTER_PASSWORD_NOT_ROTATED'
     }
 
+    'ComputerInitialPassword' = @{
+        TitleFormat = "Creation Password: {Name}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "Computer Accounts With Their Creation Password"
+        Summary = "Finds enabled computer accounts that no Windows client joined and whose password is still the one they were created with."
+        WhyItMatters = "A computer account created in advance gets its first password from the tool that creates it - the computer name in lowercase, or none at all. A join replaces it with a random one. An account that was never joined keeps it, and anyone who knows the name can log on as the account."
+        WhatWeCheck = @(
+            "Enabled computer accounts without operatingSystem and dNSHostName - no Windows client ever joined them"
+            "Whether a password was ever set (pwdLastSet 0 with PASSWD_NOTREQD), or whether it dates from the creation of the account"
+            "Whether the account has logged on since (lastLogonTimestamp)"
+            "Not tested: whether a password really is the default - that takes a logon attempt per account, which the scan does not make"
+        )
+        SecureMessage = "No enabled computer account still carries the password it was created with."
+        PrimaryFindingId = 'COMPUTER_PASSWORD_NEVER_SET'
+    }
+
     'OutdatedComputer' = @{
         TitleFormat = "Outdated Computer: {Name}"
         Module = "Computer"

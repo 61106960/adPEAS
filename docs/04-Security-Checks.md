@@ -1607,6 +1607,27 @@ Get-ComputerPasswordAge -PasswordAgeDays 60 -ActiveDays 14
 
 ---
 
+### Get-ComputerInitialPassword
+
+**Purpose**: Finds enabled computer accounts that no Windows client joined and whose password is still the one they were created with.
+
+**What it checks**:
+- Enabled computer accounts without `operatingSystem` and `dNSHostName` - a Windows join writes both, so these were never joined by a Windows client
+- **Never set - empty password** (finding): `pwdLastSet` is 0 and `userAccountControl` carries `PASSWD_NOTREQD`, the way `dsadd computer` creates an account. It has no Kerberos keys, but logs on over NTLM with an empty password
+- **Unchanged, in use** (hint): the password was set within five minutes of `whenCreated` and the account has logged on since (`lastLogonTimestamp`). Whatever uses it uses the creation password; an account a user created through `ms-DS-MachineAccountQuota` looks the same
+- **Unchanged, never used** (hint): the same, never logged on - created in advance and never joined
+
+**How the first password is chosen** depends on the tool: ADUC with *Assign this computer account as a pre-Windows 2000 computer* and `net computer /add` set the computer name in lowercase (Kerberos issues a ticket for it; NTLM refuses a workstation account), `dsadd computer` sets none, ADUC without that option and `New-ADComputer` set neither. The directory does not say which tool was used, so whether a password really is the default takes one logon attempt per account - which the check does not make. A computer that joined normally is not reported even if its password never changes; that is `Get-ComputerPasswordAge`.
+
+**Security Impact**: Anyone who knows or guesses the name of such an account gets a domain identity, together with whatever was granted to the account in preparation for the join.
+
+**Usage**:
+```powershell
+Get-ComputerInitialPassword
+```
+
+---
+
 ### Get-NetworkMap
 
 **Purpose**: Maps the IP subnets the active computers of the domain are in, and the OUs they sit in - which networks hold which systems, without a scan.

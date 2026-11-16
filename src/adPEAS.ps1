@@ -269,6 +269,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Checks\Computer\Get-InfrastructureServers.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-NonDefaultComputerOwners.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-ComputerPasswordAge.ps1"
+    . "$Script:ScriptPath\modules\Checks\Computer\Get-ComputerInitialPassword.ps1"
     . "$Script:ScriptPath\modules\Checks\Computer\Get-NetworkMap.ps1"
     . "$Script:ScriptPath\modules\Checks\Shares\Invoke-ShareHunt.ps1"
     . "$Script:ScriptPath\modules\Checks\GPO\Get-GPOPermissions.ps1"
@@ -1227,6 +1228,7 @@ try {
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-OutdatedComputers' -Title 'Outdated Computers' -Check { Get-OutdatedComputers -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-ComputerPasswordAge' -Title 'Machine Account Password Age' -Check { Get-ComputerPasswordAge }
+            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-ComputerInitialPassword' -Title 'Computer Creation Password' -Check { Get-ComputerInitialPassword }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-NetworkMap' -Title 'Network Map' -Check { Get-NetworkMap -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Computer Module: $_"

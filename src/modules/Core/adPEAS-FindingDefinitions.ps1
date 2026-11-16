@@ -9709,6 +9709,109 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         )
     }
 
+    'COMPUTER_PASSWORD_NEVER_SET' = @{
+        Title = "Computer Account Without a Password"
+        Risk = "Finding"
+        BaseScore = 25
+        Description = "This computer account has never had a password set: pwdLastSet is 0, userAccountControl carries PASSWD_NOTREQD, and no Windows client ever joined it - operatingSystem and dNSHostName are empty. 'dsadd computer' creates computer accounts this way. The account has no Kerberos keys at all, but over NTLM it logs on with an empty password, so anyone who knows its name has a domain identity."
+        Impact = @(
+            "A domain identity for anyone on the network who knows or guesses the account name - no password needed"
+            "Whatever the account was given in preparation for a join that never came - group memberships, delegated rights - comes with it"
+            "Where ms-DS-MachineAccountQuota is 0, it is the computer account an attacker could not create"
+        )
+        Attack = @(
+            "1. Attacker lists computer accounts without operatingSystem whose pwdLastSet is 0"
+            "2. Authenticates over NTLM as the account with an empty password"
+            "3. Uses the identity - to read the directory, through the account's own rights, or as the computer account an RBCD setup needs"
+        )
+        Remediation = @(
+            "Join the computer the account was created for - the join sets a random password - or delete the account"
+            "Otherwise set a random password and clear PASSWD_NOTREQD"
+            "Create computer accounts in advance with a tool that sets a random password"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Find computer accounts that never had a password set"
+                Command = "Get-ADComputer -LDAPFilter '(&(pwdLastSet=0)(userAccountControl:1.2.840.113556.1.4.803:=32)(!(operatingSystem=*)))' -Properties whenCreated,pwdLastSet"
+            }
+            @{
+                Description = "Require a password on the account"
+                Command = "Set-ADComputer -Identity 'COMPUTER_NAME' -PasswordNotRequired `$false"
+            }
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+        )
+        Tools = @("Impacket")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordSinceCreation'; Pattern = '^Never set'; Severity = 'Finding' }
+        )
+    }
+
+    'COMPUTER_CREATION_PASSWORD_IN_USE' = @{
+        Title = "Computer Account in Use With Its Creation Password"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "This computer account has logged on, but no Windows client ever joined it - operatingSystem and dNSHostName are empty - and its password still dates from the creation of the account. A join sets a new password, so whatever uses this account uses the password it was created with. ADUC with 'Assign this computer account as a pre-Windows 2000 computer' and 'net computer /add' set that password to the computer name in lowercase; Kerberos issues a ticket for it, NTLM refuses a workstation account. A computer account created by a user through ms-DS-MachineAccountQuota - for an RBCD setup, for instance - looks the same, with ms-DS-CreatorSID naming the user."
+        Impact = @(
+            "If the creation password is the default, anyone who knows the name has the account"
+            "What uses it is not a joined Windows member: an appliance, a script - or someone who guessed the password"
+        )
+        Attack = @(
+            "1. Attacker lists computer accounts without operatingSystem whose password dates from their creation"
+            "2. Requests a Kerberos ticket for each with the computer name in lowercase"
+            "3. Uses the accounts that answer, and their rights"
+        )
+        Remediation = @(
+            "Find out what uses the account; delete it if nothing should"
+            "Set a random password, and give it to the owner of what uses the account"
+            "Where ms-DS-CreatorSID names a user, find out why that user created a computer account"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "See who created the account and when it last logged on"
+                Command = "Get-ADComputer -Identity 'COMPUTER_NAME' -Properties 'ms-DS-CreatorSID',whenCreated,pwdLastSet,lastLogonTimestamp"
+            }
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+        )
+        Tools = @("Impacket", "Rubeus")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordSinceCreation'; Pattern = '^Unchanged, in use'; Severity = 'Hint' }
+        )
+    }
+
+    'COMPUTER_PRECREATED_NOT_JOINED' = @{
+        Title = "Computer Account Created in Advance and Never Used"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "This computer account was created in advance and never joined or used: operatingSystem and dNSHostName are empty, lastLogonTimestamp is not set, and its password still dates from the creation of the account. How guessable that password is depends on the tool that created it: ADUC with 'Assign this computer account as a pre-Windows 2000 computer' and 'net computer /add' set the computer name in lowercase, ADUC without that option and New-ADComputer do not. Nothing in the directory tells these apart. One Kerberos request with the name in lowercase does - and a miss counts against the account's bad password count."
+        Impact = @(
+            "If the password is the default, anyone who knows the name gets a domain identity - and the account's first logon is theirs"
+            "Rights granted to the account in preparation for the join come with it"
+        )
+        Attack = @(
+            "1. Attacker lists enabled computer accounts without operatingSystem that never logged on"
+            "2. Requests a Kerberos ticket for each with the computer name in lowercase"
+            "3. Uses the accounts that answer"
+        )
+        Remediation = @(
+            "Join the computer the account was created for, or delete the account"
+            "Create computer accounts in advance without the pre-Windows 2000 option"
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+        )
+        Tools = @("Impacket", "Rubeus")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordSinceCreation'; Pattern = '^Unchanged, never used'; Severity = 'Hint' }
+        )
+    }
+
     'MACHINE_QUOTA_UNRESTRICTED' = @{
         Title = "Unrestricted Machine Account Quota"
         Risk = "Hint"
