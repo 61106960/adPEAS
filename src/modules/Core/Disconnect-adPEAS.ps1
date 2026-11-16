@@ -225,6 +225,11 @@ function Clear-SessionState {
     # GUIDs and the property set of each attribute. The same reason: they are the forest's.
     $Script:WriteAccessSchemaCache = $null
 
+    # The BloodHound collector's GUID -> edge maps. They carry the LAPS attributes'
+    # schemaIDGUIDs, which are assigned per forest - built once per session, cleared with it.
+    $Script:BHPropertyGUIDs = $null
+    $Script:BHExtendedRightGUIDs = $null
+
     # Anonymous access detection (Connect-LDAP)
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null

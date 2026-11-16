@@ -23,6 +23,14 @@
     The result is cached in $Script:LAPSSchemaInfo for the rest of the session, so the
     second and third caller pay nothing. Disconnect-adPEAS clears it.
 
+    It also carries the schemaIDGUID of every LAPS attribute as this forest has it. Neither
+    schema extension sets one: the DC assigns it when the attribute is created, so it is
+    different in every forest - Microsoft's own LAPS module reads it from the schema at run
+    time for that reason. adPEAS used to compare ACEs against a table of GUIDs instead. At a
+    customer all six msLAPS-* GUIDs differed from that table, so no delegated Windows LAPS
+    read was ever found, only blanket reads. Get-OUPermissions, the BloodHound collector
+    and Set-DomainObject take the GUIDs from here.
+
 .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
 
@@ -36,7 +44,9 @@
     Ignore the cached answer and query again.
 
 .OUTPUTS
-    Hashtable with LegacyPresent and NativePresent, both [bool].
+    Hashtable with LegacyPresent and NativePresent, both [bool]; PasswordConfidential
+    ([bool], or $null when unknown); AttributeGUIDs, lDAPDisplayName -> schemaIDGUID as a
+    lower-case string, empty when the schema could not be read.
 
 .EXAMPLE
     $schema = Get-LAPSSchemaPresence @connectionParams
@@ -86,6 +96,9 @@ function Get-LAPSSchemaPresence {
         # a complete grant. $null means the question could not be answered.
         $passwordConfidential = $null
 
+        # lDAPDisplayName -> schemaIDGUID of every LAPS attribute in this forest's schema
+        $attributeGUIDs = @{}
+
         # Each variant is recognised by the expiration attribute rather than by the password
         # attribute: the password is ACL-gated and a reader without rights sees nothing,
         # while the expiration time is readable to any authenticated user. Asking about the
@@ -128,6 +141,23 @@ function Get-LAPSSchemaPresence {
             } catch {
                 Write-Log "[Get-LAPSSchemaPresence] Schema query error: $($_.Exception.Message)"
             }
+
+            # The schemaIDGUIDs, on their own: a failure here must not cost the presence
+            # answer above. -Raw, because the GUID is 16 bytes - ConvertTo-WriteAccessGuid
+            # also covers the case where those bytes happen to arrive as text.
+            if ($legacyPresent -or $nativePresent) {
+                try {
+                    $guidFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=ms-Mcs-AdmPwd*)(lDAPDisplayName=msLAPS-*)))"
+                    foreach ($lapsAttribute in @(Get-DomainObject -LDAPFilter $guidFilter -SearchBase $schemaDN -Properties 'lDAPDisplayName', 'schemaIDGUID' -Raw @connectionParams)) {
+                        $attributeName = [string]$lapsAttribute.lDAPDisplayName
+                        $attributeGuid = ConvertTo-WriteAccessGuid -Value $lapsAttribute.schemaIDGUID
+                        if ($attributeName -and $attributeGuid) { $attributeGUIDs[$attributeName] = $attributeGuid }
+                    }
+                    Write-Log "[Get-LAPSSchemaPresence] schemaIDGUIDs read for $($attributeGUIDs.Count) LAPS attribute(s)"
+                } catch {
+                    Write-Log "[Get-LAPSSchemaPresence] LAPS schemaIDGUID query error: $($_.Exception.Message)"
+                }
+            }
         }
 
         # Fallback: a deployed value proves the attribute exists.
@@ -160,6 +190,7 @@ function Get-LAPSSchemaPresence {
             LegacyPresent        = $legacyPresent
             NativePresent        = $nativePresent
             PasswordConfidential = $passwordConfidential
+            AttributeGUIDs       = $attributeGUIDs
         }
         return $Script:LAPSSchemaInfo
     }

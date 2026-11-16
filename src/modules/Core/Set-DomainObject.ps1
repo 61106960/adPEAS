@@ -76,7 +76,8 @@ function Set-DomainObject {
     - AddMember           : Add members to group
     - SendAs              : Send email as another user
     - ReceiveAs           : Receive email as another user
-    - ReadLAPSPassword    : Read LAPS password
+    - ReadLAPSPassword    : Read LAPS password (ReadProperty + Control Access on ms-Mcs-AdmPwd,
+                            whose GUID is read from the forest's schema)
     - AutoEnroll          : Certificate auto-enrollment
 
 .PARAMETER Domain
@@ -465,6 +466,27 @@ function Set-DomainObject {
                         $ACL.SetOwner($PrincipalSID)
                         Write-Log "[Set-DomainObject] Set owner to: $Principal ($($PrincipalSID.Value))"
                     }
+                }
+
+                # A grant that added nothing has nothing to write. Add-ACEToACL counts every
+                # rule it adds, so 0 means it refused and said why - an unknown alias, a LAPS
+                # attribute this forest's schema does not have. The descriptor used to be
+                # committed unchanged anyway and the call reported "Granted 0 ACE(s)" as a
+                # success, right after the error.
+                if ($PSCmdlet.ParameterSetName -in @('GrantACE', 'DenyACE') -and $ACEsAdded -eq 0) {
+                    Write-Log "[Set-DomainObject] No ACE was added - nothing committed"
+                    if ($PassThru) {
+                        return [PSCustomObject]@{
+                            Operation   = $PSCmdlet.ParameterSetName
+                            Object      = $ObjectDN
+                            Principal   = $Principal
+                            ACEsAdded   = 0
+                            ACEsRemoved = 0
+                            Success     = $false
+                            Message     = "No ACE was added on object: $ObjectDN"
+                        }
+                    }
+                    return $false
                 }
 
                 # Commit ACL changes via ModifyRequest (unified LdapConnection architecture)
@@ -864,16 +886,40 @@ function Add-ACEToACL {
     $AccessControlType = [System.Security.AccessControl.AccessControlType]::$AccessType
 
     if ($ExtendedRight) {
-        # Check if this is a ReadProperty alias (e.g., ReadLAPSPassword)
+        # Check if this is a ReadProperty alias (e.g., ReadUnicodePwd)
         $ReadPropertyGUID = $Script:ReadPropertyAliases[$ExtendedRight]
 
+        # The LAPS aliases (ReadLAPSPassword, ReadWindowsLAPS*) name an attribute whose
+        # schemaIDGUID this forest assigned itself, so it is read from the schema. The table
+        # it used to come from held GUIDs no customer forest had - the ACE written was scoped
+        # to an attribute that does not exist there and granted nothing.
+        $readRights = [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty
+        if (-not $ReadPropertyGUID -and $Script:LAPSReadAliasAttributes.ContainsKey($ExtendedRight)) {
+            $lapsAlias = $Script:LAPSReadAliasAttributes[$ExtendedRight]
+            $lapsAttributeName = $lapsAlias.Attribute
+            $lapsSchema = Get-LAPSSchemaPresence
+            if ($lapsSchema -and $lapsSchema.AttributeGUIDs) { $ReadPropertyGUID = $lapsSchema.AttributeGUIDs[$lapsAttributeName] }
+            if (-not $ReadPropertyGUID) {
+                Write-Error "[Add-ACEToACL] '$ExtendedRight' needs the schemaIDGUID of $lapsAttributeName, which this forest's schema does not have or which could not be read"
+                return 0
+            }
+
+            # A password attribute is confidential: READ_PROPERTY alone reads nothing of it,
+            # it takes CONTROL_ACCESS on the same attribute as well. One ACE carrying both,
+            # scoped to the attribute - not "All Extended Rights", which on a computer object
+            # grants far more than the password.
+            if ($lapsAlias.Confidential) {
+                $readRights = [System.DirectoryServices.ActiveDirectoryRights]($readRights -bor [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+            }
+        }
+
         if ($ReadPropertyGUID) {
-            Write-Log "[Add-ACEToACL] '$ExtendedRight' is a ReadProperty alias (attribute GUID: $ReadPropertyGUID)"
+            Write-Log "[Add-ACEToACL] '$ExtendedRight' is a ReadProperty alias (attribute GUID: $ReadPropertyGUID, rights: $readRights)"
 
             $ObjectType = New-Object Guid($ReadPropertyGUID)
             $ACE = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
                 $PrincipalSID,
-                [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty,
+                $readRights,
                 $AccessControlType,
                 $ObjectType,
                 [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None

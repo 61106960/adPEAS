@@ -424,6 +424,24 @@ function Get-OUPermissions {
             })
             $neutralisedByDeny = 0
 
+            # The schemaIDGUIDs of the LAPS attributes, as this forest's schema has them.
+            # They are assigned per forest, so a table cannot hold them: compared against
+            # one, every delegation Set-LapsADReadPasswordPermission had written went
+            # unrecognised and only blanket reads were reported. An attribute missing here
+            # matches nothing - a lookup of $null never equals an ACE's ObjectType.
+            #
+            # In a try of its own: this sits inside the try that covers every check type,
+            # and a failure here must cost the LAPS matches, not the whole OU.
+            $LAPSAttributeGUIDs = @{}
+            if ($CheckType -contains 'LAPS') {
+                try {
+                    $lapsSchema = Get-LAPSSchemaPresence
+                    if ($lapsSchema -and $lapsSchema.AttributeGUIDs) { $LAPSAttributeGUIDs = $lapsSchema.AttributeGUIDs }
+                } catch {
+                    Write-Log "[Get-OUPermissions] LAPS attribute GUIDs not available: $_"
+                }
+            }
+
             $Findings = @()
 
             # The owner, before the ACE loop and once per OU - it is not an ACE, which is
@@ -1109,8 +1127,9 @@ function Get-OUPermissions {
                         # Credential Roaming block below does it.
                         $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
 
-                        # Legacy LAPS (ms-Mcs-AdmPwd). GUID from $Script:PropertyGUIDs.
-                        $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['ms-Mcs-AdmPwd'].Guid)
+                        # Legacy LAPS (ms-Mcs-AdmPwd). Every GUID in this block comes from
+                        # the forest's schema - $LAPSAttributeGUIDs above.
+                        $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['ms-Mcs-AdmPwd'])
                         if ($legacyLAPSMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -1125,9 +1144,8 @@ function Get-OUPermissions {
                             $lapsPropertyFound = $true
                         }
 
-                        # Windows LAPS - Encrypted Password (most common). The GUID comes from
-                        # $Script:PropertyGUIDs and is deliberately not repeated here.
-                        $encPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPassword'].Guid)
+                        # Windows LAPS - Encrypted Password (most common)
+                        $encPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-EncryptedPassword'])
                         if ($encPwdMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -1142,9 +1160,8 @@ function Get-OUPermissions {
                             $lapsPropertyFound = $true
                         }
 
-                        # Windows LAPS - Encrypted Password History. GUID from
-                        # $Script:PropertyGUIDs, as above.
-                        $encHistMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPasswordHistory'].Guid)
+                        # Windows LAPS - Encrypted Password History
+                        $encHistMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-EncryptedPasswordHistory'])
                         if ($encHistMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -1160,8 +1177,7 @@ function Get-OUPermissions {
                         }
 
                         # Windows LAPS - Plain Password (unencrypted mode)
-                        # GUID: 35eb61e8-0ae2-4e1a-b60f-f6aa82d54867
-                        $plainPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-Password'].Guid)
+                        $plainPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-Password'])
                         if ($plainPwdMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -1177,8 +1193,7 @@ function Get-OUPermissions {
                         }
 
                         # Windows LAPS - Current Password Version (less critical but indicates LAPS access)
-                        # GUID: 5d848c52-82d7-4014-867b-714b3e4b6685
-                        $versionMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-CurrentPasswordVersion'].Guid)
+                        $versionMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-CurrentPasswordVersion'])
                         if ($versionMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Low" }
                             $Findings += [PSCustomObject]@{
@@ -1194,8 +1209,7 @@ function Get-OUPermissions {
                         }
 
                         # Windows LAPS - Password Expiration Time (less critical but indicates LAPS access)
-                        # GUID: ec38fa45-104d-4ede-b3b1-4620e8594575
-                        $expTimeMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-PasswordExpirationTime'].Guid)
+                        $expTimeMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-PasswordExpirationTime'])
                         if ($expTimeMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Low" }
                             $Findings += [PSCustomObject]@{

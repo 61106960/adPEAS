@@ -77,6 +77,14 @@ function Get-LAPSPermissions {
                 return
             }
 
+            # The LAPS attributes' schemaIDGUIDs are the forest's own, read from its schema.
+            # Without them a delegation on a LAPS attribute cannot be recognised and only
+            # blanket reads are found - so that is said, and the run cannot end on Secure.
+            $lapsGUIDsMissing = (-not $lapsSchema.AttributeGUIDs) -or (@($lapsSchema.AttributeGUIDs.Keys).Count -eq 0)
+            if ($lapsGUIDsMissing) {
+                Show-Line "LAPS attribute GUIDs not readable from the schema - delegated LAPS reads were not evaluated" -Class Note
+            }
+
             # Every enabled computer, and the activity measured per OU rather than used
             # to build the scope. The scope used to be the output of
             # Test-AccountActivity -IsActive, which drops a machine that has not logged
@@ -324,7 +332,7 @@ function Get-LAPSPermissions {
             $readScope = Format-OUContainerCount -DistinguishedName @(@($computersByOU.Keys) | Where-Object { $unreadOUs -notcontains $_ })
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
-            if ($coverageIncomplete) { $conclusionClass = 'Note' }
+            if ($coverageIncomplete -or $lapsGUIDsMissing) { $conclusionClass = 'Note' }
 
             # Names the right and which LAPS generation it reads. Without the suffix a
             # delegation on the legacy attribute and one on the Windows LAPS attribute
@@ -559,6 +567,49 @@ function Get-LAPSPermissions {
                 Show-Line "LAPS read permissions were not evaluated - no security descriptor could be read" -Class Note
             } else {
                 Show-Line "No non-privileged accounts with LAPS read access found in the $readScope analyzed" -Class $conclusionClass
+            }
+
+            # ===== Who can open an encrypted Windows LAPS password =====
+            #
+            # A right on msLAPS-EncryptedPassword returns a blob, which only the principal it
+            # was encrypted for can open: ADPasswordEncryptionPrincipal of the Windows LAPS
+            # policy, or Domain Admins of the computer's domain where no policy names one.
+            # Listed as each GPO sets it - which GPO wins for which OU is not computed here,
+            # and a policy delivered by Intune or set locally is not visible in the directory.
+            if ($windowsLAPSSchemaPresent) {
+                $decryptorParts = @()
+                $lapsGPOConfig = $null
+                try { $lapsGPOConfig = Get-LAPSGPOConfig } catch {
+                    Write-Log "[Get-LAPSPermissions] Windows LAPS policies could not be read: $_"
+                }
+                if ($lapsGPOConfig -and $lapsGPOConfig.Native) {
+                    foreach ($nativePolicy in @($lapsGPOConfig.Native.Values | Sort-Object { [string]$_['GPOName'] })) {
+                        $policyName = [string]$nativePolicy['GPOName']
+                        if ($nativePolicy.ContainsKey('ADPasswordEncryptionEnabled') -and [string]$nativePolicy['ADPasswordEncryptionEnabled'] -eq '0') {
+                            $decryptorParts += "none - stored unencrypted (GPO '$policyName')"
+                            continue
+                        }
+                        $principalValue = ''
+                        if ($nativePolicy.ContainsKey('ADPasswordEncryptionPrincipal')) { $principalValue = ([string]$nativePolicy['ADPasswordEncryptionPrincipal']).Trim() }
+                        if (-not $principalValue) { continue }
+
+                        # A SID is resolved for the reader. ConvertFrom-SID answers an
+                        # unresolvable one with a text that already carries the SID, which
+                        # must not be followed by the SID a second time.
+                        $principalText = $principalValue
+                        if ($principalValue -match '^S-1-\d+(-\d+)+$') {
+                            $resolvedName = ConvertFrom-SID -SID $principalValue
+                            if ($resolvedName -and -not ([string]$resolvedName).Contains($principalValue)) {
+                                $principalText = "$resolvedName ($principalValue)"
+                            } elseif ($resolvedName) {
+                                $principalText = [string]$resolvedName
+                            }
+                        }
+                        $decryptorParts += "$principalText (GPO '$policyName')"
+                    }
+                }
+                $decryptorParts += 'Domain Admins (default where no policy names one)'
+                Show-Line "Windows LAPS decryptor (from GPO): $($decryptorParts -join '; ')" -Class Note
             }
 
         } catch {

@@ -1168,10 +1168,18 @@ function ConvertTo-BHAces {
         # CONTROL_ACCESS on it - an ExtendedRight ACE naming the attribute's schemaIDGUID.
         # The entry used to be e362ed86, which is msDS-ManagedPassword, the gMSA password
         # attribute: an ACE on that attribute became a ReadLAPSPassword edge, and no LAPS
-        # read delegation became one at all. The GUIDs come from the central table.
+        # read delegation became one at all.
+        #
+        # The GUIDs come from this forest's schema. They are assigned per forest, and the
+        # table they were taken from later matched none of a customer's six msLAPS-*
+        # attributes - again no edge for any delegated read.
+        $lapsSchema = $null
+        try { $lapsSchema = Get-LAPSSchemaPresence @ConnectionParams } catch {
+            Write-Log "[ConvertTo-BHAces] LAPS schema could not be read: $_"
+        }
         foreach ($lapsAttribute in @('ms-Mcs-AdmPwd', 'msLAPS-Password', 'msLAPS-EncryptedPassword')) {
-            if ($Script:PropertyGUIDs -and $Script:PropertyGUIDs.ContainsKey($lapsAttribute)) {
-                $Script:BHExtendedRightGUIDs[$Script:PropertyGUIDs[$lapsAttribute].ToString().ToLower()] = 'ReadLAPSPassword'
+            if ($lapsSchema -and $lapsSchema.AttributeGUIDs -and $lapsSchema.AttributeGUIDs[$lapsAttribute]) {
+                $Script:BHExtendedRightGUIDs[([string]$lapsSchema.AttributeGUIDs[$lapsAttribute]).ToLower()] = 'ReadLAPSPassword'
             }
         }
     }

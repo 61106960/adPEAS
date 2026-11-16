@@ -142,25 +142,14 @@ $Script:ExtendedRightsGUIDs = @{
 # ============================================================================
 # Used for checking specific property access in ACLs
 $Script:PropertyGUIDs = @{
-    # Legacy LAPS (Microsoft LAPS / AdmPwd) - STATIC GUIDs
-    'ms-Mcs-AdmPwd'                  = [GUID]'e5c0983d-b71e-4f1d-b798-9b0f5ecaeea3'
-    'ms-Mcs-AdmPwdExpirationTime'    = [GUID]'e5c0983e-b71e-4f1d-b798-9b0f5ecaeea3'
-
-    # Windows LAPS (v2, Server 2019+). These schemaIDGUIDs are static - Microsoft ships
-    # them with the schema extension, they are not generated per forest.
-    #
-    # A previous note here claimed the opposite and left the keys out. Get-OUPermissions
-    # looks all of them up by name, so every comparison ran against $null and could never
-    # match: a delegated read on a Windows LAPS password attribute produced no finding at
-    # all, and only the "All Properties" fallback caught such a delegation. The same values
-    # were already present below in $Script:ReadPropertyAliases.
-    'msLAPS-Password'                     = [GUID]'35eb61e8-0ae2-4e1a-b60f-f6aa82d54867'
-    'msLAPS-EncryptedPassword'            = [GUID]'cc635e81-fda1-4e92-96d2-cf5d9a958a4f'
-    'msLAPS-EncryptedPasswordHistory'     = [GUID]'b0449bea-a05e-47eb-b1ce-a1c72b9c4a89'
-    'msLAPS-EncryptedDSRMPassword'        = [GUID]'64397849-c0bb-47e5-9eb4-a13cc22ee13c'
-    'msLAPS-EncryptedDSRMPasswordHistory' = [GUID]'ddb68b4d-8037-4dbe-8721-fcc3d59b57a7'
-    'msLAPS-CurrentPasswordVersion'       = [GUID]'5d848c52-82d7-4014-867b-714b3e4b6685'
-    'msLAPS-PasswordExpirationTime'       = [GUID]'ec38fa45-104d-4ede-b3b1-4620e8594575'
+    # NO LAPS attributes here, Legacy or Windows LAPS. Neither schema extension sets a
+    # schemaIDGUID; the DC assigns one when the attribute is created, so it differs from
+    # forest to forest. Microsoft's LAPS module (lapspsh.dll) carries no GUID for them and
+    # resolves each from the schema at run time. This table used to hold seven msLAPS-*
+    # values described as "static, shipped with the schema extension": a customer forest
+    # had different GUIDs for all six of its msLAPS-* attributes, and no delegated Windows
+    # LAPS read was ever recognised. Get-LAPSSchemaPresence reads them per session
+    # (AttributeGUIDs); Get-OUPermissions, the collector and Set-DomainObject use that.
 
     # Common properties (schemaIDGUIDs - actual attribute GUIDs)
     # NOTE: servicePrincipalName schemaIDGUID is the SAME GUID as Validated-SPN (f3a64788-...).
@@ -1123,35 +1112,8 @@ $Script:WritePropertyAliases = @{
     The GUID is the schemaIDGUID of the attribute being read.
 #>
 $Script:ReadPropertyAliases = @{
-    # === LAPS Passwords ===
-    # ms-Mcs-AdmPwd - Local Administrator Password (LAPS v1)
-    # schemaIDGUID: e5c0983d-b71e-4f1d-b798-9b0f5ecaeea3
-    'ReadLAPSPassword'    = 'e5c0983d-b71e-4f1d-b798-9b0f5ecaeea3'
-
-    # ms-Mcs-AdmPwdExpirationTime - LAPS Password Expiration Time
-    # schemaIDGUID: e5c0983e-b71e-4f1d-b798-9b0f5ecaeea3
-    'ReadLAPSExpiration'  = 'e5c0983e-b71e-4f1d-b798-9b0f5ecaeea3'
-
-    # === Windows LAPS (v2) - Windows Server 2019+ ===
-    # msLAPS-Password - Encrypted LAPS password (Windows LAPS)
-    # schemaIDGUID: 35eb61e8-0ae2-4e1a-b60f-f6aa82d54867
-    'ReadWindowsLAPSPassword'       = '35eb61e8-0ae2-4e1a-b60f-f6aa82d54867'
-
-    # msLAPS-EncryptedPassword - Encrypted LAPS password blob
-    # schemaIDGUID: cc635e81-fda1-4e92-96d2-cf5d9a958a4f
-    'ReadWindowsLAPSEncrypted'      = 'cc635e81-fda1-4e92-96d2-cf5d9a958a4f'
-
-    # msLAPS-EncryptedPasswordHistory - Encrypted password history
-    # schemaIDGUID: b0449bea-a05e-47eb-b1ce-a1c72b9c4a89
-    'ReadWindowsLAPSHistory'        = 'b0449bea-a05e-47eb-b1ce-a1c72b9c4a89'
-
-    # msLAPS-EncryptedDSRMPassword - DSRM password for DCs
-    # schemaIDGUID: 64397849-c0bb-47e5-9eb4-a13cc22ee13c
-    'ReadWindowsLAPSDSRM'           = '64397849-c0bb-47e5-9eb4-a13cc22ee13c'
-
-    # msLAPS-EncryptedDSRMPasswordHistory - DSRM password history
-    # schemaIDGUID: ddb68b4d-8037-4dbe-8721-fcc3d59b57a7
-    'ReadWindowsLAPSDSRMHistory'    = 'ddb68b4d-8037-4dbe-8721-fcc3d59b57a7'
+    # The LAPS aliases are in $Script:LAPSReadAliasAttributes below: their GUIDs are the
+    # forest's own and are read from its schema.
 
     # === Password Hashes (DCSync alternative - direct read) ===
     # unicodePwd - NT password hash (requires special permissions)
@@ -1210,6 +1172,30 @@ $Script:ReadPropertyAliases = @{
     # msFVE-KeyPackage - BitLocker key package
     # schemaIDGUID: 1fd55ea8-88a7-47dc-8129-0daa97186a54
     'ReadBitLockerKeyPackage'       = '1fd55ea8-88a7-47dc-8129-0daa97186a54'
+}
+
+<#
+.SYNOPSIS
+    The LAPS ReadProperty aliases of Set-DomainObject, by the attribute they name.
+.DESCRIPTION
+    Attribute names rather than GUIDs: a LAPS attribute's schemaIDGUID is assigned by the
+    forest that created it, so Set-DomainObject resolves the name through
+    Get-LAPSSchemaPresence (AttributeGUIDs) at the time it writes the ACE.
+
+    Confidential marks the password attributes. Reading a confidential attribute takes
+    READ_PROPERTY and CONTROL_ACCESS together (MS-ADTS), so the grant carries both, scoped
+    to the attribute - the shape Windows LAPS writes itself. ReadProperty alone, which the
+    alias used to grant, reads nothing of a confidential attribute. The expiration times are
+    not confidential.
+#>
+$Script:LAPSReadAliasAttributes = @{
+    'ReadLAPSPassword'           = @{ Attribute = 'ms-Mcs-AdmPwd';                       Confidential = $true }
+    'ReadLAPSExpiration'         = @{ Attribute = 'ms-Mcs-AdmPwdExpirationTime';         Confidential = $false }
+    'ReadWindowsLAPSPassword'    = @{ Attribute = 'msLAPS-Password';                     Confidential = $true }
+    'ReadWindowsLAPSEncrypted'   = @{ Attribute = 'msLAPS-EncryptedPassword';            Confidential = $true }
+    'ReadWindowsLAPSHistory'     = @{ Attribute = 'msLAPS-EncryptedPasswordHistory';     Confidential = $true }
+    'ReadWindowsLAPSDSRM'        = @{ Attribute = 'msLAPS-EncryptedDSRMPassword';        Confidential = $true }
+    'ReadWindowsLAPSDSRMHistory' = @{ Attribute = 'msLAPS-EncryptedDSRMPasswordHistory'; Confidential = $true }
 }
 
 # ============================================================================
