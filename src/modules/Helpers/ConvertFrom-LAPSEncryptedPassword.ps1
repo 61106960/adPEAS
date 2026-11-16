@@ -154,7 +154,8 @@ function ConvertFrom-LAPSEncryptedPassword {
                 Write-Log "[ConvertFrom-LAPSEncryptedPassword] Parsing 16-byte header (timestamp plausible: $timestampPlausible, size plausible: $sizePlausible)"
 
                 if ($timestampPlausible) {
-                    $updateTimestamp = [DateTime]::FromFileTimeUtc($headerFileTime)
+                    # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
+                    $updateTimestamp = [DateTime]::FromFileTime($headerFileTime)
                     Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp: $updateTimestamp"
                 } else {
                     Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp out of valid range: $headerFileTime (raw bytes: $($Blob[0..7] -join ','))"
@@ -280,7 +281,7 @@ function ConvertFrom-LAPSEncryptedPassword {
                                     if ($lapsData.t) {
                                         try {
                                             $fileTime = [Convert]::ToInt64($lapsData.t, 16)
-                                            $result.UpdateTimestamp = [DateTime]::FromFileTimeUtc($fileTime)
+                                            $result.UpdateTimestamp = [DateTime]::FromFileTime($fileTime)
                                         } catch {
                                             Write-Log "[ConvertFrom-LAPSEncryptedPassword] Failed to parse timestamp: $($lapsData.t)"
                                         }

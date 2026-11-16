@@ -49,9 +49,13 @@ function ConvertFrom-TSClientLicense {
 
     # Per-User CAL tracking was introduced with Server 2008; reject FILETIMEs
     # outside [2005, 2099] as a quick sanity check that this is really a CAL token.
+    # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
     $issued = $null
-    try { $issued = [DateTime]::FromFileTimeUtc($fileTime) } catch { return $null }
-    if ($issued.Year -lt 2005 -or $issued.Year -gt 2099) { return $null }
+    try { $issued = [DateTime]::FromFileTime($fileTime) } catch { return $null }
+    # On the UTC year: the range validates the token, and a local year would move its edges
+    # by the host's offset.
+    $issuedYear = $issued.ToUniversalTime().Year
+    if ($issuedYear -lt 2005 -or $issuedYear -gt 2099) { return $null }
 
     # Trailing UTF-16LE NUL-terminated Product ID string
     $strBytes  = $Bytes[12..($Bytes.Length - 1)]
@@ -59,7 +63,9 @@ function ConvertFrom-TSClientLicense {
 
     $lines = @()
     $lines += ("Version = 0x{0:X8}" -f $version)
-    $lines += ("Issued = {0:yyyy-MM-dd HH:mm:ss} UTC" -f $issued)
+    # Format-adPEASDate rather than -f: a custom pattern through -f renders in the host
+    # culture's calendar, the Buddhist year on a Thai host.
+    $lines += ("Issued = " + (Format-adPEASDate $issued 'yyyy-MM-dd HH:mm:ss'))
     if ($productId) { $lines += "ProductID = '$productId'" }
 
     # Comma on purpose - see the note in ConvertFrom-TSProperties. This function always

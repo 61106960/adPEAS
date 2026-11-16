@@ -1208,20 +1208,13 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = $PropValue[0]
                     }
                 } elseif ($Script:LDAPGeneralizedTimeAttributes.Contains($PropNameLower)) {
-                    # Convert Generalized Time (YYYYMMDDHHmmss.0Z) to DateTime
+                    # Generalized Time (YYYYMMDDHHmmss.0Z), as local time like every other
+                    # directory time - see ConvertFrom-adPEASGeneralizedTime. It used to be
+                    # built as UTC, so whenCreated stood an hour away from pwdLastSet on the
+                    # same card for the same moment.
                     try {
-                        $gtValue = [string]$PropValue[0]
-                        # Parse format: 20260105135347.0Z
-                        if ($gtValue -match '^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})') {
-                            $dateTime = [DateTime]::new(
-                                [int]$Matches[1],  # Year
-                                [int]$Matches[2],  # Month
-                                [int]$Matches[3],  # Day
-                                [int]$Matches[4],  # Hour
-                                [int]$Matches[5],  # Minute
-                                [int]$Matches[6],  # Second
-                                [DateTimeKind]::Utc
-                            )
+                        $dateTime = ConvertFrom-adPEASGeneralizedTime $PropValue[0]
+                        if ($null -ne $dateTime) {
                             $ConvertedProperties[$PropName] = $dateTime
                         } else {
                             $ConvertedProperties[$PropName] = $PropValue[0]
@@ -1520,7 +1513,8 @@ function ConvertFrom-LDAPAttribute {
                             if ($LAPSObj.t) {
                                 try {
                                     $LAPSFileTime = [Convert]::ToInt64($LAPSObj.t, 16)
-                                    $ConvertedProperties['msLAPS-Updated'] = ([DateTime]::FromFileTimeUtc($LAPSFileTime))
+                                    # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
+                                    $ConvertedProperties['msLAPS-Updated'] = ([DateTime]::FromFileTime($LAPSFileTime))
                                 } catch { }
                             }
                         } else {

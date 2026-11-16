@@ -479,10 +479,8 @@ function ConvertTo-ActivityDate {
         # The anchor matters as much as the order: an 18-digit FileTime string starts
         # with 14 digits too, and a loose prefix match would claim it.
         if ($Value -match '^(\d{14})(?:\.\d+)?Z?$') {
-            $gtDate = [DateTime]::MinValue
-            if ([DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$gtDate)) {
-                return $gtDate.ToLocalTime()
-            }
+            $gtDate = ConvertFrom-adPEASGeneralizedTime $Value
+            if ($null -ne $gtDate) { return $gtDate }
         }
 
         # FileTime stored as string

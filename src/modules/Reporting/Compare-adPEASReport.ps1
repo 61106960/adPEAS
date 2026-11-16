@@ -666,7 +666,10 @@ function Export-DiffHtmlReport {
     $currentInfo = "$CurrentFile ($($CurrentMeta.Date), $($CurrentMeta.Domain), adPEAS $($CurrentMeta.Version))"
     $comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
     $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
-    $generatedDate = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
+    $generatedAt = Get-Date
+    $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
+    # Both exports are read back as local times of this host (ConvertFrom-FindingsCacheValue).
+    $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
     $domain = $BaselineMeta.Domain
 
     # Replace placeholders
@@ -682,6 +685,7 @@ function Export-DiffHtmlReport {
     $html = $html.Replace('{{CURRENT_INFO}}', [string](ConvertTo-HtmlEncode $currentInfo))
     $html = $html.Replace('{{COMPARED_CATEGORIES}}', [string](ConvertTo-HtmlEncode $comparedCats))
     $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+    $html = $html.Replace('{{TIMEZONE}}', [string](ConvertTo-HtmlEncode $timeZoneLabel))
     $html = $html.Replace('{{VERSION}}', [string]$version)
     $html = $html.Replace('{{DIFF_SECTIONS}}', $sectionsHtml.ToString())
 

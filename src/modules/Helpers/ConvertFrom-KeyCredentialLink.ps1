@@ -219,7 +219,8 @@ function ConvertFrom-KeyCredentialLink {
                             try {
                                 $FileTime = [BitConverter]::ToInt64($EntryData, 0)
                                 if ($FileTime -gt 0) {
-                                    $Result.KeyLastLogonTime = [DateTime]::FromFileTimeUtc($FileTime)
+                                    # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
+                                    $Result.KeyLastLogonTime = [DateTime]::FromFileTime($FileTime)
                                 }
                             } catch { }
                         }
@@ -229,7 +230,7 @@ function ConvertFrom-KeyCredentialLink {
                             try {
                                 $FileTime = [BitConverter]::ToInt64($EntryData, 0)
                                 if ($FileTime -gt 0) {
-                                    $Result.KeyCreationTime = [DateTime]::FromFileTimeUtc($FileTime)
+                                    $Result.KeyCreationTime = [DateTime]::FromFileTime($FileTime)
                                 }
                             } catch { }
                         }

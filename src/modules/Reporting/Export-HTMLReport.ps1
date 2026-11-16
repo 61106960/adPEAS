@@ -96,7 +96,11 @@ function Export-HTMLReport {
         $domain = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { "Unknown" }
         $server = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { "Unknown" }
         $user = if ($Script:LDAPContext -and $Script:LDAPContext.Username) { $Script:LDAPContext.Username } else { "$env:USERDOMAIN\$env:USERNAME" }
-        $generatedDate = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
+        $generatedAt = Get-Date
+        $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
+        # Every time in the report is a local time of this host (ConvertFrom-adPEASGeneralizedTime);
+        # the header names the offset once.
+        $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
         $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
 
         # Use disclaimer from main script (decoded at startup)
@@ -161,6 +165,7 @@ function Export-HTMLReport {
         $html = $html.Replace('{{SERVER}}', [string](ConvertTo-HtmlEncode $server))
         $html = $html.Replace('{{USER}}', [string](ConvertTo-HtmlEncode $user))
         $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+        $html = $html.Replace('{{TIMEZONE}}', [string](ConvertTo-HtmlEncode $timeZoneLabel))
         $html = $html.Replace('{{VERSION}}', [string]$version)
         $html = $html.Replace('{{DEFAULT_THEME}}', [string]$DefaultTheme.ToLower())
         $html = $html.Replace('{{FINDING_COUNT}}', [string]$findingCount)

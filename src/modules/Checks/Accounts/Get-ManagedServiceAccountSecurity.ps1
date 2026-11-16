@@ -324,7 +324,9 @@ function Get-ManagedServiceAccountSecurity {
                         if ([long]::TryParse([string]$expiresRaw, [ref]$expiresValue) -and
                             $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
                             $expiryText = 'unreadable'
-                            try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
+                            # Local, as the branch above formats it when the value arrived as a
+                            # DateTime - the same attribute came out in two zones by its path.
+                            try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTime($expiresValue)) 'yyyy-MM-dd' } catch {
                                 Write-Log "[Get-ManagedServiceAccountSecurity] Could not read accountExpires of $($gmsa.sAMAccountName): $_"
                             }
                         }

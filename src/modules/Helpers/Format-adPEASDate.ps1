@@ -57,3 +57,86 @@ function Format-adPEASDate {
 
     return $Date.ToString($Format, [System.Globalization.CultureInfo]::InvariantCulture)
 }
+
+<#
+.SYNOPSIS
+    Turns an LDAP Generalized Time value into the local time adPEAS shows every date in.
+
+.DESCRIPTION
+    The rule for every point in time adPEAS reads from the directory: it is handed on as a
+    DateTime of Kind Local - the local time of the host that runs adPEAS - and the report
+    names that host's offset once instead of beside every value. A FILETIME attribute gets
+    there through [DateTime]::FromFileTime; a Generalized Time value through this function,
+    which is the only place that parses one.
+
+    Before this rule the two classes came out differently: whenCreated, whenChanged and a
+    handful of FILETIME values read with FromFileTimeUtc were UTC, pwdLastSet and every other
+    FILETIME attribute local, and one card showed the same moment an hour apart, with nothing
+    to say which was which. DateTime arithmetic ignores Kind, so subtracting one class from
+    the other was off by the UTC offset as well.
+
+    Two times are compared on .ToUniversalTime() of both, which holds across a change of
+    daylight saving time. Protocol times - Kerberos, NTLM, PAC, the collector's Unix
+    timestamps - are not shown as directory times and stay UTC.
+
+.PARAMETER Value
+    The value as LDAP returns it, "yyyyMMddHHmmss.0Z"; digits beyond the seconds are ignored.
+
+.OUTPUTS
+    [datetime] of Kind Local, or $null for a value that is not a Generalized Time.
+
+.EXAMPLE
+    ConvertFrom-adPEASGeneralizedTime '20261116194017.0Z'
+#>
+function ConvertFrom-adPEASGeneralizedTime {
+    [CmdletBinding()]
+    [OutputType([datetime])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Value
+    )
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [byte[]]) { $Value = [System.Text.Encoding]::ASCII.GetString($Value) }
+    $text = [string]@($Value)[0]
+    if ($text -notmatch '^(\d{14})') { return $null }
+
+    $parsed = [DateTime]::MinValue
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    if (-not [DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+        return $null
+    }
+    return $parsed.ToLocalTime()
+}
+
+<#
+.SYNOPSIS
+    Names the offset every time adPEAS shows is in, once per report.
+
+.DESCRIPTION
+    The other half of the rule in ConvertFrom-adPEASGeneralizedTime: directory times are
+    local times of the host that runs adPEAS, so the report states that host's offset in
+    its header rather than beside each value. Taken at -At, so a report written in summer
+    says +02:00 and one written in winter +01:00 - the offset its times were converted with.
+
+.PARAMETER At
+    The moment whose offset is named. Defaults to now.
+
+.OUTPUTS
+    [string] such as "UTC+01:00".
+#>
+function Get-adPEASTimeZoneLabel {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false, Position = 0)]
+        [datetime]$At = (Get-Date)
+    )
+
+    $offset = [TimeZoneInfo]::Local.GetUtcOffset($At)
+    $sign = if ($offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
+    $abs = $offset.Duration()
+    return ('UTC' + $sign + $abs.Hours.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture) + ':' + $abs.Minutes.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture))
+}

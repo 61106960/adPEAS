@@ -361,6 +361,9 @@ function Get-adPEASSession {
                 # And the hours in full: 'hh' is the hour of the day, so a session of 26
                 # hours read "02:00:00".
                 Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
+                # Every directory time adPEAS prints is local time of this host
+                # (ConvertFrom-adPEASGeneralizedTime); this names the offset once.
+                Show-KeyValue "Time Zone:" (Get-adPEASTimeZoneLabel $Script:LDAPContext.SessionStartTime)
                 Show-KeyValue "Session Duration:" ('{0:00}:{1:mm\:ss}' -f [Math]::Floor($sessionDuration.TotalHours), $sessionDuration)
             }
 

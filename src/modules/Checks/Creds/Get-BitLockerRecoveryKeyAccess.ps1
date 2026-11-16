@@ -206,15 +206,13 @@ function Get-BitLockerRecoveryKeyAccess {
                         }
                     }
 
-                    # Format whenCreated (raw generalized time, e.g. 20240115103045.0Z)
-                    $whenCreatedRaw = [string]$recoveryObject.whenCreated
-                    if ($whenCreatedRaw -match '^(\d{14})') {
-                        try {
-                            $escrowTime = [datetime]::ParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
-                            $recoveryObject | Add-Member -NotePropertyName 'whenCreated' -NotePropertyValue ((Format-adPEASDate $escrowTime 'yyyy-MM-dd HH:mm:ss') + ' UTC') -Force
-                        } catch {
-                            # Leave raw value if parsing fails
-                        }
+                    # whenCreated arrives raw (generalized time, e.g. 20240115103045.0Z) and
+                    # becomes local time like every other directory time. It used to be
+                    # parsed with AssumeUniversal alone - which already returns local time -
+                    # and then printed with " UTC" behind it: a local time labelled UTC.
+                    $escrowTime = ConvertFrom-adPEASGeneralizedTime $recoveryObject.whenCreated
+                    if ($null -ne $escrowTime) {
+                        $recoveryObject | Add-Member -NotePropertyName 'whenCreated' -NotePropertyValue $escrowTime -Force
                     }
 
                     $recoveryObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'BitLockerRecoveryKey' -Force

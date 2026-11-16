@@ -377,8 +377,12 @@ function ConvertTo-FindingsCacheValue {
     The reading half of ConvertTo-FindingsCacheValue. pwsh 7's ConvertFrom-Json already
     returns a round-trip string as a DateTime; Windows PowerShell 5.1 leaves it a string,
     and the report then showed "2022-04-26T17:01:58.8141482+02:00" where a date belongs.
-    Parsed with RoundtripKind, so a value written as local time comes back as local time
-    and one written as UTC stays UTC - which is how the live report shows them.
+    Parsed with RoundtripKind, then handed on as local time - the one form the live report
+    shows a directory time in (ConvertFrom-adPEASGeneralizedTime). An export from before
+    that rule holds whenCreated and its kind as UTC round-trip strings; they are converted
+    here rather than shown an hour away from the times beside them. pwsh 7's
+    ConvertFrom-Json returns such a string as a DateTime already, and it is converted the
+    same way.
 .PARAMETER Value
     The property value as ConvertFrom-Json returned it.
 .PARAMETER Depth
@@ -395,6 +399,12 @@ function ConvertFrom-FindingsCacheValue {
     )
 
     if ($null -eq $Value) { return $null }
+    # Kind compared as a string: Utc only. A Local value is right as it is, and an
+    # Unspecified one carries no zone to convert from.
+    if ($Value -is [datetime]) {
+        if ([string]$Value.Kind -eq 'Utc') { return $Value.ToLocalTime() }
+        return $Value
+    }
     if ($Value -is [string]) {
         # A date as ConvertTo-FindingsCacheValue writes it ('o': seven fractional digits) or
         # as pwsh 7's ConvertTo-Json wrote it before that (trailing zeros dropped, 'Z' for
@@ -402,7 +412,9 @@ function ConvertFrom-FindingsCacheValue {
         # text.
         if ($Value -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?(Z|[+-]\d{2}:\d{2})?$') {
             try {
-                return [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                $parsed = [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                if ([string]$parsed.Kind -eq 'Utc') { return $parsed.ToLocalTime() }
+                return $parsed
             } catch {
                 return $Value
             }
@@ -436,10 +448,9 @@ function ConvertFrom-FindingsCacheValue {
     implementations read that as a UTC DateTime, and the report printed it as such - every
     logon and password time of such a file came out shifted by the UTC offset of the
     scanning host. Those values are rewritten to round-trip strings before parsing, in the
-    form the live report uses: UTC for the generalized-time attributes
-    ($Script:LDAPGeneralizedTimeAttributes - whenCreated, whenChanged and
-    msExchWhenMailboxCreated), local time for everything else, which is what the FILETIME
-    attributes and the certificate dates are.
+    form the live report uses: local time, for every attribute (see
+    ConvertFrom-adPEASGeneralizedTime). The generalized-time attributes used to be kept UTC
+    here, because the live report showed them so.
 .PARAMETER Json
     The file content.
 #>
@@ -455,13 +466,12 @@ function ConvertFrom-FindingsCacheJson {
     # still reports it through its own "invalid file" path rather than a binding error.
     if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
 
-    $utcAttributes = $Script:LDAPGeneralizedTimeAttributes
-    $epoch = New-Object DateTime(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    # The milliseconds count from 1970-01-01 UTC, which is 116444736000000000 as a FILETIME;
+    # FromFileTime hands the instant back as local time.
     $Json = [regex]::Replace($Json, '(?:"(?<key>[^"\\]+)":\s*)?"\\/Date\((?<ms>-?\d+)(?:[+-]\d{4})?\)\\/"', {
         param($match)
-        $instant = $epoch.AddMilliseconds([double]$match.Groups['ms'].Value)
+        $date = [DateTime]::FromFileTime(116444736000000000L + ([long]$match.Groups['ms'].Value * 10000L))
         $key = $match.Groups['key'].Value
-        $date = if ($key -and $utcAttributes -and $utcAttributes.Contains($key)) { $instant } else { $instant.ToLocalTime() }
         $prefix = if ($key) { '"' + $key + '":' } else { '' }
         $prefix + '"' + $date.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) + '"'
     })

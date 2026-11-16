@@ -446,7 +446,8 @@ function Invoke-ShadowCredentialOperation {
                                 if ($EntryData.Length -eq 8) {
                                     $FileTime = [BitConverter]::ToInt64($EntryData, 0)
                                     if ($FileTime -gt 0) {
-                                        $ParsedCred.CreationTime = [DateTime]::FromFileTimeUtc($FileTime)
+                                        # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
+                                        $ParsedCred.CreationTime = [DateTime]::FromFileTime($FileTime)
                                     }
                                 }
                             }
