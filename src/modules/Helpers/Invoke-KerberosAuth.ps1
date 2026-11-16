@@ -68,6 +68,17 @@ function Invoke-KerberosAuth {
     - Rubeus ptt /ticket:<ticket>
     - Impacket tools
 
+.PARAMETER ETypeProbe
+    Asks the KDC whether it accepts the encryption type of the given secret for the
+    account, and nothing else: the AS-REQ goes out without pre-authentication and offers
+    only that one type (RC4-HMAC for -NTHash, AES for a key, -PreferredEType for a
+    password). The secret is never used, so the probe is no logon attempt and does not
+    count against the lockout threshold.
+
+    Returns ETypeAccepted: $true when the KDC asks for pre-authentication (or answers
+    with an AS-REP, for an account without pre-authentication), $false when it refuses
+    the type (KDC_ERR_ETYPE_NOSUPP), $null for any other answer. Not for -Certificate.
+
 .EXAMPLE
     Invoke-KerberosAuth -UserName "john.doe" -Domain "contoso.com" -Credential (Get-Credential)
     Authenticates using password from PSCredential object.
@@ -162,7 +173,10 @@ function Invoke-KerberosAuth {
         [switch]$NoPAC,
 
         [Parameter(Mandatory=$false)]
-        [switch]$OutputTicketOnly
+        [switch]$OutputTicketOnly,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$ETypeProbe
     )
 
     begin {
@@ -185,6 +199,10 @@ function Invoke-KerberosAuth {
         }
 
         $AuthMethodType = $authMethods[0]
+
+        if ($ETypeProbe -and $AuthMethodType -eq 'Certificate') {
+            throw "-ETypeProbe needs a password, NT hash or key - PKINIT negotiates its encryption type differently"
+        }
 
         # Check for custom DNS configuration
         $CustomDnsServer = $null
@@ -982,6 +1000,45 @@ function Invoke-KerberosAuth {
                 }
             }
             Write-Log "[Invoke-KerberosAuth] $AuthMethod for $UserName@$realmUpper via $DomainController (etype $EType)"
+
+            # -ETypeProbe: whether the KDC accepts this encryption type for the account, asked
+            # without a pre-authentication. The request offers $EType alone and carries no
+            # PA-ENC-TIMESTAMP, so no key leaves this host and the KDC has nothing to count as
+            # a failed logon. Its answer is the etype negotiation the KDC does before it would
+            # look at a pre-authentication:
+            # - KDC_ERR_PREAUTH_REQUIRED (25): the type is acceptable, send the pre-auth
+            # - an AS-REP: the account needs no pre-authentication, and the KDC answered in
+            #   the only type offered
+            # - KDC_ERR_ETYPE_NOSUPP (14): refused - RC4 disabled, Protected Users, or an
+            #   account without keys of that type
+            # Anything else (unknown principal, revoked, a network error) decides nothing.
+            if ($ETypeProbe) {
+                $probeRequest = New-KerberosASREQ -UserName $UserName -Realm $Domain -EType $EType -NoPreAuth
+                $probeResponseBytes = Send-KerberosRequest -Server $DomainController -Request $probeRequest.ASReq
+                $probeAnswer = Parse-ASREP -Data $probeResponseBytes
+
+                $eTypeAccepted = $null
+                if ($probeAnswer.Success -or $probeAnswer.ErrorCode -eq 25) {
+                    $eTypeAccepted = $true
+                } elseif ($probeAnswer.ErrorCode -eq 14) {
+                    $eTypeAccepted = $false
+                }
+                Write-Log "[Invoke-KerberosAuth] etype $EType probe for $UserName : accepted=$eTypeAccepted ($($probeAnswer.Error))"
+
+                # No Success property: this is no logon, and a caller testing .Success must
+                # not read a probe as either outcome of one.
+                return [PSCustomObject]@{
+                    Probe            = $true
+                    ETypeAccepted    = $eTypeAccepted
+                    EncryptionType   = $EType
+                    Method           = $AuthMethod
+                    UserName         = $UserName
+                    Domain           = $realmUpper
+                    DomainController = $DomainController
+                    ErrorCode        = $probeAnswer.ErrorCode
+                    Error            = $probeAnswer.Error
+                }
+            }
 
             # For AES password-based authentication, we need the correct salt from the KDC
             # The salt is case-sensitive (RFC 3962) and AD stores usernames with original casing

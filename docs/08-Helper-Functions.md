@@ -222,6 +222,7 @@ $ticketB64 = Invoke-KerberosAuth -UserName "admin" -Domain "contoso.com" -NTHash
 | `-OutputKirbi` | String | Path to save TGT as .kirbi file |
 | `-OutputTicketOnly` | Switch | Return Base64 KRB-CRED (kirbi) for direct use |
 | `-NoPAC` | Switch | Request TGT without PAC |
+| `-ETypeProbe` | Switch | Only ask whether the KDC accepts the secret's encryption type for the account: an AS-REQ without pre-authentication, so no logon attempt and nothing counted against the lockout threshold. Returns `ETypeAccepted` (`$true` / `$false` for KDC_ERR_ETYPE_NOSUPP / `$null` undecided) |
 
 **Return Object** (default):
 ```powershell
@@ -769,16 +770,19 @@ Replicates Active Directory objects using the DRSUAPI protocol to extract creden
 
 ### Invoke-PasswordSpray
 
-Kerberos-based password spray against the domain (AS-REQ per account), with throttling to respect lockout policy.
+Kerberos-based password or NT-hash spray against the domain (AS-REQ per account), with throttling to respect lockout policy.
+
+An NT hash is the account's RC4-HMAC key, so it is sprayed like a password without being cracked first. KDC_ERR_ETYPE_NOSUPP on an RC4 attempt is ambiguous: the KDC may have checked the hash and refused only to answer in RC4, or it refuses RC4 for the account whatever the key - a Protected Users member answers a wrong hash with it as well (measured). Before the first hash the spray therefore asks the KDC once per account, without pre-authentication (no logon attempt, no hash sent), whether it refuses RC4; such accounts - the Protected Users member among them - are left out, and if all of them are, the run stops and says so. An attempt still answered with KDC_ERR_ETYPE_NOSUPP is confirmed with a random wrong hash: KDC_ERR_PREAUTH_FAILED for that one proves the KDC checks the key, and the hash is reported as valid (yellow, "KDC refused RC4" - no Kerberos ticket, NTLM may still accept it); the same answer again leaves it "not tested". The confirmation is one failed logon; in `-Auto` mode it is skipped where it would leave the account one attempt from lockout. An account whose secret was found gets no further secret. AES keys cannot be sprayed - they are salted with the account name and valid for one account only.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `-UserList` | Object | Accounts to spray |
-| `-Auto` | Switch | Build the user list from the domain |
-| `-Password` / `-PasswordList` | String / Object | One password, or a list to try |
-| `-Delay` / `-Jitter` | Int | Seconds between attempts, and random jitter |
+| `-Auto` | Switch | Build the user list from the domain, leaving out accounts close to lockout |
+| `-Password` / `-PasswordList` | String / Object | One password, or a list (file or array) to try |
+| `-NTHash` / `-NTHashList` | String / Object | One NT hash (32 hex characters), or a list (file or array) to try |
+| `-Delay` / `-Jitter` | Int | Milliseconds between attempts, and random jitter in percent |
 | `-StopOnSuccess` | Switch | Stop at the first valid credential |
-| `-Force` | Switch | Skip the lockout-safety confirmation |
+| `-Force` | Switch | In `-Auto` mode, continue when the lockout policy cannot be read |
 | `-OutputFile` | String | Write results to a file |
 | `-Domain` / `-Server` / `-Credential` | | Target and auth |
 
