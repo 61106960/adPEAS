@@ -179,6 +179,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\Test-KerberosTGTExists.ps1"
     . "$Script:ScriptPath\modules\Helpers\Ensure-LDAPConnection.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-AccountActivity.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-ComputerInitialPasswordCandidate.ps1"
     . "$Script:ScriptPath\modules\Helpers\Invoke-SMBAccess.ps1"
     . "$Script:ScriptPath\modules\Helpers\Select-NTFSWriteAccess.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-UNCWriteAccess.ps1"

@@ -29,8 +29,9 @@ function Get-ComputerInitialPassword {
       joined; whether its password is the default the directory does not say. Hint.
 
     Whether a password really is the default takes a logon attempt per account, which this
-    check does not make. Read-only: it changes no account, and it raises no bad password
-    count.
+    check does not make - Invoke-PasswordSpray -Auto -ComputerDefault does, for the
+    "Unchanged" accounts (the selection is shared, Get-ComputerInitialPasswordCandidate).
+    Read-only: it changes no account, and it raises no bad password count.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -76,48 +77,12 @@ function Get-ComputerInitialPassword {
 
             Show-SubHeader "Searching for computer accounts that still carry the password they were created with..." -ObjectType "ComputerInitialPassword"
 
-            # Never joined by a Windows client: a join writes both attributes. The base filter
-            # of Get-DomainComputer is objectCategory=computer, which a gMSA or dMSA does not
-            # have - their password also dates from their creation at first.
-            $candidates = @(Get-DomainComputer -Enabled -LDAPFilter '(&(!(operatingSystem=*))(!(dNSHostName=*)))' @PSBoundParameters)
-
-            # How long after whenCreated a password still counts as the one it was created
-            # with. The tools set it in the same second; a script that creates the account and
-            # then sets a password gets some room.
-            $creationWindowSeconds = 300
-
-            $neverSet = @()
-            $inUse = @()
-            $neverUsed = @()
-            foreach ($computer in $candidates) {
-                $pwdLastSet = $computer.pwdLastSet
-                $uacFlags = @($computer.userAccountControl)
-
-                if ($pwdLastSet -isnot [datetime]) {
-                    # 0 is passed through raw by the FILETIME conversion. Without
-                    # PASSWD_NOTREQD a 0 is "must change at next logon" on an account that
-                    # has a password, not an account without one.
-                    if ([string]@($pwdLastSet)[0] -eq '0' -and $uacFlags -contains 'PASSWD_NOTREQD') {
-                        $computer | Add-Member -NotePropertyName 'passwordSinceCreation' -NotePropertyValue 'Never set - empty password' -Force
-                        $neverSet += $computer
-                    }
-                    continue
-                }
-
-                $created = $computer.whenCreated
-                if ($created -isnot [datetime]) { continue }
-                # Compared in UTC: DateTime arithmetic ignores Kind.
-                $secondsAfterCreation = ($pwdLastSet.ToUniversalTime() - $created.ToUniversalTime()).TotalSeconds
-                if ([Math]::Abs($secondsAfterCreation) -gt $creationWindowSeconds) { continue }
-
-                if ($computer.lastLogonTimestamp -is [datetime]) {
-                    $computer | Add-Member -NotePropertyName 'passwordSinceCreation' -NotePropertyValue 'Unchanged, in use' -Force
-                    $inUse += $computer
-                } else {
-                    $computer | Add-Member -NotePropertyName 'passwordSinceCreation' -NotePropertyValue 'Unchanged, never used' -Force
-                    $neverUsed += $computer
-                }
-            }
+            # The selection is shared with Invoke-PasswordSpray -ComputerDefault, so the check
+            # and the spray cannot disagree about which accounts are candidates.
+            $candidates = @(Get-ComputerInitialPasswordCandidate @PSBoundParameters)
+            $neverSet  = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Never set - empty password' })
+            $inUse     = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Unchanged, in use' })
+            $neverUsed = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Unchanged, never used' })
 
             if ($neverSet.Count + $inUse.Count + $neverUsed.Count -eq 0) {
                 Show-Line "No enabled computer account still carries the password it was created with" -Class Secure

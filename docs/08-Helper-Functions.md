@@ -774,12 +774,15 @@ Kerberos-based password or NT-hash spray against the domain (AS-REQ per account)
 
 An NT hash is the account's RC4-HMAC key, so it is sprayed like a password without being cracked first. KDC_ERR_ETYPE_NOSUPP on an RC4 attempt is ambiguous: the KDC may have checked the hash and refused only to answer in RC4, or it refuses RC4 for the account whatever the key - a Protected Users member answers a wrong hash with it as well (measured). Before the first hash the spray therefore asks the KDC once per account, without pre-authentication (no logon attempt, no hash sent), whether it refuses RC4; such accounts - the Protected Users member among them - are left out, and if all of them are, the run stops and says so. An attempt still answered with KDC_ERR_ETYPE_NOSUPP is confirmed with a random wrong hash: KDC_ERR_PREAUTH_FAILED for that one proves the KDC checks the key, and the hash is reported as valid (yellow, "KDC refused RC4" - no Kerberos ticket, NTLM may still accept it); the same answer again leaves it "not tested". The confirmation is one failed logon; in `-Auto` mode it is skipped where it would leave the account one attempt from lockout. An account whose secret was found gets no further secret. AES keys cannot be sprayed - they are salted with the account name and valid for one account only.
 
+`-ComputerDefault` tests computer accounts for the default password of a pre-Windows 2000 computer: the computer name in lowercase, without `$`, cut to 14 characters - what ADUC with *Assign this computer account as a pre-Windows 2000 computer* and `net computer /add` set. The password is derived per account and each account gets one attempt. With `-Auto` the accounts are the ones `Get-ComputerInitialPassword` reports as *Unchanged* (the same selection), under the same lockout protection as users; with `-UserList` the names given, `$` added where missing. Accounts that never had a password set (`dsadd computer`) are not tested - they have no Kerberos keys, and their empty password works over NTLM only. A hit issues a TGT and sets `logonCount`, `lastLogon` and `lastLogonTimestamp`; a miss raises `badPwdCount` (measured).
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `-UserList` | Object | Accounts to spray |
 | `-Auto` | Switch | Build the user list from the domain, leaving out accounts close to lockout |
 | `-Password` / `-PasswordList` | String / Object | One password, or a list (file or array) to try |
 | `-NTHash` / `-NTHashList` | String / Object | One NT hash (32 hex characters), or a list (file or array) to try |
+| `-ComputerDefault` | Switch | Each computer account's default password - its name in lowercase |
 | `-Delay` / `-Jitter` | Int | Milliseconds between attempts, and random jitter in percent |
 | `-StopOnSuccess` | Switch | Stop at the first valid credential |
 | `-Force` | Switch | In `-Auto` mode, continue when the lockout policy cannot be read |
