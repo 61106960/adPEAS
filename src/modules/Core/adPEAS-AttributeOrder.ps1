@@ -1122,6 +1122,27 @@ function Get-ObjectTypeForOrdering {
 
 <#
 .SYNOPSIS
+    Whether an attribute value counts as empty for display purposes.
+.DESCRIPTION
+    $null and the empty string are empty; a boolean (including $false) never is. A byte[]
+    is empty only when it holds no bytes.
+
+    A byte[] must not be tested with -eq '': on a collection -eq is a filter, not a
+    comparison, and '' coerces to [byte]0, so the test returns the zero bytes of the blob.
+    Two or more of them make a multi-element array that is truthy, so any binary attribute
+    carrying two zero bytes - every real LAPS blob fetched with -Raw, and the like - was
+    silently dropped as "empty". Everything else keeps the original -eq '' semantics.
+#>
+function Test-IsEmptyAttributeValue {
+    param($Value)
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [bool]) { return $false }
+    if ($Value -is [byte[]]) { return ($Value.Length -eq 0) }
+    return ($Value -eq '')
+}
+
+<#
+.SYNOPSIS
     Gets ordered attributes for an object, separating primary from extended.
 .DESCRIPTION
     Returns attributes in defined order, with option to promote non-Standard
@@ -1173,7 +1194,7 @@ function Get-OrderedAttributes {
 
     foreach ($attrName in $primaryAttrNames) {
         $value = $Object.$attrName
-        $isEmpty = ($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')
+        $isEmpty = Test-IsEmptyAttributeValue -Value $value
         if (-not $isEmpty -or ($attrName -in $alwaysShowEmpty -and $Object.PSObject.Properties[$attrName])) {
             $severity = Get-AttributeSeverity -Name $attrName -Value $value -IsComputer $IsComputer -SourceObject $Object
             [void]$result.Primary.Add(@{
@@ -1193,7 +1214,7 @@ function Get-OrderedAttributes {
         foreach ($attrName in @($Script:StrictExtendedAttributes[$objectType])) {
             if (-not $attrName -or $processedAttrs.ContainsKey($attrName)) { continue }
             $value = $Object.$attrName
-            if (($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')) { continue }
+            if (Test-IsEmptyAttributeValue -Value $value) { continue }
             [void]$result.Extended.Add(@{
                 Name = $attrName
                 Value = $value
@@ -1212,7 +1233,7 @@ function Get-OrderedAttributes {
 
         # Skip null/empty (but keep boolean $false, and keep AlwaysShow attributes whose
         # absence is itself meaningful - e.g. unlinked GPO LinkedOUs).
-        $isEmptyValue = ($null -eq $prop.Value) -or ($prop.Value -isnot [bool] -and $prop.Value -eq '')
+        $isEmptyValue = Test-IsEmptyAttributeValue -Value $prop.Value
         if ($isEmptyValue -and $prop.Name -notin $alwaysShowEmpty) { continue }
 
         $severity = Get-AttributeSeverity -Name $prop.Name -Value $prop.Value -IsComputer $IsComputer -SourceObject $Object

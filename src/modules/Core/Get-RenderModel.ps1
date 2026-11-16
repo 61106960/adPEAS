@@ -157,6 +157,31 @@ function Convert-DefaultToRenderValues {
         $Context
     )
 
+    # A raw binary value (byte[]) that no transformer and no ConvertFrom-LDAPAttribute
+    # turned into text - typically a blob fetched with -Raw. Shown as its size, before the
+    # array branch below, which would otherwise render one row per byte (a zero-free blob)
+    # while the ordering layer dropped it outright (two or more zero bytes).
+    #
+    # Severity and card come from the triggers, asked once with the whole blob - the same
+    # question the ordering layer asks Get-AttributeSeverity to place the row. The triggers
+    # on binary attributes test presence, not content: a readable msDS-ManagedPassword is a
+    # Finding whatever its bytes. Not asking them left such a row promoted by the ordering
+    # layer and rendered uncoloured and without its card.
+    if ($Value -is [byte[]]) {
+        if ($Value.Length -eq 0) { return $null }
+        $blobMatch = Get-TriggerMatch -Name $Name -Value $Value -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+        $blobSeverity = if ($blobMatch -and $blobMatch.Severity) { [string]$blobMatch.Severity } else { 'Standard' }
+        $blobFindingId = if ($blobMatch) { $blobMatch.FindingId } else { $null }
+        return @{
+            RowType         = 'SingleValue'
+            OverallSeverity = $blobSeverity
+            ForceAttributeClass = $false
+            Values          = @(
+                New-RenderValue -Display "[binary, $($Value.Length) bytes]" -Severity $blobSeverity -FindingId $blobFindingId -RawValue $Value
+            )
+        }
+    }
+
     # Handle ImageData objects (thumbnailPhoto, jpegPhoto)
     if ($Value -is [PSCustomObject] -and ($Value.psobject.TypeNames -contains 'adPEAS.ImageData')) {
         return @{
