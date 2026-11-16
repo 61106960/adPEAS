@@ -5966,10 +5966,12 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
             # The two attributes that ARE the password. The encrypted one is deliberately
             # not here: Get-LAPSCredentialAccess decrypts where it can, and on success it
             # replaces msLAPS-EncryptedPassword on the object with msLAPS-Password - so a
-            # row that still carries the blob is the case where decryption did not happen.
-            # This card calls that "the current user can read the LAPS password for this
-            # computer", with "they can fully compromise the system" under Impact, for a
-            # blob the holder cannot open. LAPS_ENCRYPTED_PASSWORD says what it is.
+            # row that still carries the blob is one where no decryption succeeded, which
+            # includes every row where none was attempted: the computer rows of the other
+            # checks and an ad hoc Show-Object. This card calls a row "the current user can
+            # read the LAPS password for this computer", with "they can fully compromise
+            # the system" under Impact; for a blob, nothing on the row shows that.
+            # LAPS_ENCRYPTED_PASSWORD says what it is.
             @{ Attribute = 'ms-Mcs-AdmPwd'; Severity = 'Finding' }
             @{ Attribute = 'msLAPS-Password'; Severity = 'Finding' }
 
@@ -14740,16 +14742,24 @@ $acl.Access | Where-Object {
     }
 
     # msLAPS-EncryptedPassword: Hint (still sensitive but encrypted)
+    #
+    # The card says what the row proves - the read right on the blob - and nothing about
+    # whether the blob opens, because on no row it reaches was that tested. It used to say
+    # adPEAS had tried and failed. Get-LAPSCredentialAccess does try, but it only counts the
+    # computers it cannot open and never shows one, so this card appears on the computer
+    # rows of every other check and on an ad hoc Show-Object - and there, in an audit run
+    # as Domain Admins, the default decryptor, it called an openable blob unopenable.
     'LAPS_ENCRYPTED_PASSWORD' = @{
-        Title = "Encrypted LAPS Password Readable, Without the Decryptor"
+        Title = "Encrypted LAPS Password Readable"
         Risk = "Hint"
         BaseScore = 20
-        Description = "msLAPS-EncryptedPassword came back for this computer, so the account adPEAS runs as can read it. What came back is a blob: Windows LAPS encrypts the password for the principal named in ADPasswordEncryptionPrincipal - Domain Admins by default - and only that principal can open it through NCryptUnprotectSecret. adPEAS attempts the decryption, and where it succeeds the row carries msLAPS-Password and the password-readable write-up instead of this one. This row is the other outcome: the attribute is readable and the blob is not openable by this account, which is exactly what the encrypted generation is for."
+        Description = "msLAPS-EncryptedPassword came back for this computer, so the account adPEAS runs as can read it. What came back is a blob: Windows LAPS encrypts the password for the principal named in ADPasswordEncryptionPrincipal - Domain Admins by default - and only a member of that principal can open it through NCryptUnprotectSecret, with a key the domain controller hands out to members alone. Reading the attribute takes the read right, opening it takes that membership, and this row shows only the first. Whether this account can open the blob is decided by the check 'Testing LAPS password read access for current user': a computer it opens is listed there with msLAPS-Password and the password-readable write-up, one it cannot open is counted there as stored but not readable."
         Impact = @(
-            "Not a password read today - without the configured decryptor the blob stays a blob"
-            "The read right is granted though, so it becomes a password read the moment the account reaches the decryptor principal, which is a group membership rather than an ACL change"
+            "Not a password read for an account outside the decryptor principal - for that account the blob stays a blob"
+            "A password read for an account inside it - an audit run as Domain Admins, the default decryptor, reads a blob it can open"
+            "Where the account is outside, the read right is granted though, so it becomes a password read the moment the account reaches the decryptor principal, which is a group membership rather than an ACL change"
             "The blob names its decryptor: the target SID parses out of it without any right, which tells an attacker precisely which group to go after"
-            "Reported as a hint rather than a finding on purpose - calling it a password read teaches the reader that the encryption buys nothing"
+            "Reported as a hint rather than a finding on purpose - calling every readable blob a password read teaches the reader that the encryption buys nothing; the check that opens them reports the ones that are"
         )
         Attack = @(
             "1. Attacker reads msLAPS-EncryptedPassword, which the ACL allows, and keeps the blobs"
