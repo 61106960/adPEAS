@@ -1579,6 +1579,9 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers where current user can read ms-Mcs-AdmPwd"
             "Computers where current user can read msLAPS-Password"
+            "Computers whose msLAPS-EncryptedPassword names a decryptor group the current user is in, decrypted on this machine"
+            "Where such a blob does not decrypt: the Windows error code, listed apart from the passwords the current user may not read"
+            "Where the current user's groups cannot be read: encrypted passwords counted as not tested - whether a blob opens does not depend on the account adPEAS is bound as, so a decryption would not say what that account may read"
             "Scope of LAPS password access"
         )
         SecureMessage = "No readable LAPS passwords found. The current user does not have access to any local administrator passwords managed by LAPS, indicating proper access controls are in place."

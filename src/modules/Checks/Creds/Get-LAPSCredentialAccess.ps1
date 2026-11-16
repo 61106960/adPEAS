@@ -19,6 +19,10 @@ function Resolve-LAPSEncryptedComputer {
     .PARAMETER Computer
     A computer object from a -Raw query, carrying msLAPS-EncryptedPassword.
 
+    .PARAMETER DecryptionError
+    Optional. Receives why the blob did not open - the reason ConvertFrom-LAPSEncryptedPassword
+    gives - and $null when it opened or there was no blob to try.
+
     .OUTPUTS
     [bool] whether the password is now on the object.
     #>
@@ -27,15 +31,26 @@ function Resolve-LAPSEncryptedComputer {
     param(
         [Parameter(Mandatory = $true)]
         [AllowNull()]
-        $Computer
+        $Computer,
+
+        [Parameter(Mandatory = $false)]
+        [ref]$DecryptionError
     )
 
+    if ($DecryptionError) { $DecryptionError.Value = $null }
     if (-not $Computer) { return $false }
     $blob = $Computer.'msLAPS-EncryptedPassword'
     if (-not $blob) { return $false }
 
     $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
-    if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) { return $false }
+    if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) {
+        if ($DecryptionError) {
+            $DecryptionError.Value = if ($decryptedInfo -and $decryptedInfo.DecryptionError) { [string]$decryptedInfo.DecryptionError }
+                                     elseif ($decryptedInfo) { 'decryption returned no password' }
+                                     else { 'the blob could not be parsed' }
+        }
+        return $false
+    }
 
     foreach ($property in @($Computer.PSObject.Properties)) {
         if ($property.Name -ieq 'msLAPS-EncryptedPassword') { continue }
@@ -77,11 +92,20 @@ function Get-LAPSCredentialAccess {
     - Parses encrypted LAPS metadata (timestamp, target SID)
     - Attempts decryption via NCryptUnprotectSecret if authorized
     - Reports which computers' passwords are accessible
-    - Groups accessible credentials by OU
+    - Reports separately the computers whose decryptor group the bound account is in but
+      whose blob Windows did not open, with Windows' error code
+    - Decrypts only where the bound account's groups name the blob's decryptor. Whether a
+      blob opens does not depend on the bound account, so where its groups cannot be read
+      the encrypted passwords are counted as not tested rather than decrypted
 
     Related Checks:
     - Get-LAPSConfiguration (Computer): Is LAPS deployed?
     - Get-LAPSPermissions (Rights): WHO has LAPS read rights per OU?
+
+    .PARAMETER Identity
+    Restricts the test to these computers (name, sAMAccountName, DN, SID or GUID; wildcards
+    as Get-DomainComputer takes them). Without it every computer in the domain is tested.
+    A name that matches no computer is reported as such.
 
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
@@ -98,6 +122,10 @@ function Get-LAPSCredentialAccess {
     .EXAMPLE
     Get-LAPSCredentialAccess -Domain "contoso.com" -Credential (Get-Credential)
 
+    .EXAMPLE
+    Get-LAPSCredentialAccess -Identity "WS001", "SRV-FILE01"
+    Tests two computers only, the same way the scan tests all of them.
+
     .NOTES
     Category: Creds
     Author: Alexander Sturz (@_61106960_)
@@ -112,7 +140,12 @@ function Get-LAPSCredentialAccess {
         [string]$Server,
 
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+
+        # Last, so the positions the other three had are unchanged.
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$Identity
     )
 
     begin {
@@ -121,8 +154,18 @@ function Get-LAPSCredentialAccess {
 
     process {
         try {
+            # The connection parameters, and nothing else. -Identity is this check's own:
+            # splatting @PSBoundParameters on would hand it to Ensure-LDAPConnection and
+            # Get-LAPSSchemaPresence, which do not take it.
+            $connectionParams = @{}
+            foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($connectionKey)) {
+                    $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey]
+                }
+            }
+
             # Ensure LDAP connection (displays error if needed)
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
 
@@ -130,7 +173,7 @@ function Get-LAPSCredentialAccess {
 
             # One definition of "does this domain run LAPS", shared with
             # Get-LAPSConfiguration and Get-LAPSPermissions and cached for the session.
-            $lapsSchema = Get-LAPSSchemaPresence @PSBoundParameters
+            $lapsSchema = Get-LAPSSchemaPresence @connectionParams
             $lapsLegacySchemaPresent = $lapsSchema.LegacyPresent
             $windowsLAPSSchemaPresent = $lapsSchema.NativePresent
 
@@ -141,6 +184,42 @@ function Get-LAPSCredentialAccess {
 
             $readableComputers = @()
             $withheldCount = 0
+            # Computers whose blob names a group the bound account is in and still did not
+            # open. Not withheld: the directory handed the password over to an account that
+            # may open it, and what failed is the decryption on this machine.
+            $decryptFailures = @()
+            # Encrypted passwords the check could not test: the bound account's token groups
+            # were unreadable, and without them nothing ties a blob to that account.
+            $untestedEncryptedCount = 0
+
+            # -Identity narrows every query of this check to those computers; without it
+            # each query runs once, domain-wide. One query per identity, ANDed with the
+            # presence filter by Get-DomainObject, and a computer two identities match
+            # (wildcards) is kept once. $identityHits records which identity found anything.
+            # Assigned, not taken from an if-expression: its output goes through the
+            # pipeline, which unrolls @($null) to a bare $null - and foreach over $null runs
+            # no query at all.
+            $identityScopes = @($null)
+            if ($PSBoundParameters.ContainsKey('Identity')) { $identityScopes = @($Identity) }
+            $identityHits = @{}
+            $getLAPSComputers = {
+                param([string]$Filter, [switch]$AsRaw)
+                $seenDN = @{}
+                foreach ($scope in $identityScopes) {
+                    $query = @{ LDAPFilter = $Filter }
+                    if ($scope) { $query['Identity'] = $scope }
+                    if ($AsRaw) { $query['Raw'] = $true }
+                    foreach ($found in @(Get-DomainComputer @query @connectionParams)) {
+                        if ($scope) { $identityHits[$scope] = $true }
+                        $foundDN = [string]$found.distinguishedName
+                        if ($foundDN) {
+                            if ($seenDN.ContainsKey($foundDN)) { continue }
+                            $seenDN[$foundDN] = $true
+                        }
+                        $found
+                    }
+                }
+            }
 
             # The presence filter is ACL-gated, so a returned object is normally a readable
             # one. Trust it only as far as the value that actually arrives: an object that
@@ -157,7 +236,7 @@ function Get-LAPSCredentialAccess {
             # ACL-based: attribute only returned if user has read permission
             if ($lapsLegacySchemaPresent) {
                 Write-Log "[Get-LAPSCredentialAccess] Querying for readable Legacy LAPS passwords"
-                $computersWithLegacy = @(Get-DomainComputer -LDAPFilter "(ms-Mcs-AdmPwd=*)" @PSBoundParameters)
+                $computersWithLegacy = @(& $getLAPSComputers -Filter '(ms-Mcs-AdmPwd=*)')
                 foreach ($comp in $computersWithLegacy) {
                     if (& $hasValue $comp 'ms-Mcs-AdmPwd') {
                         $readableComputers += $comp
@@ -171,7 +250,7 @@ function Get-LAPSCredentialAccess {
             # Test Windows LAPS plaintext - query for msLAPS-Password attribute in AD
             if ($windowsLAPSSchemaPresent) {
                 Write-Log "[Get-LAPSCredentialAccess] Querying for readable Windows LAPS plaintext passwords"
-                $computersWithPlaintext = @(Get-DomainComputer -LDAPFilter "(msLAPS-Password=*)" @PSBoundParameters)
+                $computersWithPlaintext = @(& $getLAPSComputers -Filter '(msLAPS-Password=*)')
                 foreach ($comp in $computersWithPlaintext) {
                     if (& $hasValue $comp 'msLAPS-Password') {
                         $readableComputers += $comp
@@ -198,7 +277,7 @@ function Get-LAPSCredentialAccess {
 
                     # Step 2: Query all computers with encrypted LAPS - ALL properties but Raw (no decryption)
                     # This way we have the full object and only need to decrypt the blob locally
-                    $encryptedComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -Raw @PSBoundParameters)
+                    $encryptedComputers = @(& $getLAPSComputers -Filter '(msLAPS-EncryptedPassword=*)' -AsRaw)
 
                     if (@($encryptedComputers).Count -gt 0) {
                         Write-Log "[Get-LAPSCredentialAccess] Found $($encryptedComputers.Count) computers with encrypted LAPS"
@@ -207,6 +286,7 @@ function Get-LAPSCredentialAccess {
                         $authorizedCount = 0
                         foreach ($comp in $encryptedComputers) {
                             $readable = $false
+                            $decryptFailed = $false
                             $blob = $comp.'msLAPS-EncryptedPassword'
                             if ($blob) {
                                 # Parse metadata only (no decryption attempt) - very fast, <1ms
@@ -216,8 +296,23 @@ function Get-LAPSCredentialAccess {
                                     if ($myTokenGroups -contains $lapsInfo.TargetSID) {
                                         $authorizedCount++
                                         # Decrypt directly - no second LDAP query needed!
-                                        $readable = Resolve-LAPSEncryptedComputer -Computer $comp
-                                        if ($readable) { $readableComputers += $comp }
+                                        $decryptionError = $null
+                                        $readable = Resolve-LAPSEncryptedComputer -Computer $comp -DecryptionError ([ref]$decryptionError)
+                                        if ($readable) {
+                                            $readableComputers += $comp
+                                        } else {
+                                            # The token groups say this account may open
+                                            # the blob; the decryption did not. A blob that
+                                            # failed here was counted with the ones this
+                                            # account may not read, so the line said "may
+                                            # not read" to an account that may.
+                                            $decryptFailed = $true
+                                            $decryptFailures += [PSCustomObject]@{
+                                                Computer = [string]$comp.distinguishedName
+                                                Reason   = $decryptionError
+                                            }
+                                            Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, decryption failed for '$($comp.distinguishedName)': $decryptionError"
+                                        }
                                     }
                                 }
                             }
@@ -226,7 +321,7 @@ function Get-LAPSCredentialAccess {
                             # were counted nowhere - so a domain on encrypted LAPS where
                             # nothing decrypts ended on "No readable LAPS passwords found",
                             # in green, with no mention that there were passwords at all.
-                            if (-not $readable) {
+                            if (-not $readable -and -not $decryptFailed) {
                                 $withheldCount++
                                 Write-Log "[Get-LAPSCredentialAccess] Encrypted LAPS password not readable for '$($comp.distinguishedName)'"
                             }
@@ -235,40 +330,18 @@ function Get-LAPSCredentialAccess {
                         Write-Log "[Get-LAPSCredentialAccess] User is authorized for $authorizedCount of $($encryptedComputers.Count) encrypted LAPS computers"
                     }
                 } else {
-                    # No token groups, so the authorization pre-check is unavailable. That
-                    # check is an optimisation and never the test: what decides whether a
-                    # blob is readable is whether NCryptUnprotectSecret opens it. Three of
-                    # them decide whether the rest are worth the attempt.
+                    # No token groups, so nothing says whether the bound account may open
+                    # these blobs - and a decryption does not say it either. Whether
+                    # NCryptUnprotectSecret opens a blob does not depend on the account adPEAS
+                    # is bound as: measured 2026-11-16, a session bound as a standard user
+                    # (simple bind) decrypted a blob protected for a group that user is not in.
                     #
-                    # This branch used to sample without -Raw and then filter on
-                    # msLAPS-Password - an attribute that cannot be there. Without -Raw,
-                    # ConvertFrom-LDAPAttribute renders the blob as
-                    # "[Encrypted - Updated: ...]" and produces no password property at all,
-                    # so the sample was always empty, the load-everything branch behind it
-                    # was dead, and nothing was counted as withheld either. On a domain
-                    # using encrypted LAPS, a failed token-group lookup therefore ended the
-                    # section with "No readable LAPS passwords found" in green.
-                    Write-Log "[Get-LAPSCredentialAccess] No token groups - sampling decryption instead"
-                    $encryptedComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -Raw @PSBoundParameters)
-
-                    $sampleDecrypts = $false
-                    foreach ($comp in @($encryptedComputers | Select-Object -First 3)) {
-                        $sampleInfo = ConvertFrom-LAPSEncryptedPassword -Blob $comp.'msLAPS-EncryptedPassword' -Decrypt
-                        if ($sampleInfo -and $sampleInfo.DecryptionSucceeded) { $sampleDecrypts = $true; break }
-                    }
-
-                    if ($sampleDecrypts) {
-                        Write-Log "[Get-LAPSCredentialAccess] Fallback: decryption works, trying all $(@($encryptedComputers).Count)"
-                        foreach ($comp in $encryptedComputers) {
-                            if (Resolve-LAPSEncryptedComputer -Computer $comp) {
-                                $readableComputers += $comp
-                            } else {
-                                $withheldCount++
-                            }
-                        }
-                    } else {
-                        $withheldCount += @($encryptedComputers).Count
-                    }
+                    # This branch used to decrypt anyway, on the premise that the decryption
+                    # is "the only test there is", and reported every blob that opened as a
+                    # password the bound account can read - a Finding for an account that may
+                    # read nothing. The blobs are counted as not tested instead.
+                    Write-Log "[Get-LAPSCredentialAccess] No token groups - encrypted LAPS passwords not tested"
+                    $untestedEncryptedCount += @(& $getLAPSComputers -Filter '(msLAPS-EncryptedPassword=*)').Count
                 }
             }
 
@@ -297,6 +370,21 @@ function Get-LAPSCredentialAccess {
                 }
             }
 
+            # A name that matched nothing in any query is either no computer at all or a
+            # computer with no LAPS password this account can see. Only the first deserves
+            # a line of its own; the second is what the lines below already say.
+            $missingIdentities = @()
+            if ($PSBoundParameters.ContainsKey('Identity')) {
+                foreach ($scope in $identityScopes) {
+                    if ($identityHits.ContainsKey($scope)) { continue }
+                    $existing = @(Get-DomainComputer -Identity $scope -Properties 'distinguishedName' @connectionParams)
+                    if ($existing.Count -eq 0) { $missingIdentities += $scope }
+                }
+            }
+            foreach ($missing in $missingIdentities) {
+                Show-Line "No computer found for '$missing'" -Class "Note"
+            }
+
             # Output results
             if (@($readableComputers).Count -gt 0) {
                 if ($readerIsPrivileged) {
@@ -323,6 +411,17 @@ function Get-LAPSCredentialAccess {
                     }
                 }
                 if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }
+            } elseif (@($decryptFailures).Count -gt 0) {
+                # Not "no readable passwords": this account may read them, and only the
+                # decryption on this machine failed. The lines below say what was tested.
+                Write-Log "[Get-LAPSCredentialAccess] Nothing decrypted, $(@($decryptFailures).Count) failure(s) with the decryptor group held"
+            } elseif (@($missingIdentities).Count -gt 0 -and @($missingIdentities).Count -eq @($identityScopes).Count) {
+                # None of the names is a computer, so nothing was tested at all.
+                Write-Log "[Get-LAPSCredentialAccess] No given identity matches a computer"
+            } elseif ($untestedEncryptedCount -gt 0) {
+                # Encrypted passwords exist and were not tested, so the section cannot be
+                # clean; the line below says why.
+                Write-Log "[Get-LAPSCredentialAccess] Nothing readable, $untestedEncryptedCount encrypted password(s) not tested"
             } else {
                 Show-Line "No readable LAPS passwords found" -Class "Secure"
             }
@@ -332,6 +431,24 @@ function Get-LAPSCredentialAccess {
             # from "no LAPS in this domain" and it changes what the reader does next.
             if ($withheldCount -gt 0) {
                 Show-Line "$withheldCount computer(s) have a LAPS password stored that this account may not read" -Class "Note"
+            }
+
+            if ($untestedEncryptedCount -gt 0) {
+                Show-Line "$untestedEncryptedCount computer(s) have an encrypted LAPS password that was not tested - this account's groups could not be read" -Class "Note"
+            }
+
+            # The bound account is in the group the blob names, so the directory's answer is
+            # "readable"; Windows did not open it. The reason is Windows' own code and
+            # nothing more - no cause is guessed. Whether a blob opens does not depend on
+            # the account adPEAS is bound as (measured 2026-11-16, see the branch without
+            # token groups above), so neither that account nor the bind method is a cause
+            # to name.
+            if (@($decryptFailures).Count -gt 0) {
+                Show-Line "$(@($decryptFailures).Count) computer(s) name a decryptor group this account is in, but Windows did not decrypt them" -Class "Note"
+                foreach ($reasonGroup in @($decryptFailures | Group-Object -Property Reason)) {
+                    $reasonText = if ($reasonGroup.Name) { $reasonGroup.Name } else { 'no reason given' }
+                    Show-KeyValue "Decryption error" "$reasonText - $($reasonGroup.Count) computer(s)"
+                }
             }
 
         } catch {

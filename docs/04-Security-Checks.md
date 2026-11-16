@@ -257,12 +257,18 @@ Identifies credential exposure vectors.
 **What it checks**:
 - Actual read access to LAPS password attributes
 - Which computers' LAPS passwords are accessible
+- Encrypted Windows LAPS: the decryptor group named in each `msLAPS-EncryptedPassword` blob is compared with the bound account's groups, and the blobs it may open are decrypted on this machine
+
+Whether a blob opens does **not** depend on the account adPEAS is bound as: Windows obtains the key itself (measured: a session bound as a standard user decrypted a blob protected for a group that user is not in). The check therefore decides by the bound account's groups and decrypts only where they name the blob's decryptor. If those groups cannot be read, the encrypted passwords are counted as not tested instead of decrypted. A blob whose decryptor group the bound account is in but that Windows does not open is listed on its own line with the Windows error code, instead of being counted with the passwords this account may not read.
 
 **Security Impact**: If the current user can read LAPS passwords, they can obtain local admin credentials for those computers, enabling lateral movement.
 
 **Usage**:
 ```powershell
 Get-LAPSCredentialAccess
+
+# Only these computers, tested the same way
+Get-LAPSCredentialAccess -Identity "WS001", "SRV-FILE01"
 ```
 
 ---

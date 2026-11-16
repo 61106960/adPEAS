@@ -30,18 +30,29 @@ function ConvertFrom-LAPSEncryptedPassword {
     This requires the caller to be a member of an authorized group.
 
     .EXAMPLE
-    # Parse metadata only (no decryption)
-    $computer = Get-DomainComputer -Identity "WS001" -Properties msLAPS-EncryptedPassword
+    # Parse metadata only (no decryption). -Raw is required: without it the blob arrives
+    # converted to text ("[Encrypted - Updated: ...]") and cannot be bound to -Blob.
+    $computer = Get-DomainComputer -Identity "WS001" -Raw
     $lapsInfo = ConvertFrom-LAPSEncryptedPassword -Blob $computer.'msLAPS-EncryptedPassword'
     $lapsInfo.UpdateTimestamp
     $lapsInfo.TargetSID
 
     .EXAMPLE
-    # Decrypt password (requires authorization)
-    $computer = Get-DomainComputer -Identity "WS001" -Properties msLAPS-EncryptedPassword
+    # Decrypt password (requires authorization). Whether it opens does not depend on the
+    # account adPEAS is bound as: Windows obtains the key itself.
+    $computer = Get-DomainComputer -Identity "WS001" -Raw
     $lapsInfo = ConvertFrom-LAPSEncryptedPassword -Blob $computer.'msLAPS-EncryptedPassword' -Decrypt
     $lapsInfo.Password
     $lapsInfo.Account
+
+    .EXAMPLE
+    # Why a blob does not open, without printing the password
+    $computer = Get-DomainComputer -Identity "WS001" -Raw
+    ConvertFrom-LAPSEncryptedPassword -Blob $computer.'msLAPS-EncryptedPassword' -Decrypt |
+        Select-Object TargetSID, TargetSIDName, DecryptionSucceeded, DecryptionError
+
+    Get-LAPSCredentialAccess -Identity "WS001" does the same as a check: it compares the
+    target SID with the bound account's groups and reports the outcome.
 
     .NOTES
     Author: Alexander Sturz (@_61106960_)
@@ -216,31 +227,35 @@ function ConvertFrom-LAPSEncryptedPassword {
                 Write-Log "[ConvertFrom-LAPSEncryptedPassword] Attempting decryption via NCryptUnprotectSecret"
 
                 try {
-                    # LAPS v2 encrypted blob should be passed directly to NCryptUnprotectSecret
-                    # The API handles the DPAPI-NG/CMS format internally
-                    # Try full blob first (most common), then CMS-only as fallback
+                    # The CMS body first, where a header was split off. A real blob carries
+                    # the 16-byte header, and NCryptUnprotectSecret refuses it whole with
+                    # 0x8009310B (CRYPT_E_ASN1_BADTAG); the body then decrypts - measured
+                    # 2026-11-16 against a Windows LAPS blob. The whole blob stays as the
+                    # fallback for one whose header was not recognised.
+                    #
+                    # The error reported is the first attempt's. It used to be the whole
+                    # blob's, which for a real blob is always that tag error: every failed
+                    # decryption reported 0x8009310B - read as "requires domain-joined
+                    # system" - whatever Windows had said about the body.
+                    $attempts = @()
+                    if ($encryptedData -and $encryptedData.Length -ne $Blob.Length) {
+                        $attempts += @{ Label = 'CMS body'; Data = $encryptedData }
+                    }
+                    $attempts += @{ Label = 'full blob'; Data = $Blob }
+
                     $decryptedData = $null
-
-                    try {
-                        Write-Log "[ConvertFrom-LAPSEncryptedPassword] Trying full blob ($($Blob.Length) bytes)"
-                        $decryptedData = Invoke-NCryptUnprotectSecret -ProtectedBlob $Blob
-                    } catch {
-                        $fullError = $_.Exception.Message
-                        Write-Log "[ConvertFrom-LAPSEncryptedPassword] Full blob failed: $fullError"
-
-                        # If full blob fails, try CMS-only (without header)
-                        if ($encryptedData -and $encryptedData.Length -ne $Blob.Length) {
-                            try {
-                                Write-Log "[ConvertFrom-LAPSEncryptedPassword] Trying CMS-only ($($encryptedData.Length) bytes)"
-                                $decryptedData = Invoke-NCryptUnprotectSecret -ProtectedBlob $encryptedData
-                            } catch {
-                                # Both failed - rethrow the original error
-                                throw $fullError
-                            }
-                        } else {
-                            throw
+                    $firstError = $null
+                    foreach ($attempt in $attempts) {
+                        try {
+                            Write-Log "[ConvertFrom-LAPSEncryptedPassword] Trying $($attempt.Label) ($($attempt.Data.Length) bytes)"
+                            $decryptedData = Invoke-NCryptUnprotectSecret -ProtectedBlob $attempt.Data
+                            break
+                        } catch {
+                            Write-Log "[ConvertFrom-LAPSEncryptedPassword] $($attempt.Label) failed: $($_.Exception.Message)"
+                            if ($null -eq $firstError) { $firstError = $_.Exception.Message }
                         }
                     }
+                    if ($null -eq $decryptedData -and $null -ne $firstError) { throw $firstError }
 
                     if ($decryptedData -and $decryptedData.Length -gt 0) {
                         # Parse the decrypted LAPS password structure (JSON format in UTF-16LE)
@@ -293,17 +308,26 @@ function ConvertFrom-LAPSEncryptedPassword {
                     Write-Log "[ConvertFrom-LAPSEncryptedPassword] Decryption failed: $errorMessage"
                     $result.DecryptionError = $errorMessage
 
-                    # Check for common error codes and provide meaningful messages
-                    if ($errorMessage -match "0x8009310B") {
-                        # NTE_NOT_SUPPORTED - typically means non-domain-joined system
-                        $result.DecryptionError = "DPAPI-NG not supported - requires domain-joined system for LAPS v2 encrypted password decryption"
-                    } elseif ($errorMessage -match "0x8009002C") {
-                        # NTE_INTERNAL_ERROR - CMS format issue
-                        $result.DecryptionError = "CMS format error - encrypted blob may be corrupted or incompatible"
-                    } elseif ($errorMessage -match "0x80090034" -or $errorMessage -match "NTE_DECRYPTION_FAILURE") {
-                        $result.DecryptionError = "Access denied - current user is not authorized to decrypt this password"
-                    } elseif ($errorMessage -match "0x80070005" -or $errorMessage -match "ACCESS_DENIED") {
-                        $result.DecryptionError = "Access denied - not a member of authorized group ($targetSIDName)"
+                    # The code by its Windows name, and nothing about the cause. The texts
+                    # this replaced named a cause for codes that say something else, checked
+                    # against the system message of each: 0x8009310B, "requires
+                    # domain-joined system", is CRYPT_E_ASN1_BADTAG; 0x8009002C, "CMS format
+                    # error", is NTE_DECRYPTION_FAILURE; 0x80090034, "not authorized to
+                    # decrypt", is NTE_ENCRYPTION_FAILURE. None of the causes was measured,
+                    # and "not authorized" contradicted Get-LAPSCredentialAccess in the one
+                    # case it decrypts in: only where the account's groups name the decryptor.
+                    if ($errorMessage -match '0x[0-9A-Fa-f]{8}') {
+                        $errorCode = '0x' + $Matches[0].Substring(2).ToUpperInvariant()
+                        $errorName = switch ($errorCode) {
+                            '0x80070005' { 'E_ACCESSDENIED' }
+                            '0x80090029' { 'NTE_NOT_SUPPORTED' }
+                            '0x8009002C' { 'NTE_DECRYPTION_FAILURE' }
+                            '0x8009002D' { 'NTE_INTERNAL_ERROR' }
+                            '0x80090034' { 'NTE_ENCRYPTION_FAILURE' }
+                            '0x8009310B' { 'CRYPT_E_ASN1_BADTAG' }
+                            default      { $null }
+                        }
+                        $result.DecryptionError = if ($errorName) { "$errorName ($errorCode)" } else { "NCryptUnprotectSecret error $errorCode" }
                     }
                 }
             }
