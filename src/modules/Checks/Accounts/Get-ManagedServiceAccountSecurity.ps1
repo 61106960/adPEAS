@@ -187,8 +187,6 @@ function Get-ManagedServiceAccountSecurity {
                         $nonPrivilegedAccessFindings += [PSCustomObject]@{
                             gMSA = $gmsaName
                             DN = $gmsa.distinguishedName
-                            NonPrivilegedReaders = $unexpectedReaders
-                            AllReaders = $passwordReaders
                             HasBroadGroupAccess = $hasBroadGroupAccess
                         }
                     }
@@ -250,14 +248,13 @@ function Get-ManagedServiceAccountSecurity {
 
                         # A finding, printed as one. Show-Object defaults to Standard, so the
                         # gMSA sat under a red headline in the renderer's neutral class.
+                        #
+                        # The readers are not repeated on a line of their own. The object's
+                        # msDS-GroupMSAMembership row names every one of them, coloured by the
+                        # verdicts above, and the broad case is in the headline and the
+                        # context. A line under the object said the same once more, with the
+                        # SID twice for every reader ConvertFrom-SID could not resolve.
                         Show-Object $gmsaObj -Class Finding
-
-                        # Additional context about password readers - highlight broad groups
-                        $readerList = ($finding.NonPrivilegedReaders | ForEach-Object {
-                            $prefix = if ($_.IsBroadGroup) { "[CRITICAL] " } else { "" }
-                            "$prefix$($_.Principal) ($($_.SID))"
-                        }) -join ", "
-                        Show-Line "Non-privileged password readers: $readerList" -Class Hint
                     }
                 } elseif ($analyzedGMSAs -eq 0) {
                     Show-Line "gMSA password access could not be analyzed - no membership descriptor could be read" -Class Note
@@ -749,9 +746,8 @@ function Get-ManagedServiceAccountSecurity {
                         $unexpectedUsers = @($dmsaUsers | Where-Object { -not $_.IsExpected })
                         if ($unexpectedUsers.Count -gt 0) {
                             $usableByOthers += [PSCustomObject]@{
-                                Account    = $dmsa
-                                Unexpected = $unexpectedUsers
-                                HasBroad   = (@($unexpectedUsers | Where-Object { $_.IsBroadGroup }).Count -gt 0)
+                                Account  = $dmsa
+                                HasBroad = (@($unexpectedUsers | Where-Object { $_.IsBroadGroup }).Count -gt 0)
                             }
                         }
                     }
@@ -767,14 +763,9 @@ function Get-ManagedServiceAccountSecurity {
                             if ($entry.HasBroad) { $contextText = 'CRITICAL: Broad group access' }
                             $entry.Account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'dMSA' -Force
                             $entry.Account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $contextText -Force
+                            # The principals are named by the object's msDS-GroupMSAMembership
+                            # row, coloured by the verdicts - not repeated on a line below it.
                             Show-Object $entry.Account -Class Finding
-
-                            $userList = @($entry.Unexpected | ForEach-Object {
-                                $prefix = ''
-                                if ($_.IsBroadGroup) { $prefix = '[CRITICAL] ' }
-                                "$prefix$($_.Principal) ($($_.SID))"
-                            }) -join ', '
-                            Show-Line "Non-privileged principals allowed to use it: $userList" -Class Hint
                         }
                     }
 
