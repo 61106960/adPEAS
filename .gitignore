@@ -3,6 +3,10 @@
 # carries the stable build as a downloadable asset. Ignoring them here would have no
 # effect anyway - they are tracked, and .gitignore does not apply to tracked files,
 # which is how dev builds used to leak into main one broad `git add` at a time.
+#
+# The one exception is the console executable. It is a binary of several MB, so tracking
+# it would add that much to the history with every build; it ships as a release asset.
+adPEAS.exe
 
 # Development tools
 .claude/

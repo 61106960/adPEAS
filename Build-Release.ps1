@@ -8,6 +8,9 @@
     - adPEAS_min.ps1   (minimized)
     - adPEAS_ultra.ps1 (ultra-compressed, no comments, no logging)
     - adPEAS_obf.ps1   (obfuscated: GZip + XOR + Base64)
+    and, where Build-Config.psd1 names one, a console executable that carries one of the
+    first three as it is (adPEAS.exe, the readable one). It is compiled from the variant this
+    same run wrote, so it carries the same version and, with -License, the same license.
 
     This script is only the orchestration. The mechanics live in Build-Engine.ps1, which is
     project independent and copied between projects unchanged; everything specific to
@@ -431,12 +434,68 @@ if ($Mismatches.Count -gt 0) {
 Write-Host "[Build]   $($Config.Embeds.Count) asset(s) identical across all $($VariantPaths.Count) text variants" -ForegroundColor Green
 
 # ====================
-# 5. CODE SIGNING (optional)
+# 5. CONSOLE EXECUTABLE (where configured)
+# ====================
+# Built from the text variant this same run wrote, never from an older file - so it carries
+# the same version, timestamp and, with -License, the same license as the scripts. Built
+# before signing: the embedded script is loaded with ScriptBlock::Create, which a signature
+# block would not change, and the executable is signed itself below.
+$ExeOutputPath = $null
+$ExeSize = $null
+if ($Config.Variants.Executable) {
+    $ExeVariant = $Config.Variants.Executable
+    Write-Host "`n[Build] Creating console executable: $($ExeVariant.FileName)" -ForegroundColor Yellow
+
+    $ExeBasePath = switch ($ExeVariant.BasedOn) {
+        'Readable'  { $ReadableOutputPath }
+        'Minimized' { $MinOutputPath }
+        'Ultra'     { $UltraOutputPath }
+        default     { $null }
+    }
+    if (-not $ExeBasePath) {
+        Write-Error "[Build] Variants.Executable.BasedOn must be Readable, Minimized or Ultra, not '$($ExeVariant.BasedOn)'"
+        return
+    }
+
+    # A configured icon that is missing stops the build: an executable that silently ships
+    # with the default icon is a release nobody meant to make.
+    $ExeIconPath = $null
+    if ($ExeVariant.Icon) {
+        $ExeIconPath = Join-Path $ScriptRoot $ExeVariant.Icon
+        if (-not (Test-Path -LiteralPath $ExeIconPath)) {
+            Write-Error "[Build] Icon for $($ExeVariant.FileName) not found: $ExeIconPath"
+            return
+        }
+        Write-Host "[Build]   - Icon: $($ExeVariant.Icon)" -ForegroundColor Gray
+    }
+
+    Write-Host "[Build]   - Embedding $(Split-Path -Leaf $ExeBasePath), compiling with the .NET Framework C# compiler..." -ForegroundColor Gray
+    $ExeOutputPath = Join-Path $ReleasePath $ExeVariant.FileName
+    $ExeParams = @{
+        ScriptPath  = $ExeBasePath
+        OutputPath  = $ExeOutputPath
+        Title       = $ExeVariant.Title
+        Version     = $BuildVersion
+        Description = "$($Config.ProjectName) $BuildVersion"
+        Author      = $Config.Author
+    }
+    if ($ExeIconPath) { $ExeParams['IconPath'] = $ExeIconPath }
+    $ExeFile = New-BuildConsoleExecutable @ExeParams
+    if (-not $ExeFile) { return }
+
+    $ExeSize = $ExeFile.Length / 1KB
+    Write-Host "[Build] Console executable created: $ExeOutputPath" -ForegroundColor Green
+    Write-Host "[Build] Size: $([Math]::Round($ExeSize, 2)) KB" -ForegroundColor Gray
+}
+
+# ====================
+# 6. CODE SIGNING (optional)
 # ====================
 if ($CodeSigningCert) {
     Write-Host "`n[Build] Code Signing" -ForegroundColor Yellow
 
     $FilesToSign = @($ReadableOutputPath, $MinOutputPath, $UltraOutputPath, $ObfOutputPath)
+    if ($ExeOutputPath) { $FilesToSign += $ExeOutputPath }
     $SignResult = Invoke-BuildCodeSigning -Path $FilesToSign `
         -CertificatePath $CodeSigningCert -CertPassword $CertPassword -TimestampServer $TimestampServer
     if (-not $SignResult) { return }
@@ -478,5 +537,8 @@ Write-Host "  - $($Config.Variants.Readable.FileName.PadRight(18)): $([Math]::Ro
 Write-Host "  - $($Config.Variants.Minimized.FileName.PadRight(18)): $([Math]::Round($MinSize, 2)) KB ($($Config.Variants.Minimized.Description))" -ForegroundColor Gray
 Write-Host "  - $($Config.Variants.Ultra.FileName.PadRight(18)): $([Math]::Round($UltraSize, 2)) KB ($($Config.Variants.Ultra.Description))" -ForegroundColor Gray
 Write-Host "  - $($Config.Variants.Obfuscated.FileName.PadRight(18)): $([Math]::Round($ObfSize, 2)) KB ($($Config.Variants.Obfuscated.Description))" -ForegroundColor Gray
+if ($ExeOutputPath) {
+    Write-Host "  - $($Config.Variants.Executable.FileName.PadRight(18)): $([Math]::Round($ExeSize, 2)) KB ($($Config.Variants.Executable.Description), carries $(Split-Path -Leaf $ExeBasePath))" -ForegroundColor Gray
+}
 Write-Host "`nOutput directory: $ReleasePath" -ForegroundColor White
 Write-Host "============================================`n" -ForegroundColor Cyan

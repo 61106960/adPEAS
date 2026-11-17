@@ -63,6 +63,33 @@
             Description = 'obfuscated: GZip+XOR+Base64'
             BasedOn     = 'Ultra'
         }
+        # Not a script: a console executable hosting the PowerShell console host, with one of
+        # the text variants above embedded as it is. Remove this entry and the build writes
+        # no executable.
+        #
+        # BasedOn - which variant it carries (measured 2026-11-17; all three load in 1.3 to
+        # 1.4 s, so the choice costs no start-up time):
+        #   'Readable'   adPEAS.ps1, ~8.0 MB. Keeps the comment-based help, so Get-Help works
+        #                at the executable's prompt, and every Write-Log call, so -Verbose
+        #                and -VerboseLogging log.
+        #   'Minimized'  adPEAS_min.ps1, ~5.6 MB. Logging kept; no comment-based help -
+        #                Get-Help shows only the syntax.
+        #   'Ultra'      adPEAS_ultra.ps1, ~5.0 MB. Neither: Write-Log and Write-Verbose calls
+        #                are stripped (2 of 2832 remain), so -Verbose and -VerboseLogging stay
+        #                silent, and there is no help.
+        # 'Obfuscated' is not accepted: it is Ultra behind a further decoding layer, which a
+        # delivery format has no use for. Build-Release.ps1 stops on any other value.
+        #
+        # Icon - relative to the directory holding Build-Release.ps1. Built from the official
+        # logo by .claude\tools\New-adPEASIcon.ps1 (local, only needed when the logo changes).
+        # Leave it out and the executable gets the default application icon.
+        Executable = @{
+            FileName    = 'adPEAS.exe'
+            Description = 'console executable'
+            BasedOn     = 'Readable'
+            Title       = 'adPEAS'
+            Icon        = 'images\adPEAS.ico'
+        }
     }
 
     # --- embedded content ---------------------------------------------------------

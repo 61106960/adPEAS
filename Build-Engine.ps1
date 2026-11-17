@@ -5,7 +5,8 @@
 .DESCRIPTION
     Everything in this file is project independent. It knows PowerShell, not adPEAS:
     what a comment token is, which lines belong to a string literal, how to write a file
-    the way Windows PowerShell 5.1 can read it back, how to compress and sign one.
+    the way Windows PowerShell 5.1 can read it back, how to compress and sign one, and how
+    to pack one into a console executable.
 
     What belongs in the project instead: which modules exist, what they are called, which
     variables carry the version, which functions have content embedded into them. That
@@ -784,5 +785,227 @@ function Invoke-BuildCodeSigning {
         Untrusted     = $untrusted
         UnTimestamped = $unTimestamped
         NotAfter      = $signingCert.NotAfter
+    }
+}
+
+# =============================================================================
+# CONSOLE EXECUTABLE
+# =============================================================================
+
+<#
+.SYNOPSIS
+    Packs a built script into a console executable that hosts the PowerShell console host.
+.DESCRIPTION
+    The executable runs Microsoft.PowerShell.ConsoleShell - the console host powershell.exe
+    itself is - in its own process, with the script embedded as a resource as it is. At
+    start it dot-sources the script into the global scope, which is what Import-Module of a
+    .ps1 does at a prompt, so functions and script state behave exactly as there: the prompt,
+    tab completion, history and PSReadLine are the console host's own.
+
+    Without arguments the executable stays at the prompt. With arguments it runs them as a
+    command and exits with that command's exit code; they are joined the way
+    powershell.exe -Command joins them, and a leading -Command or -c is accepted. The host
+    always starts with -NoProfile, so no profile of the machine it runs on is loaded.
+
+    Compiled with the C# compiler of the .NET Framework through CodeDom, so nothing has to
+    be installed. CodeDom compilation does not exist in PowerShell 7, so the compiler runs in
+    a Windows PowerShell 5.1 child process whichever edition runs the build - which also
+    references the console host of Windows PowerShell 5.1, the one the executable runs on.
+
+    The executable needs Windows PowerShell 5.1 on the machine it runs on.
+.PARAMETER ScriptPath
+    The built script to embed. Its file name becomes the resource name.
+.PARAMETER OutputPath
+    The executable to write.
+.PARAMETER Title
+    Product name: banner text and the assembly's title and product attributes.
+.PARAMETER Version
+    The build version, as the executable's informational version. Its leading numeric part
+    (up to four components) becomes the file and assembly version.
+.PARAMETER Description
+    The assembly's description attribute.
+.PARAMETER Author
+    The assembly's copyright attribute.
+.PARAMETER IconPath
+    Optional. An .ico file to give the executable as its icon. Without it, Windows shows the
+    default application icon.
+.OUTPUTS
+    The written executable's FileInfo, or $null when compilation failed.
+#>
+function New-BuildConsoleExecutable {
+    param(
+        [Parameter(Mandatory=$true)] [string]$ScriptPath,
+        [Parameter(Mandatory=$true)] [string]$OutputPath,
+        [Parameter(Mandatory=$true)] [string]$Title,
+        [Parameter(Mandatory=$true)] [string]$Version,
+        [string]$Description = '',
+        [string]$Author = '',
+        [string]$IconPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ScriptPath)) {
+        Write-Error "[Build] Script to embed not found: $ScriptPath"
+        return $null
+    }
+    if ($IconPath -and -not (Test-Path -LiteralPath $IconPath)) {
+        Write-Error "[Build] Icon not found: $IconPath"
+        return $null
+    }
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $windowsPowerShell)) {
+        Write-Error "[Build] Windows PowerShell 5.1 not found ($windowsPowerShell) - it compiles the executable"
+        return $null
+    }
+
+    # A C# string literal: backslash and quote escaped, nothing else can occur in these.
+    $literal = { param([string]$Text) $Text.Replace('\', '\\').Replace('"', '\"') }
+
+    # The file and assembly version is numeric; the build version may carry +date.
+    $numericVersion = '0.0.0.0'
+    if ($Version -match '^(\d+)(\.\d+){0,3}') {
+        $parts = @($Matches[0].Split('.'))
+        while ($parts.Count -lt 4) { $parts += '0' }
+        $numericVersion = $parts -join '.'
+    }
+
+    $resourceName = Split-Path -Leaf $ScriptPath
+    $source = @'
+using System;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Management.Automation.Runspaces;
+
+[assembly: AssemblyTitle("{TITLE}")]
+[assembly: AssemblyProduct("{TITLE}")]
+[assembly: AssemblyDescription("{DESCRIPTION}")]
+[assembly: AssemblyCopyright("{AUTHOR}")]
+[assembly: AssemblyVersion("{NUMERIC_VERSION}")]
+[assembly: AssemblyFileVersion("{NUMERIC_VERSION}")]
+[assembly: AssemblyInformationalVersion("{VERSION}")]
+
+namespace BuildConsoleHost
+{
+    public static class Payload
+    {
+        // The embedded script as text, read from inside the session by the loader command.
+        public static string Text
+        {
+            get
+            {
+                using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("{RESOURCE}"))
+                {
+                    if (stream == null) { throw new InvalidOperationException("Embedded script {RESOURCE} not found"); }
+                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
+                    {
+                        return reader.ReadToEnd();
+                    }
+                }
+            }
+        }
+    }
+
+    public static class Program
+    {
+        [STAThread]
+        public static int Main(string[] args)
+        {
+            // Dot-sourced at the top level of the session: functions and $Script: state land in
+            // the global scope, as after Import-Module of the .ps1 at a prompt.
+            const string load = ". ([ScriptBlock]::Create([BuildConsoleHost.Payload]::Text))";
+
+            int skip = 0;
+            if (args.Length > 0 && (args[0].Equals("-Command", StringComparison.OrdinalIgnoreCase) ||
+                                    args[0].Equals("-c", StringComparison.OrdinalIgnoreCase)))
+            {
+                skip = 1;
+            }
+
+            string[] hostArgs;
+            if (args.Length - skip == 0)
+            {
+                hostArgs = new string[] { "-NoLogo", "-NoProfile", "-NoExit", "-Command", load };
+            }
+            else
+            {
+                // As powershell.exe -Command: the remaining arguments are joined with spaces.
+                hostArgs = new string[args.Length - skip + 4];
+                hostArgs[0] = "-NoLogo";
+                hostArgs[1] = "-NoProfile";
+                hostArgs[2] = "-Command";
+                hostArgs[3] = load + ";";
+                Array.Copy(args, skip, hostArgs, 4, args.Length - skip);
+            }
+
+#pragma warning disable 618
+            RunspaceConfiguration configuration = RunspaceConfiguration.Create();
+#pragma warning restore 618
+            return Microsoft.PowerShell.ConsoleShell.Start(configuration, "{TITLE}", "", hostArgs);
+        }
+    }
+}
+'@
+    $source = $source.Replace('{TITLE}', (& $literal $Title)).
+                      Replace('{DESCRIPTION}', (& $literal $Description)).
+                      Replace('{AUTHOR}', (& $literal $Author)).
+                      Replace('{NUMERIC_VERSION}', $numericVersion).
+                      Replace('{VERSION}', (& $literal $Version)).
+                      Replace('{RESOURCE}', (& $literal $resourceName))
+
+    # Runs in the Windows PowerShell 5.1 child. The console host assembly is the child's own,
+    # so the reference is the one the executable will find on the target.
+    $compiler = @'
+param([string]$SourcePath, [string]$ResourcePath, [string]$OutputPath, [string]$IconPath)
+$ErrorActionPreference = 'Stop'
+$consoleHost = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'Microsoft.PowerShell.ConsoleHost' }
+if (-not $consoleHost) { [Console]::Error.WriteLine('Microsoft.PowerShell.ConsoleHost is not loaded'); exit 2 }
+$provider = New-Object Microsoft.CSharp.CSharpCodeProvider
+$parameters = New-Object System.CodeDom.Compiler.CompilerParameters
+$parameters.GenerateExecutable = $true
+$parameters.OutputAssembly = $OutputPath
+$parameters.CompilerOptions = '/optimize /platform:anycpu'
+if ($IconPath) { $parameters.CompilerOptions += ' /win32icon:"' + $IconPath + '"' }
+[void]$parameters.ReferencedAssemblies.Add('System.dll')
+[void]$parameters.ReferencedAssemblies.Add([System.Management.Automation.PSObject].Assembly.Location)
+[void]$parameters.ReferencedAssemblies.Add($consoleHost.Location)
+[void]$parameters.EmbeddedResources.Add($ResourcePath)
+$result = $provider.CompileAssemblyFromFile($parameters, $SourcePath)
+if ($result.Errors.HasErrors) {
+    foreach ($compileError in $result.Errors) { [Console]::Error.WriteLine($compileError.ToString()) }
+    exit 1
+}
+exit 0
+'@
+
+    $workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("build-exe-" + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $workDir
+    try {
+        $sourcePath = Join-Path $workDir 'Program.cs'
+        $compilerPath = Join-Path $workDir 'Compile.ps1'
+        $tempOutput = Join-Path $workDir (Split-Path -Leaf $OutputPath)
+        [System.IO.File]::WriteAllText($sourcePath, $source, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText($compilerPath, $compiler, (New-Object System.Text.UTF8Encoding($true)))
+
+        $resourcePath = (Resolve-Path -LiteralPath $ScriptPath).Path
+        # -IconPath only when there is one: Windows PowerShell 5.1 drops an empty argument
+        # to a native program, and the child would then fail on a parameter without value.
+        $compilerArgs = @('-NoProfile', '-NonInteractive', '-File', $compilerPath,
+                          '-SourcePath', $sourcePath, '-ResourcePath', $resourcePath, '-OutputPath', $tempOutput)
+        if ($IconPath) { $compilerArgs += @('-IconPath', (Resolve-Path -LiteralPath $IconPath).Path) }
+        $compileOutput = & $windowsPowerShell @compilerArgs 2>&1
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $tempOutput)) {
+            foreach ($line in @($compileOutput)) { Write-Host "[Build]   $line" -ForegroundColor Red }
+            Write-Error "[Build] Compiling $(Split-Path -Leaf $OutputPath) failed (exit code $exitCode)"
+            return $null
+        }
+
+        # Written next to the target and swapped in, as Write-BuildFile does for the scripts:
+        # a failed copy must not leave the previous executable deleted.
+        Copy-Item -LiteralPath $tempOutput -Destination $OutputPath -Force
+        return (Get-Item -LiteralPath $OutputPath)
+    }
+    finally {
+        Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
