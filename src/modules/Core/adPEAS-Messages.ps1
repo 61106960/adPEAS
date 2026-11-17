@@ -1755,21 +1755,212 @@ function Show-NoParametersError {
 # Module Import / Quick Start Messages
 # ============================================================================
 
+<#
+.SYNOPSIS
+    The commands Get-adPEASHelp lists beside the checks, grouped as the help shows them.
+.DESCRIPTION
+    A constant table, read by the Commands section and by -Search. An entry may name a
+    parameter after the command ("Set-DomainComputer -AddRBCD"); its first word is the
+    command. The checks are not listed here - Get-adPEASCheckCatalog reads them out of
+    Invoke-adPEAS, so the help cannot list a check the scan does not run, or miss one it does.
+#>
+$Script:adPEASHelpCommands = [ordered]@{
+    'Connection' = @(
+        @{ Name = 'Connect-adPEAS';        Text = 'Establish LDAP session' }
+        @{ Name = 'Disconnect-adPEAS';     Text = 'Close LDAP session' }
+        @{ Name = 'Get-adPEASSession';     Text = 'Show session status' }
+        @{ Name = 'Build-CompletionCache'; Text = 'Tab completion for AD object names' }
+    )
+    'AD Queries' = @(
+        @{ Name = 'Get-DomainUser';           Text = 'Query AD users' }
+        @{ Name = 'Get-DomainComputer';       Text = 'Query AD computers' }
+        @{ Name = 'Get-DomainGroup';          Text = 'Query AD groups' }
+        @{ Name = 'Get-DomainGPO';            Text = 'Query Group Policy Objects' }
+        @{ Name = 'Get-DomainObject';         Text = 'Query any AD object' }
+        @{ Name = 'Get-ObjectACL';            Text = 'Query object ACLs' }
+        @{ Name = 'Get-DomainWriteAccess';    Text = 'What an account may write in the directory' }
+        @{ Name = 'Get-CertificateTemplate';  Text = 'Query certificate templates' }
+        @{ Name = 'Get-CertificateAuthority'; Text = 'Query certificate authorities' }
+        @{ Name = 'Get-DomainDNSZone';        Text = 'Query AD-integrated DNS zones' }
+        @{ Name = 'Get-DomainDNSRecord';      Text = 'Query AD-integrated DNS records' }
+        @{ Name = 'Get-GPOLinkage';           Text = 'Which OUs, domains and sites link which GPOs' }
+        @{ Name = 'Get-LAPSGPOConfig';        Text = 'LAPS settings out of the Group Policy Objects' }
+    )
+    'AD Modifications' = @(
+        @{ Name = 'Set-DomainUser';          Text = 'Modify user attributes' }
+        @{ Name = 'Set-DomainComputer';      Text = 'Modify computer attributes' }
+        @{ Name = 'Set-DomainGroup';         Text = 'Modify group attributes' }
+        @{ Name = 'Set-DomainObject';        Text = 'Modify any AD object' }
+        @{ Name = 'Set-DomainGPO';           Text = 'Modify Group Policy Objects' }
+        @{ Name = 'Set-CertificateTemplate'; Text = 'Modify certificate templates' }
+        @{ Name = 'New-DomainUser';          Text = 'Create AD user' }
+        @{ Name = 'New-DomainComputer';      Text = 'Create AD computer' }
+        @{ Name = 'New-DomainGroup';         Text = 'Create AD group' }
+        @{ Name = 'New-DomainGPO';           Text = 'Create Group Policy Object' }
+        @{ Name = 'Move-DomainObject';       Text = 'Move or rename any AD object' }
+    )
+    'Kerberos Authentication' = @(
+        @{ Name = 'Invoke-KerberosAuth';   Text = 'Request TGT (Password/Hash/Key/Cert)' }
+        @{ Name = 'Request-ServiceTicket'; Text = 'Request TGS for a service' }
+        @{ Name = 'Import-KerberosTicket'; Text = 'Pass-the-Ticket (inject into session)' }
+    )
+    'Credential Attacks' = @(
+        @{ Name = 'Invoke-Kerberoast';    Text = 'Kerberoasting (request service tickets)' }
+        @{ Name = 'Invoke-ASREPRoast';    Text = 'AS-REP Roasting (no preauth)' }
+        @{ Name = 'Invoke-DCSync';        Text = 'DCSync (directory replication)' }
+        @{ Name = 'Invoke-PasswordSpray'; Text = 'Password, NT-hash and computer default password spraying' }
+        @{ Name = 'Get-Hash';             Text = 'Derive NT/AES/DES keys from a password' }
+    )
+    'Offensive Actions' = @(
+        @{ Name = 'Invoke-TicketForge';                  Text = 'Golden/Silver/Diamond Tickets' }
+        @{ Name = 'Invoke-ConstrainedDelegation';        Text = 'S4U attack via constrained delegation' }
+        @{ Name = 'Invoke-RBCD';                         Text = 'S4U attack via resource-based delegation' }
+        @{ Name = 'Invoke-S4U';                          Text = 'S4U2Self/S4U2Proxy from a secret or a TGT' }
+        @{ Name = 'Set-DomainComputer -AddRBCD';         Text = 'Configure resource-based delegation' }
+        @{ Name = 'Set-DomainUser -AddShadowCredential'; Text = 'Shadow Credentials' }
+        @{ Name = 'Request-ADCSCertificate';             Text = 'Request ADCS certificate' }
+    )
+    'Network' = @(
+        @{ Name = 'Invoke-PortScan'; Text = 'TCP connect scan of hosts, networks or the domain' }
+    )
+    'Decoding' = @(
+        @{ Name = 'ConvertFrom-SID';                   Text = 'SID to DOMAIN\name' }
+        @{ Name = 'ConvertFrom-GPPPassword';           Text = 'Decrypt a Group Policy Preferences cpassword' }
+        @{ Name = 'ConvertFrom-VBE';                   Text = 'Decode a VBScript Encoded (.vbe) file' }
+        @{ Name = 'ConvertFrom-LAPSEncryptedPassword'; Text = 'Parse or decrypt a Windows LAPS blob' }
+    )
+    'Reporting' = @(
+        @{ Name = 'Convert-adPEASReport'; Text = 'Rebuild HTML/text report from a JSON export' }
+        @{ Name = 'Compare-adPEASReport'; Text = 'Compare two JSON exports' }
+    )
+}
+
+<#
+.SYNOPSIS
+    The checks the scan runs, read out of Invoke-adPEAS.
+.DESCRIPTION
+    Invoke-adPEAS calls every check through Invoke-CheckWithContext -Category -CheckName
+    -Title, and its module titles sit in the $Script:ModuleCategoryHeaders literal it assigns.
+    Both are read from its syntax tree - nothing is run - so this list is the scan's own and
+    cannot drift from it. It used to be a second list in Get-adPEASHelp, which showed each
+    check's section title but not the command that runs it.
+
+    The summary is the check's section help (ObjectTypes, by the -ObjectType of its first
+    Show-SubHeader): data, present in every build. The .SYNOPSIS is the fallback - the
+    minimized builds strip comment-based help.
+.OUTPUTS
+    PSCustomObject: Name, Module, ModuleTitle, Title, Summary - in scan order.
+#>
+function Get-adPEASCheckCatalog {
+    [CmdletBinding()]
+    param()
+
+    $scan = Get-Command -Name 'Invoke-adPEAS' -CommandType Function -ErrorAction SilentlyContinue
+    if (-not $scan) { return }
+    $scanAst = $scan.ScriptBlock.Ast
+
+    $moduleTitles = @{}
+    $assignment = $scanAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -eq '$Script:ModuleCategoryHeaders'
+    }, $true)
+    if ($assignment) {
+        $table = $assignment.Find({ param($node) $node -is [System.Management.Automation.Language.HashtableAst] }, $true)
+        if ($table) {
+            try { $moduleTitles = $table.SafeGetValue() } catch {
+                Write-Log "[Get-adPEASCheckCatalog] Could not read the module titles: $_"
+            }
+        }
+    }
+
+    $seen = @{}
+    $calls = $scanAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-CheckWithContext'
+    }, $true)
+    foreach ($call in $calls) {
+        $arguments = Get-adPEASConstantArgument -CommandAst $call
+        $name = $arguments['CheckName']
+        if (-not $name -or $seen.ContainsKey($name)) { continue }
+        $seen[$name] = $true
+
+        $module = $arguments['Category']
+        [PSCustomObject]@{
+            Name        = $name
+            Module      = $module
+            ModuleTitle = $(if ($moduleTitles.ContainsKey($module)) { [string]$moduleTitles[$module] } else { $module })
+            Title       = $arguments['Title']
+            Summary     = Get-adPEASCheckSummary -Name $name
+        }
+    }
+}
+
+# The parameters of a command call that were given a string constant, by name.
+function Get-adPEASConstantArgument {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $CommandAst)
+
+    $arguments = @{}
+    $elements = $CommandAst.CommandElements
+    for ($i = 1; $i -lt $elements.Count - 1; $i++) {
+        if ($elements[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and
+            $elements[$i + 1] -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+            $arguments[$elements[$i].ParameterName] = $elements[$i + 1].Value
+        }
+    }
+    return $arguments
+}
+
+# One line on what a check finds: its section help, or its .SYNOPSIS where it has none.
+function Get-adPEASCheckSummary {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] [string]$Name)
+
+    $check = Get-Command -Name $Name -CommandType Function -ErrorAction SilentlyContinue
+    if (-not $check) { return $null }
+    $checkAst = $check.ScriptBlock.Ast
+
+    $subHeaders = $checkAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Show-SubHeader'
+    }, $true)
+    foreach ($subHeader in $subHeaders) {
+        $objectType = (Get-adPEASConstantArgument -CommandAst $subHeader)['ObjectType']
+        if ($objectType -and $Script:ObjectTypeDefinitions -and $Script:ObjectTypeDefinitions[$objectType] -and
+            $Script:ObjectTypeDefinitions[$objectType].Summary) {
+            return [string]$Script:ObjectTypeDefinitions[$objectType].Summary
+        }
+    }
+
+    $help = $checkAst.GetHelpContent()
+    if ($help -and $help.Synopsis) { return ($help.Synopsis -replace '\s+', ' ').Trim() }
+    return $null
+}
+
 function Get-adPEASHelp {
 <#
 .SYNOPSIS
     Displays adPEAS help including check modules, commands, and usage examples.
 
 .DESCRIPTION
-    Shows a comprehensive overview of adPEAS: quick start examples,
-    the 10 security check modules, all available commands grouped by category,
-    and how to access detailed help for individual commands.
+    Shows a comprehensive overview of adPEAS: quick start examples, every check the scan
+    runs - by the command that runs it alone, grouped by module - the other commands grouped
+    by category, and how to access detailed help for individual commands.
 
-    Use the -Section parameter to display only specific sections.
+    The checks are read out of Invoke-adPEAS (Get-adPEASCheckCatalog), so the list is the
+    scan's own.
+
+    Use the -Section parameter to display only specific sections, and -Search to find a check
+    or command by a word.
 
 .PARAMETER Section
     Which section(s) to display. Valid values: QuickStart, Checks, Commands.
     Default: all sections are shown.
+
+.PARAMETER Search
+    Lists the checks and commands whose name, title, module or description contains this
+    text, case-insensitive. Wildcards (* and ?) are taken as such.
 
 .EXAMPLE
     Get-adPEASHelp
@@ -1779,18 +1970,65 @@ function Get-adPEASHelp {
 .EXAMPLE
     Get-adPEASHelp -Section Checks
 
-    Displays only the security check modules section.
+    Displays every check by the command that runs it, grouped by module.
 
 .EXAMPLE
     Get-adPEASHelp -Section QuickStart,Commands
 
     Displays quick start examples and available commands.
+
+.EXAMPLE
+    Get-adPEASHelp -Search laps
+
+    Every check and command around LAPS - the configuration, the read permissions, the
+    credential access, the GPO settings and the blob decoder.
 #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Section')]
     param(
+        [Parameter(ParameterSetName = 'Section')]
         [ValidateSet('QuickStart','Checks','Commands')]
-        [string[]]$Section
+        [string[]]$Section,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'Search')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Search
     )
+
+    if ($PSCmdlet.ParameterSetName -eq 'Search') {
+        # A plain word is a substring; a pattern the caller wrote with * or ? is taken as is.
+        $pattern = if ($Search -match '[\*\?]') { $Search } else { '*' + [System.Management.Automation.WildcardPattern]::Escape($Search) + '*' }
+
+        $checkHits = @(Get-adPEASCheckCatalog | Where-Object {
+            $_.Name -like $pattern -or $_.Title -like $pattern -or $_.Module -like $pattern -or
+            $_.ModuleTitle -like $pattern -or $_.Summary -like $pattern
+        })
+        $commandHits = @(foreach ($category in $Script:adPEASHelpCommands.Keys) {
+            foreach ($entry in $Script:adPEASHelpCommands[$category]) {
+                if ($entry.Name -like $pattern -or $entry.Text -like $pattern -or $category -like $pattern) {
+                    [PSCustomObject]@{ Name = $entry.Name; Category = $category; Text = $entry.Text }
+                }
+            }
+        })
+
+        Show-SubHeader "adPEAS checks and commands matching '$Search'"
+        if ($checkHits.Count -gt 0) {
+            Show-Line "Checks - run in the scan, or alone by this name:" -Class Hint
+            foreach ($hit in $checkHits) {
+                $summary = if ($hit.Summary) { $hit.Summary } else { $hit.Title }
+                Show-KeyValue $hit.Name "[$($hit.Module)] $summary"
+            }
+            Show-EmptyLine
+        }
+        if ($commandHits.Count -gt 0) {
+            Show-Line "Commands:" -Class Hint
+            foreach ($hit in $commandHits) { Show-KeyValue $hit.Name "[$($hit.Category)] $($hit.Text)" }
+            Show-EmptyLine
+        }
+        if ($checkHits.Count + $commandHits.Count -eq 0) {
+            Show-Line "No check or command matches '$Search' - Get-adPEASHelp lists them all" -Class Note
+        }
+        return
+    }
 
     # If no section specified, show all
     $showAll = -not $Section
@@ -1818,6 +2056,7 @@ function Get-adPEASHelp {
 
         Show-Line "More help:" -Class Hint
         Show-Line "Get-adPEASHelp"
+        Show-Line "Get-adPEASHelp -Search <word>"
         Show-Line "Get-Help Connect-adPEAS -Examples"
         Show-Line "Get-Help <Command> -Detailed"
         Show-EmptyLine
@@ -1834,46 +2073,20 @@ function Get-adPEASHelp {
         Show-Line "Run specific modules only:" -Class Hint
         Show-Line "Invoke-adPEAS -Module 'Domain','Creds','ADCS'"
         Show-EmptyLine
+        Show-Line "Run one check alone - by the name on its left:" -Class Hint
+        Show-Line "Get-ComputerInitialPassword -Domain 'contoso.com'"
+        Show-EmptyLine
 
-        # Module display order and descriptions
-        $moduleOrder = [ordered]@{
-            'Domain'      = "Domain Configuration"
-            'Creds'       = "Credential Exposure"
-            'Rights'      = "Access Permissions"
-            'Delegation'  = "Delegation Settings"
-            'ADCS'        = "AD Certificate Services"
-            'Accounts'    = "Privileged Accounts"
-            'GPO'         = "Group Policy Objects"
-            'Computer'    = "Computer Security"
-            'Application' = "Application Infrastructure"
-            'Shares'      = "Shares"
-            'Bloodhound'  = "BloodHound Data"
-        }
-
-        # Group ObjectTypes by Module, collect unique SectionTitles with Summary
-        $checksByModule = @{}
-        if ($Script:ObjectTypeDefinitions) {
-            foreach ($entry in $Script:ObjectTypeDefinitions.GetEnumerator()) {
-                $mod = $entry.Value.Module
-                if ($mod -and $moduleOrder.Contains($mod)) {
-                    if (-not $checksByModule[$mod]) { $checksByModule[$mod] = @() }
-                    $title = $entry.Value.SectionTitle
-                    $summary = $entry.Value.Summary
-                    if ($title -and ($checksByModule[$mod].Title -notcontains $title)) {
-                        $checksByModule[$mod] += @{ Title = $title; Summary = $summary }
-                    }
-                }
-            }
-        }
-
-        foreach ($mod in $moduleOrder.Keys) {
-            $desc = $moduleOrder[$mod]
-            Show-Line "$($desc): -Module $mod" -Class Hint
-            $checks = $checksByModule[$mod]
-            if ($checks) {
-                foreach ($check in $checks) {
-                    Show-KeyValue $check.Title $check.Summary
-                }
+        # The scan's own list, in the order it runs (Get-adPEASCheckCatalog). It used to be the
+        # section titles out of ObjectTypes, without the command that runs a check.
+        $catalog = @(Get-adPEASCheckCatalog)
+        $modules = @($catalog | ForEach-Object { $_.Module } | Select-Object -Unique)
+        foreach ($module in $modules) {
+            $checks = @($catalog | Where-Object { $_.Module -eq $module })
+            Show-Line "$($checks[0].ModuleTitle): -Module $module" -Class Hint
+            foreach ($check in $checks) {
+                $summary = if ($check.Summary) { $check.Summary } else { $check.Title }
+                Show-KeyValue $check.Name $summary
             }
             Show-EmptyLine
         }
@@ -1883,80 +2096,14 @@ function Get-adPEASHelp {
     if ($showCommands) {
         Show-SubHeader "Additional Core and Helper Modules"
 
-        # --- Connection ---
-        Show-Line "Connection:" -Class Hint
-        Show-KeyValue "Connect-adPEAS" "Establish LDAP session"
-        Show-KeyValue "Disconnect-adPEAS" "Close LDAP session"
-        Show-KeyValue "Get-adPEASSession" "Show session status"
-        Show-EmptyLine
-
-        # --- AD Queries ---
-        Show-Line "AD Queries:" -Class Hint
-        Show-KeyValue "Get-DomainUser" "Query AD users"
-        Show-KeyValue "Get-DomainComputer" "Query AD computers"
-        Show-KeyValue "Get-DomainGroup" "Query AD groups"
-        Show-KeyValue "Get-DomainGPO" "Query Group Policy Objects"
-        Show-KeyValue "Get-DomainObject" "Query any AD object"
-        Show-KeyValue "Get-ObjectACL" "Query object ACLs"
-        Show-KeyValue "Get-DomainWriteAccess" "What an account may write in the directory"
-        Show-KeyValue "Get-CertificateTemplate" "Query certificate templates"
-        Show-KeyValue "Get-CertificateAuthority" "Query certificate authorities"
-        Show-KeyValue "Get-DomainDNSZone" "Query AD-integrated DNS zones"
-        Show-KeyValue "Get-DomainDNSRecord" "Query AD-integrated DNS records"
-        Show-EmptyLine
-
-        # --- AD Modifications ---
-        Show-Line "AD Modifications:" -Class Hint
-        Show-KeyValue "Set-DomainUser" "Modify user attributes"
-        Show-KeyValue "Set-DomainComputer" "Modify computer attributes"
-        Show-KeyValue "Set-DomainGroup" "Modify group attributes"
-        Show-KeyValue "Set-DomainObject" "Modify any AD object"
-        Show-KeyValue "Set-DomainGPO" "Modify Group Policy Objects"
-        Show-KeyValue "Set-CertificateTemplate" "Modify certificate templates"
-        Show-KeyValue "New-DomainUser" "Create AD user"
-        Show-KeyValue "New-DomainComputer" "Create AD computer"
-        Show-KeyValue "New-DomainGroup" "Create AD group"
-        Show-KeyValue "New-DomainGPO" "Create Group Policy Object"
-        Show-KeyValue "Move-DomainObject" "Move or rename any AD object"
-        Show-EmptyLine
-
-        # --- Kerberos Authentication ---
-        Show-Line "Kerberos Authentication:" -Class Hint
-        Show-KeyValue "Invoke-KerberosAuth" "Request TGT (Password/Hash/Key/Cert)"
-        Show-KeyValue "Request-ServiceTicket" "Request TGS for a service"
-        Show-KeyValue "Import-KerberosTicket" "Pass-the-Ticket (inject into session)"
-        Show-EmptyLine
-
-        # --- Credential Attacks ---
-        Show-Line "Credential Attacks:" -Class Hint
-        Show-KeyValue "Invoke-Kerberoast" "Kerberoasting (request service tickets)"
-        Show-KeyValue "Invoke-ASREPRoast" "AS-REP Roasting (no preauth)"
-        Show-KeyValue "Invoke-DCSync" "DCSync (directory replication)"
-        Show-KeyValue "Invoke-PasswordSpray" "Password spraying"
-        Show-KeyValue "Get-Hash" "Derive NT/AES/DES keys from a password"
-        Show-EmptyLine
-
-        # --- Offensive Actions ---
-        Show-Line "Offensive Actions:" -Class Hint
-        Show-KeyValue "Invoke-TicketForge" "Golden/Silver/Diamond Tickets"
-        Show-KeyValue "Invoke-ConstrainedDelegation" "S4U attack via constrained delegation"
-        Show-KeyValue "Invoke-RBCD" "S4U attack via resource-based delegation"
-        Show-KeyValue "Invoke-S4U" "S4U2Self/S4U2Proxy from a secret or a TGT"
-        Show-KeyValue "Set-DomainComputer -AddRBCD" "Configure resource-based delegation"
-        Show-KeyValue "Set-DomainUser -AddShadowCredential" "Shadow Credentials"
-        Show-KeyValue "Request-ADCSCertificate" "Request ADCS certificate"
-        Show-EmptyLine
-
-        # --- Network ---
-        Show-Line "Network:" -Class Hint
-        Show-KeyValue "Invoke-PortScan" "TCP connect scan of hosts, networks or the domain"
-        Show-EmptyLine
-
-        # --- Reporting ---
-        Show-Line "Reporting:" -Class Hint
-        Show-KeyValue "Convert-adPEASReport" "Rebuild HTML/text report from a JSON export"
-        Show-KeyValue "Compare-adPEASReport" "Compare two JSON exports"
-        Show-EmptyLine
+        # One table ($Script:adPEASHelpCommands), read by -Search as well.
+        foreach ($category in $Script:adPEASHelpCommands.Keys) {
+            Show-Line "$($category):" -Class Hint
+            foreach ($entry in $Script:adPEASHelpCommands[$category]) {
+                Show-KeyValue $entry.Name $entry.Text
+            }
+            Show-EmptyLine
+        }
     }
 }
 

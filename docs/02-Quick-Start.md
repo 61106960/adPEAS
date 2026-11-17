@@ -334,6 +334,18 @@ Get-ADCSVulnerabilities        # Find ADCS misconfigurations
 Get-...
 ```
 
+### Finding a check or command
+
+The import adds several hundred functions to the session, most of them internal, so tab completion is no guide to which ones are meant to be called. `Get-adPEASHelp` lists the ones that are:
+
+```powershell
+Get-adPEASHelp -Section Checks     # every check the scan runs, by the name that runs it alone, per module
+Get-adPEASHelp -Section Commands   # the other commands, by category
+Get-adPEASHelp -Search laps        # checks and commands whose name, title, module or description match
+```
+
+The check list is read out of `Invoke-adPEAS` itself, so it always matches what a full scan runs.
+
 A fast TCP port scan needs no session when the targets are given:
 
 ```powershell
