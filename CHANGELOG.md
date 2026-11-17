@@ -6,6 +6,114 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.11.0] - 2026-11-17
+
+### Added
+
+- **`adPEAS.exe`, a console executable.** A further way to run adPEAS, not a second code
+  base: the executable is the Windows PowerShell console host with the readable build
+  embedded, loaded into the global scope at start - the same as `Import-Module .\adPEAS.ps1`
+  at a prompt. Prompt, tab completion, history and PSReadLine are the console host's own.
+  Without arguments it stays at the prompt; with arguments (`adPEAS.exe Invoke-adPEAS -Domain
+  ...`) it runs them like `powershell.exe -Command` and exits with their exit code. It needs
+  Windows PowerShell 5.1 and carries the version and, with `-License`, the license of the
+  build it comes from. It is published as a release asset only, not on `main`.
+- **`Get-ComputerInitialPassword` finds computer accounts still on their creation password.**
+  A computer account created in advance gets its first password from the tool that creates
+  it: ADUC with "Assign this computer account as a pre-Windows 2000 computer" and
+  `net computer /add` set the computer name in lowercase, `dsadd computer` sets none - an
+  empty password that logs on over NTLM. A join replaces it, so the risk is the account that
+  was never joined. The check selects enabled computer accounts without `operatingSystem` and
+  `dNSHostName` and reports `Never set - empty password` (finding), `Unchanged, in use` and
+  `Unchanged, never used` (hints). It reads only and makes no logon attempt.
+- **`Invoke-PasswordSpray -ComputerDefault` tests that default password.** One Kerberos
+  attempt per account, with the name in lowercase, without `$` and cut to 14 characters.
+  With `-Auto` the accounts are the ones `Get-ComputerInitialPassword` reports as unchanged,
+  under the same lockout protection as users; with `-UserList` the names given. Accounts that
+  never had a password set are not tested - they have no Kerberos keys. A hit sets
+  `logonCount` and `lastLogon`, a miss raises `badPwdCount`.
+- **`Invoke-PasswordSpray` sprays NT hashes.** `-NTHash` and `-NTHashList` test an NT hash as
+  the account's RC4 key (Overpass-the-Hash), exactly like a password. A KDC that refuses RC4
+  still checks the RC4 pre-authentication: a wrong hash answers `KDC_ERR_PREAUTH_FAILED`, the
+  right one `KDC_ERR_ETYPE_NOSUPP`. Accounts for which the KDC refuses RC4 whatever the key -
+  Protected Users members among them - are found beforehand and left out, and an
+  `ETYPE_NOSUPP` answer is confirmed with a random wrong hash before the hash is reported as
+  valid. `-UserList` also takes one account name or a comma-separated list.
+- **`Get-adPEASHelp` names every check by its command, and searches.** The Checks section
+  lists each check by the command that runs it, per module, in scan order - read out of
+  `Invoke-adPEAS`, so it cannot list a check the scan does not run. `Get-adPEASHelp -Search
+  <word>` lists the checks and commands whose name, title, module or description match. The
+  command list gained `Get-GPOLinkage`, `Get-LAPSGPOConfig`, `Build-CompletionCache` and the
+  `ConvertFrom-*` decoders.
+- **An encrypted LAPS password names its decryptor.** The blob names the principal it is
+  encrypted for, and that part is readable without any right: `msLAPS-EncryptedPassword` now
+  reads `[Encrypted for CORP\LAPSReader - Updated: ...]` (the SID where the name does not
+  resolve), and each history entry names its own. `Get-LAPSCredentialAccess` puts a
+  `Decryptor` row per principal under each line about passwords it did not open.
+  `Get-LAPSPermissions` lists the decryptor the GPO configures (`ADPasswordEncryptionPrincipal`,
+  Domain Admins by default).
+- **`Get-LAPSCredentialAccess` takes pipeline input.** `Get-DomainComputer | Get-LAPSCredentialAccess`
+  tests the computers piped in, in one run and in batched queries. An empty pipeline tests
+  nothing and says so, rather than falling back to the whole domain.
+
+### Changed
+
+- **gMSA and dMSA no longer list the password readers twice.** The line "Non-privileged
+  password readers: ..." repeated the `msDS-GroupMSAMembership` row, which already shows each
+  reader coloured by its verdict.
+
+### Fixed
+
+- **Delegated LAPS read rights are recognised in every forest.** A LAPS attribute's
+  schemaIDGUID is assigned by the forest that creates it, and adPEAS compared ACEs against a
+  fixed table - where the GUIDs differed, only blanket reads (All Properties, GenericAll)
+  were found. The GUIDs are now read from the schema once per session; `Get-LAPSPermissions`
+  says so when they cannot be read, rather than reporting a clean result.
+  `Set-DomainObject -ExtendedRight ReadLAPSPassword` writes Read Property plus Control Access
+  on the attribute - a confidential attribute stays unreadable with Read Property alone.
+- **A LAPS password the account may decrypt is reported, wherever it was decrypted.**
+  `Get-LAPSCredentialAccess` decides by the bound account's token groups whether it may open
+  a blob: they hold the SID the blob is encrypted for, which a domain controller checks
+  before it hands out the key. Where Windows then did not decrypt it, the computer was only
+  counted on a green note. Such computers are now listed and rated like a password that was
+  read - a finding for an account that is not privileged, expected for one that is - with
+  the reason on each.
+- **LAPS decryption is not tried on a host outside any domain.** Windows requests the key
+  only on a domain member; from a workgroup host every blob failed with
+  `NTE_DECRYPTION_FAILURE`, whoever may open it. The check reads the join status once and
+  names the host as the reason. From a domain member of any domain, a Kerberos session of
+  `Connect-adPEAS` decrypts as the bound account.
+- **A LAPS decryption is no longer credited to the bound account without its groups.**
+  Whether Windows opens a blob depends on the logon session, not on the LDAP bind - a key
+  cached for the Windows user opens it too. When the token groups cannot be read, the
+  encrypted passwords are now counted as not tested instead of decrypted. A failed decryption
+  reports Windows' own error code by name, instead of always "requires domain-joined system".
+- **The encrypted-blob card no longer claims a failed decryption.** On the computer rows of
+  the other checks and in `Show-Object` it described a decryption that was never attempted;
+  it now describes the read right on the blob and who can open it.
+- **A deleted principal is no gMSA reader and no RBCD delegate.** SIDs of the scanned domain
+  that no longer resolve were findings - "non-privileged password access", "still holds the
+  delegation" - though a SID is never issued again. The directory is now asked what such a
+  SID stands for: an account that holds it in `sIDHistory` is judged as that account, and
+  nothing at all is a deleted principal, shown as `<SID> (deleted)` - or, to an account that
+  is not privileged, "deleted, or not visible to this account". gMSA and dMSA list stale
+  readers on a hint line of their own; an RBCD entry of only deleted or inert principals is a
+  note. A SID of another domain stays a finding.
+- **Every directory time is local time, and the report names the offset.** `whenCreated`,
+  `whenChanged` and several FILETIME values (`msLAPS-Updated`, the KeyCredentialLink times)
+  came out in UTC without a marker, beside others in local time, and the BitLocker check
+  printed local time with " UTC" behind it - one card showed the same moment an hour apart.
+  All are local now; the HTML report, the diff report and the session summary name the
+  offset once. Older JSON exports are read back the same way. Protocol times (Kerberos, NTLM,
+  PAC) stay UTC.
+- **`Show-Object` shows a raw binary attribute as one row.** A byte array fetched with `-Raw`
+  vanished when it held two or more zero bytes, and was printed one row per byte otherwise.
+  It is now one `[binary, N bytes]` row, coloured by its triggers - a readable
+  `msDS-ManagedPassword` stays a finding.
+- **A computer account without a password reads "Never set".** With `PASSWD_NOTREQD` and
+  `pwdLastSet` 0, as `dsadd computer` creates it, its `pwdLastSet` row read "Never - must
+  change at next logon", a user's box.
+
 ## [2.10.2] - 2026-11-15
 
 ### Added
