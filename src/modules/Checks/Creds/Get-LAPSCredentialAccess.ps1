@@ -110,6 +110,11 @@ function Get-LAPSCredentialAccess {
     as Get-DomainComputer takes them). Without it every computer in the domain is tested.
     A name that matches no computer is reported as such.
 
+    Takes the pipeline as well: strings, or objects with a distinguishedName - what every
+    Get-Domain* function returns. The check runs once for everything piped in, not once per
+    computer; distinguished names are queried in batches. An empty pipeline tests nothing -
+    it does not fall back to the whole domain.
+
     .PARAMETER Domain
     Target domain (optional, uses current domain if not specified)
 
@@ -129,6 +134,10 @@ function Get-LAPSCredentialAccess {
     Get-LAPSCredentialAccess -Identity "WS001", "SRV-FILE01"
     Tests two computers only, the same way the scan tests all of them.
 
+    .EXAMPLE
+    Get-DomainComputer -LDAPFilter "(operatingSystem=*Server*)" | Get-LAPSCredentialAccess
+    Tests the servers only, in one section.
+
     .NOTES
     Category: Creds
     Author: Alexander Sturz (@_61106960_)
@@ -145,17 +154,34 @@ function Get-LAPSCredentialAccess {
         [Parameter(Mandatory=$false)]
         [System.Management.Automation.PSCredential]$Credential,
 
-        # Last, so the positions the other three had are unchanged.
-        [Parameter(Mandatory=$false)]
+        # Last, so the positions the other three had are unchanged. A piped computer binds
+        # its distinguishedName: exact, and the form the check can query in batches.
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [Alias('DistinguishedName')]
         [ValidateNotNullOrEmpty()]
         [string[]]$Identity
     )
 
     begin {
         Write-Log "[Get-LAPSCredentialAccess] Starting check"
+
+        # Filled by process{}, used once by end{}. Each name once, in the order given.
+        $givenIdentities = New-Object System.Collections.Generic.List[string]
+        $seenIdentity = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $identityGiven = $false
     }
 
     process {
+        # Collects and nothing else. Run from process{} the check would print its whole
+        # section, and run every query, once per piped computer.
+        if (-not $PSBoundParameters.ContainsKey('Identity')) { return }
+        $identityGiven = $true
+        foreach ($one in @($Identity)) {
+            if ($seenIdentity.Add([string]$one)) { $givenIdentities.Add([string]$one) }
+        }
+    }
+
+    end {
         try {
             # The connection parameters, and nothing else. -Identity is this check's own:
             # splatting @PSBoundParameters on would hand it to Ensure-LDAPConnection and
@@ -173,6 +199,16 @@ function Get-LAPSCredentialAccess {
             }
 
             Show-SubHeader "Testing LAPS password read access for current user..." -ObjectType "LAPSCredential"
+
+            # ExpectingInput as well as the flag: an empty pipeline binds nothing, so the flag
+            # alone cannot tell "@() | Get-LAPSCredentialAccess" from a call without
+            # -Identity - and the difference is between testing nothing and testing the whole
+            # domain (Invoke-ShareHunt measured it on Windows PowerShell 5.1: process{} never
+            # runs, ExpectingInput is still true).
+            if (-not $identityGiven -and $PSCmdlet.MyInvocation.ExpectingInput) {
+                Show-Line "No computer came down the pipeline - nothing was tested" -Class "Note"
+                return
+            }
 
             # One definition of "does this domain run LAPS", shared with
             # Get-LAPSConfiguration and Get-LAPSPermissions and cached for the session.
@@ -199,25 +235,56 @@ function Get-LAPSCredentialAccess {
             $offDomainCount = 0
 
             # -Identity narrows every query of this check to those computers; without it
-            # each query runs once, domain-wide. One query per identity, ANDed with the
-            # presence filter by Get-DomainObject, and a computer two identities match
-            # (wildcards) is kept once. $identityHits records which identity found anything.
-            # Assigned, not taken from an if-expression: its output goes through the
-            # pipeline, which unrolls @($null) to a bare $null - and foreach over $null runs
-            # no query at all.
-            $identityScopes = @($null)
-            if ($PSBoundParameters.ContainsKey('Identity')) { $identityScopes = @($Identity) }
+            # each query runs once, domain-wide. A name gets a query of its own, ANDed with
+            # the presence filter by Get-DomainObject. Distinguished names - what a piped
+            # computer binds - go in batches, one OR filter per $dnBatchSize of them: a pipe of
+            # a few hundred computers is otherwise three queries per computer. A computer two
+            # identities match (wildcards) is kept once. $identityHits records which identity
+            # found anything. A distinguished name with a wildcard keeps a query of its own:
+            # in the OR filter its * would be escaped into a literal.
+            # Assigned, not taken from an if-expression, whose output would go through the
+            # pipeline and come back as something other than this array.
+            $identityList = @($givenIdentities)
+            $dnBatchSize = 50
+            $dnKey = { param([string]$DN) ($DN -replace ',\s+', ',').ToLowerInvariant() }
+            $dnFilter = {
+                param([string[]]$DNs)
+                '(|' + (@($DNs | ForEach-Object { "(distinguishedName=$(Escape-LDAPFilterDN -DistinguishedName $_))" }) -join '') + ')'
+            }
+            $dnToIdentity = @{}
+            $queryScopes = @(@{})
+            if ($identityGiven) {
+                $queryScopes = @()
+                $dnIdentities = @()
+                foreach ($one in $identityList) {
+                    if ($one -match '^CN=[^,]+,.*DC=' -and $one -notmatch '\*') {
+                        $dnIdentities += $one
+                        $dnToIdentity[(& $dnKey $one)] = $one
+                    } else {
+                        $queryScopes += @{ Identity = $one }
+                    }
+                }
+                for ($batchStart = 0; $batchStart -lt $dnIdentities.Count; $batchStart += $dnBatchSize) {
+                    $batchEnd = [Math]::Min($batchStart + $dnBatchSize, $dnIdentities.Count) - 1
+                    $queryScopes += @{ DNs = @($dnIdentities[$batchStart..$batchEnd]) }
+                }
+            }
             $identityHits = @{}
             $getLAPSComputers = {
                 param([string]$Filter, [switch]$AsRaw)
                 $seenDN = @{}
-                foreach ($scope in $identityScopes) {
+                foreach ($scope in $queryScopes) {
                     $query = @{ LDAPFilter = $Filter }
-                    if ($scope) { $query['Identity'] = $scope }
+                    if ($scope.ContainsKey('Identity')) { $query['Identity'] = $scope.Identity }
+                    if ($scope.ContainsKey('DNs')) { $query['LDAPFilter'] = "(&$Filter$(& $dnFilter $scope.DNs))" }
                     if ($AsRaw) { $query['Raw'] = $true }
                     foreach ($found in @(Get-DomainComputer @query @connectionParams)) {
-                        if ($scope) { $identityHits[$scope] = $true }
                         $foundDN = [string]$found.distinguishedName
+                        if ($scope.ContainsKey('Identity')) { $identityHits[$scope.Identity] = $true }
+                        if ($scope.ContainsKey('DNs') -and $foundDN) {
+                            $hitKey = & $dnKey $foundDN
+                            if ($dnToIdentity.ContainsKey($hitKey)) { $identityHits[$dnToIdentity[$hitKey]] = $true }
+                        }
                         if ($foundDN) {
                             if ($seenDN.ContainsKey($foundDN)) { continue }
                             $seenDN[$foundDN] = $true
@@ -226,6 +293,7 @@ function Get-LAPSCredentialAccess {
                     }
                 }
             }
+
             # The presence filter is ACL-gated, so a returned object is normally a readable
             # one. Trust it only as far as the value that actually arrives: an object that
             # comes back without the attribute is not a readable password, and counting it
@@ -398,12 +466,24 @@ function Get-LAPSCredentialAccess {
             # A name that matched nothing in any query is either no computer at all or a
             # computer with no LAPS password this account can see. Only the first deserves
             # a line of its own; the second is what the lines below already say.
+            # Distinguished names are asked in their batches here too.
             $missingIdentities = @()
-            if ($PSBoundParameters.ContainsKey('Identity')) {
-                foreach ($scope in $identityScopes) {
-                    if ($identityHits.ContainsKey($scope)) { continue }
-                    $existing = @(Get-DomainComputer -Identity $scope -Properties 'distinguishedName' @connectionParams)
-                    if ($existing.Count -eq 0) { $missingIdentities += $scope }
+            if ($identityGiven) {
+                foreach ($scope in $queryScopes) {
+                    if ($scope.ContainsKey('DNs')) {
+                        $unhit = @($scope.DNs | Where-Object { -not $identityHits.ContainsKey($_) })
+                        if ($unhit.Count -eq 0) { continue }
+                        $present = @{}
+                        foreach ($found in @(Get-DomainComputer -LDAPFilter (& $dnFilter $unhit) -Properties 'distinguishedName' @connectionParams)) {
+                            $presentKey = & $dnKey ([string]$found.distinguishedName)
+                            if ($dnToIdentity.ContainsKey($presentKey)) { $present[$dnToIdentity[$presentKey]] = $true }
+                        }
+                        $missingIdentities += @($unhit | Where-Object { -not $present.ContainsKey($_) })
+                    } else {
+                        if ($identityHits.ContainsKey($scope.Identity)) { continue }
+                        $existing = @(Get-DomainComputer -Identity $scope.Identity -Properties 'distinguishedName' @connectionParams)
+                        if ($existing.Count -eq 0) { $missingIdentities += $scope.Identity }
+                    }
                 }
             }
             foreach ($missing in $missingIdentities) {
@@ -443,7 +523,7 @@ function Get-LAPSCredentialAccess {
             } elseif ($offDomainCount -gt 0) {
                 # As above: passwords this account may open, not tried on this host.
                 Write-Log "[Get-LAPSCredentialAccess] Nothing decrypted, $offDomainCount blob(s) with the decryptor group held, host in no domain"
-            } elseif (@($missingIdentities).Count -gt 0 -and @($missingIdentities).Count -eq @($identityScopes).Count) {
+            } elseif (@($missingIdentities).Count -gt 0 -and @($missingIdentities).Count -eq $identityList.Count) {
                 # None of the names is a computer, so nothing was tested at all.
                 Write-Log "[Get-LAPSCredentialAccess] No given identity matches a computer"
             } elseif ($untestedEncryptedCount -gt 0) {
@@ -491,9 +571,6 @@ function Get-LAPSCredentialAccess {
             Write-Log "[Get-LAPSCredentialAccess] Error: $_" -Level Error
             Show-Line "Error during check - LAPS password access could not be evaluated: $_" -Class Finding
         }
-    }
-
-    end {
         Write-Log "[Get-LAPSCredentialAccess] Check completed"
     }
 }

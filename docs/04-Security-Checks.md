@@ -271,6 +271,10 @@ Get-LAPSCredentialAccess
 
 # Only these computers, tested the same way
 Get-LAPSCredentialAccess -Identity "WS001", "SRV-FILE01"
+
+# Or piped in: one section for all of them, the names queried in batches.
+# An empty pipeline tests nothing rather than the whole domain.
+Get-DomainComputer -LDAPFilter "(operatingSystem=*Server*)" | Get-LAPSCredentialAccess
 ```
 
 ---
