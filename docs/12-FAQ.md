@@ -118,13 +118,13 @@ Connect-adPEAS -Domain "contoso.com" -Username "john.doe" -Password "pass" -Forc
 
 ### How do I use NTLM without modifying Kerberos tickets?
 
-Use `-ForceNTLM` for NTLM Impersonation (similar to `runas /netonly`):
+Use `-ForceNTLM`, which binds the LDAP connection with NTLM directly - nothing is impersonated and no logon is created:
 
 ```powershell
 Connect-adPEAS -Domain "contoso.com" -Username "john.doe" -Password "pass" -ForceNTLM
 ```
 
-This keeps your existing Kerberos tickets intact and uses NTLM for network authentication.
+This keeps your existing Kerberos tickets intact. Windows itself does not see the credential: whatever Windows requests on its own - the key to an encrypted LAPS password, for instance - it requests with the logon's own credentials. See [NTLM Bind](03-Authentication-Methods.md#ntlm-bind--forcentlm).
 
 ---
 

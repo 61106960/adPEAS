@@ -94,9 +94,12 @@ function Get-LAPSCredentialAccess {
     - Reports which computers' passwords are accessible
     - Reports separately the computers whose decryptor group the bound account is in but
       whose blob Windows did not open, with Windows' error code
-    - Decrypts only where the bound account's groups name the blob's decryptor. Whether a
-      blob opens does not depend on the bound account, so where its groups cannot be read
-      the encrypted passwords are counted as not tested rather than decrypted
+    - Decrypts only where the bound account's groups name the blob's decryptor. A blob can
+      open without the bound account - from the Windows key cache, or with the logon's own
+      credentials after an NTLM bind - so where its groups cannot be read the encrypted
+      passwords are counted as not tested rather than decrypted
+    - Does not decrypt on a host outside any domain: Windows requests the key only on a
+      domain member, so these blobs are reported on a line of their own
 
     Related Checks:
     - Get-LAPSConfiguration (Computer): Is LAPS deployed?
@@ -191,6 +194,9 @@ function Get-LAPSCredentialAccess {
             # Encrypted passwords the check could not test: the bound account's token groups
             # were unreadable, and without them nothing ties a blob to that account.
             $untestedEncryptedCount = 0
+            # Blobs this account may open that were not tried: this host is in no domain, and
+            # Windows requests the key only on a domain member.
+            $offDomainCount = 0
 
             # -Identity narrows every query of this check to those computers; without it
             # each query runs once, domain-wide. One query per identity, ANDed with the
@@ -220,7 +226,6 @@ function Get-LAPSCredentialAccess {
                     }
                 }
             }
-
             # The presence filter is ACL-gated, so a returned object is normally a readable
             # one. Trust it only as far as the value that actually arrives: an object that
             # comes back without the attribute is not a readable password, and counting it
@@ -282,11 +287,22 @@ function Get-LAPSCredentialAccess {
                     if (@($encryptedComputers).Count -gt 0) {
                         Write-Log "[Get-LAPSCredentialAccess] Found $($encryptedComputers.Count) computers with encrypted LAPS"
 
+                        # On a host in a workgroup Windows asks no DC for the key, so a blob
+                        # fails there whoever may open it - measured 2026-11-17: one blob and
+                        # one authorized account, decrypted from a member of an unrelated
+                        # domain, no connection at all from a workgroup host, decrypted from
+                        # that host once it was joined. Each attempt also costs its time, for
+                        # every computer this account may open. Asked once; $null (status
+                        # unreadable) decrypts as before.
+                        $hostIsDomainMember = Test-adPEASHostDomainMember
+
                         # Step 3, 4 & 5: Parse Target SID, check authorization, decrypt if authorized
                         $authorizedCount = 0
                         foreach ($comp in $encryptedComputers) {
                             $readable = $false
-                            $decryptFailed = $false
+                            # This account may open the blob and it did not come out:
+                            # decryption failed, or was not tried outside a domain.
+                            $authorizedUnread = $false
                             $blob = $comp.'msLAPS-EncryptedPassword'
                             if ($blob) {
                                 # Parse metadata only (no decryption attempt) - very fast, <1ms
@@ -295,23 +311,29 @@ function Get-LAPSCredentialAccess {
                                     # Check if Target SID is in our token groups (local check)
                                     if ($myTokenGroups -contains $lapsInfo.TargetSID) {
                                         $authorizedCount++
-                                        # Decrypt directly - no second LDAP query needed!
-                                        $decryptionError = $null
-                                        $readable = Resolve-LAPSEncryptedComputer -Computer $comp -DecryptionError ([ref]$decryptionError)
-                                        if ($readable) {
-                                            $readableComputers += $comp
+                                        if ($hostIsDomainMember -eq $false) {
+                                            $authorizedUnread = $true
+                                            $offDomainCount++
+                                            Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, not decrypted outside a domain: '$($comp.distinguishedName)'"
                                         } else {
-                                            # The token groups say this account may open
-                                            # the blob; the decryption did not. A blob that
-                                            # failed here was counted with the ones this
-                                            # account may not read, so the line said "may
-                                            # not read" to an account that may.
-                                            $decryptFailed = $true
-                                            $decryptFailures += [PSCustomObject]@{
-                                                Computer = [string]$comp.distinguishedName
-                                                Reason   = $decryptionError
+                                            # Decrypt directly - no second LDAP query needed!
+                                            $decryptionError = $null
+                                            $readable = Resolve-LAPSEncryptedComputer -Computer $comp -DecryptionError ([ref]$decryptionError)
+                                            if ($readable) {
+                                                $readableComputers += $comp
+                                            } else {
+                                                # The token groups say this account may open
+                                                # the blob; the decryption did not. A blob that
+                                                # failed here was counted with the ones this
+                                                # account may not read, so the line said "may
+                                                # not read" to an account that may.
+                                                $authorizedUnread = $true
+                                                $decryptFailures += [PSCustomObject]@{
+                                                    Computer = [string]$comp.distinguishedName
+                                                    Reason   = $decryptionError
+                                                }
+                                                Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, decryption failed for '$($comp.distinguishedName)': $decryptionError"
                                             }
-                                            Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, decryption failed for '$($comp.distinguishedName)': $decryptionError"
                                         }
                                     }
                                 }
@@ -321,7 +343,7 @@ function Get-LAPSCredentialAccess {
                             # were counted nowhere - so a domain on encrypted LAPS where
                             # nothing decrypts ended on "No readable LAPS passwords found",
                             # in green, with no mention that there were passwords at all.
-                            if (-not $readable -and -not $decryptFailed) {
+                            if (-not $readable -and -not $authorizedUnread) {
                                 $withheldCount++
                                 Write-Log "[Get-LAPSCredentialAccess] Encrypted LAPS password not readable for '$($comp.distinguishedName)'"
                             }
@@ -331,10 +353,13 @@ function Get-LAPSCredentialAccess {
                     }
                 } else {
                     # No token groups, so nothing says whether the bound account may open
-                    # these blobs - and a decryption does not say it either. Whether
-                    # NCryptUnprotectSecret opens a blob does not depend on the account adPEAS
-                    # is bound as: measured 2026-11-16, a session bound as a standard user
-                    # (simple bind) decrypted a blob protected for a group that user is not in.
+                    # these blobs - and a decryption does not say it either. A blob can open
+                    # without the bound account: measured 2026-11-16, a session bound as a
+                    # standard user (simple bind) decrypted a blob protected for a group that
+                    # user is not in. The key came from the Windows user's own key cache,
+                    # without asking a DC (measured 2026-11-17). Windows requests a key with
+                    # the logon session's credentials - the adPEAS ticket after a Kerberos
+                    # bind, the logon's own after an NTLM bind.
                     #
                     # This branch used to decrypt anyway, on the premise that the decryption
                     # is "the only test there is", and reported every blob that opened as a
@@ -415,6 +440,9 @@ function Get-LAPSCredentialAccess {
                 # Not "no readable passwords": this account may read them, and only the
                 # decryption on this machine failed. The lines below say what was tested.
                 Write-Log "[Get-LAPSCredentialAccess] Nothing decrypted, $(@($decryptFailures).Count) failure(s) with the decryptor group held"
+            } elseif ($offDomainCount -gt 0) {
+                # As above: passwords this account may open, not tried on this host.
+                Write-Log "[Get-LAPSCredentialAccess] Nothing decrypted, $offDomainCount blob(s) with the decryptor group held, host in no domain"
             } elseif (@($missingIdentities).Count -gt 0 -and @($missingIdentities).Count -eq @($identityScopes).Count) {
                 # None of the names is a computer, so nothing was tested at all.
                 Write-Log "[Get-LAPSCredentialAccess] No given identity matches a computer"
@@ -439,16 +467,24 @@ function Get-LAPSCredentialAccess {
 
             # The bound account is in the group the blob names, so the directory's answer is
             # "readable"; Windows did not open it. The reason is Windows' own code and
-            # nothing more - no cause is guessed. Whether a blob opens does not depend on
-            # the account adPEAS is bound as (measured 2026-11-16, see the branch without
-            # token groups above), so neither that account nor the bind method is a cause
-            # to name.
+            # nothing more - no cause is guessed. The bound account is none: the token
+            # groups already say it may open the blob.
             if (@($decryptFailures).Count -gt 0) {
                 Show-Line "$(@($decryptFailures).Count) computer(s) name a decryptor group this account is in, but Windows did not decrypt them" -Class "Note"
                 foreach ($reasonGroup in @($decryptFailures | Group-Object -Property Reason)) {
                     $reasonText = if ($reasonGroup.Name) { $reasonGroup.Name } else { 'no reason given' }
                     Show-KeyValue "Decryption error" "$reasonText - $($reasonGroup.Count) computer(s)"
                 }
+            }
+
+            # A cause of a failed decryption that is measured, so it is named - in a row of
+            # its own, the way the error codes above are. The line says what happened, the
+            # row why, and neither runs past a terminal. Run from a domain member;
+            # membership of the scanned domain is not needed, and with a Kerberos session
+            # Windows requests the key with its ticket.
+            if ($offDomainCount -gt 0) {
+                Show-Line "$offDomainCount computer(s) name a decryptor group this account is in, not tried on this host" -Class "Note"
+                Show-KeyValue "Not tried" "This host is not domain-joined - Windows requests the key only on a domain member"
             }
 
         } catch {

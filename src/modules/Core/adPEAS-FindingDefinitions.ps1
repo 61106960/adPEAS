@@ -14868,7 +14868,7 @@ $acl.Access | Where-Object {
             "1. Attacker reads msLAPS-EncryptedPassword, which the ACL allows, and keeps the blobs"
             "2. Parses the target SID out of them to learn which principal can decrypt"
             "3. Looks for a path into that principal, by default Domain Admins"
-            "4. Opens every blob collected earlier, offline, as soon as that path exists"
+            "4. Opens every blob collected earlier as soon as that path exists - from any domain member, where Windows requests the key from a DC"
         )
         Remediation = @(
             "Review the read right rather than the encryption: an account that cannot decrypt has no use for the attribute"

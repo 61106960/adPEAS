@@ -14,7 +14,12 @@ function ConvertFrom-LAPSEncryptedPassword {
 
     2. Decrypt the password (only if authorized):
        - Calls NCryptUnprotectSecret Windows API
-       - DC validates if caller is member of authorized group
+       - Windows requests the key from a DC with the credentials of the Windows logon
+         session. A Kerberos session of Connect-adPEAS imports its ticket there, so the key
+         is requested as the bound account; an NTLM session places nothing there, and
+         Windows uses the logon's own credentials. It keeps the key in a per-user cache that
+         opens later blobs without asking. It does so only on a domain member - of any
+         domain; on a host in a workgroup it asks no DC and the decryption fails
        - Returns cleartext password and account name
 
     The encrypted blob structure:
@@ -38,8 +43,9 @@ function ConvertFrom-LAPSEncryptedPassword {
     $lapsInfo.TargetSID
 
     .EXAMPLE
-    # Decrypt password (requires authorization). Whether it opens does not depend on the
-    # account adPEAS is bound as: Windows obtains the key itself.
+    # Decrypt password (requires authorization). Windows obtains the key itself, only on a
+    # domain member, with the logon session's credentials - the adPEAS ticket where the
+    # session is Kerberos.
     $computer = Get-DomainComputer -Identity "WS001" -Raw
     $lapsInfo = ConvertFrom-LAPSEncryptedPassword -Blob $computer.'msLAPS-EncryptedPassword' -Decrypt
     $lapsInfo.Password
@@ -330,6 +336,15 @@ function ConvertFrom-LAPSEncryptedPassword {
                         }
                         $result.DecryptionError = if ($errorName) { "$errorName ($errorCode)" } else { "NCryptUnprotectSecret error $errorCode" }
                     }
+
+                    # The one cause that is measured, and only where it holds: on a host in a
+                    # workgroup Windows asks no DC for the key, so nothing opens there but
+                    # what its key cache already holds (measured 2026-11-17 - same blob and
+                    # account, no connection from the workgroup host, decrypted once the
+                    # host was joined to an unrelated domain).
+                    if ((Test-adPEASHostDomainMember) -eq $false) {
+                        $result.DecryptionError = "$($result.DecryptionError) - this host is not domain-joined, and Windows only requests the key on a domain member"
+                    }
                 }
             }
 
@@ -342,6 +357,85 @@ function ConvertFrom-LAPSEncryptedPassword {
     }
 }
 
+
+function Get-adPEASHostJoinStatus {
+    <#
+    .SYNOPSIS
+    The join status of the host adPEAS runs on, as NetGetJoinInformation reports it.
+
+    .DESCRIPTION
+    Local and without network or WMI. Kept apart from Test-adPEASHostDomainMember so the
+    mapping of the status can be tested without the API.
+
+    .OUTPUTS
+    [int] NETSETUP_JOIN_STATUS - 0 unknown, 1 unjoined, 2 workgroup, 3 domain - or $null
+    when the call fails.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $netJoinSignature = @"
+using System;
+using System.Runtime.InteropServices;
+
+public class adPEASNetJoin
+{
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern int NetGetJoinInformation(string server, out IntPtr nameBuffer, out int bufferType);
+
+    [DllImport("netapi32.dll")]
+    public static extern int NetApiBufferFree(IntPtr buffer);
+}
+"@
+
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'adPEASNetJoin').Type) {
+            Add-Type -TypeDefinition $netJoinSignature -Language CSharp -ErrorAction Stop
+        }
+        $nameBuffer = [IntPtr]::Zero
+        $bufferType = 0
+        $status = [adPEASNetJoin]::NetGetJoinInformation($null, [ref]$nameBuffer, [ref]$bufferType)
+        if ($nameBuffer -ne [IntPtr]::Zero) { $null = [adPEASNetJoin]::NetApiBufferFree($nameBuffer) }
+        if ($status -ne 0) {
+            Write-Log "[Get-adPEASHostJoinStatus] NetGetJoinInformation failed: $status"
+            return $null
+        }
+        return [int]$bufferType
+    } catch {
+        Write-Log "[Get-adPEASHostJoinStatus] Join status not readable: $_"
+        return $null
+    }
+}
+
+function Test-adPEASHostDomainMember {
+    <#
+    .SYNOPSIS
+    Whether the host adPEAS runs on is a member of a domain - of any domain.
+
+    .DESCRIPTION
+    Windows obtains the key to a Windows LAPS blob from a DC only on a domain member. On a
+    host in a workgroup NCryptUnprotectSecret asks no DC and fails with
+    NTE_DECRYPTION_FAILURE - measured 2026-11-17 with one blob and one authorized account:
+    a member of an unrelated domain decrypted it, a workgroup host opened no connection, and
+    the same host decrypted it once joined. Membership of the domain the blob comes from is
+    not needed.
+
+    .OUTPUTS
+    $true for a domain member, $false for a host in a workgroup or in none, $null when the
+    join status cannot be read - the caller then decides as before.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $joinStatus = Get-adPEASHostJoinStatus
+    if ($null -eq $joinStatus) { return $null }
+    switch ([int]$joinStatus) {
+        3 { return $true }
+        1 { return $false }
+        2 { return $false }
+        default { return $null }
+    }
+}
 
 function Parse-CMSEnvelopedData {
     <#
