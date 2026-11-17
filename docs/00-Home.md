@@ -60,7 +60,7 @@ adPEAS (Active Directory Privilege Escalation Awesome Scripts) is a PowerShell-b
 
 ## Release Versions
 
-adPEAS is distributed in four versions:
+adPEAS is distributed in four script versions and as an executable:
 
 | Version    | File               | Description                 |
 | ---------- | ------------------ | --------------------------- |
@@ -68,6 +68,7 @@ adPEAS is distributed in four versions:
 | Minimized  | `adPEAS_min.ps1`   | Comments removed            |
 | Ultra      | `adPEAS_ultra.ps1` | Fully compressed            |
 | Obfuscated | `adPEAS_obf.ps1`   | GZip + XOR + Base64 encoded |
+| Executable | `adPEAS.exe`       | PowerShell prompt with `adPEAS.ps1` loaded - release download only |
 
 ---
 

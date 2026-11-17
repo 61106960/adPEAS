@@ -314,6 +314,7 @@ Disconnect-adPEAS
 | `adPEAS_min.ps1` | Regular use |
 | `adPEAS_ultra.ps1` | Size-constrained environments |
 | `adPEAS_obf.ps1` | Smallest size, obfuscated transfer |
+| `adPEAS.exe` | A prompt with adPEAS loaded, or one command and exit - from the releases only |
 
 ---
 

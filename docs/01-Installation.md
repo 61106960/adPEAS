@@ -36,7 +36,7 @@ adPEAS does **not** require:
 
 ### Option 1: GitHub Releases (Recommended)
 
-Download a stable build from the [GitHub Releases](https://github.com/61106960/adPEAS/releases) page. All four variants are attached to every release as individual assets, so you can take just the one you need without cloning. A release build carries a clean version string, which is what you want when the version has to be reproducible or citable in a report.
+Download a stable build from the [GitHub Releases](https://github.com/61106960/adPEAS/releases) page. All four script variants and `adPEAS.exe` are attached to every release as individual assets, so you can take just the one you need without cloning. A release build carries a clean version string, which is what you want when the version has to be reproducible or citable in a report. The releases are the only place to get `adPEAS.exe`: it is built with the scripts but not kept on `main`.
 
 ### Option 2: Clone Repository
 
@@ -67,6 +67,7 @@ Choose the version that best fits your needs:
 | `adPEAS_min.ps1` | ~5.5 MB | Regular use with smaller footprint |
 | `adPEAS_ultra.ps1` | ~5 MB | Minimal size, no comments |
 | `adPEAS_obf.ps1` | ~1.2 MB | Smallest size, obfuscated for transfer |
+| `adPEAS.exe` | ~8.2 MB | A PowerShell prompt with adPEAS already loaded (release download) |
 
 ---
 
@@ -82,6 +83,22 @@ Import-Module .\adPEAS.ps1
 Get-Command Invoke-adPEAS
 ```
 
+### adPEAS.exe
+
+The executable carries `adPEAS.ps1` and loads it at start - there is nothing to import.
+
+```powershell
+# A PowerShell prompt with adPEAS loaded: tab completion, history and Get-Help as usual
+.\adPEAS.exe
+
+# One command, then exit - the arguments are taken as by powershell.exe -Command
+.\adPEAS.exe Invoke-adPEAS -Domain contoso.com -UseWindowsAuth
+
+# Several commands in one session
+.\adPEAS.exe "Connect-adPEAS -Domain contoso.com -Username john.doe; Invoke-adPEAS"
+```
+
+It is the PowerShell console host - the one `powershell.exe` is - running in its own process, so adPEAS behaves exactly as after `Import-Module .\adPEAS.ps1`, and the exit code of the last command is the executable's. It needs Windows PowerShell 5.1, which every supported Windows version has (Windows 10/11, Windows Server 2016 and later), and it starts without a PowerShell profile.
 
 ---
 
@@ -144,7 +161,7 @@ cd adPEAS
 .\Build-Release.ps1
 ```
 
-This produces all four variants in the repository root:
+This produces all four variants and the executable in the repository root:
 
 | File | Description |
 |------|-------------|
@@ -152,8 +169,9 @@ This produces all four variants in the repository root:
 | `adPEAS_min.ps1` | Minimized, no comments |
 | `adPEAS_ultra.ps1` | Ultra-compressed, no comments |
 | `adPEAS_obf.ps1` | Obfuscated (GZip + XOR + Base64) |
+| `adPEAS.exe` | Console executable carrying `adPEAS.ps1` |
 
-Requires Windows PowerShell 5.1 and no additional dependencies.
+Requires Windows PowerShell 5.1 and no additional dependencies - the executable is compiled with the C# compiler that ships with the .NET Framework.
 
 ---
 
@@ -177,7 +195,7 @@ The build output confirms the embedding:
 [Build]     Valid until: 2027-06-30
 ```
 
-All four output variants (`adPEAS.ps1`, `adPEAS_min.ps1`, `adPEAS_ultra.ps1`, `adPEAS_obf.ps1`) will contain the embedded license.
+All four output variants (`adPEAS.ps1`, `adPEAS_min.ps1`, `adPEAS_ultra.ps1`, `adPEAS_obf.ps1`) will contain the embedded license, and so will `adPEAS.exe`, which carries `adPEAS.ps1` from the same build.
 
 ### Runtime License
 

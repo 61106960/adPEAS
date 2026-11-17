@@ -67,8 +67,9 @@ No ActiveDirectory module, RSAT, or external PowerShell modules required.
 | `adPEAS_min.ps1` | ~5.5 MB | Regular use with smaller footprint |
 | `adPEAS_ultra.ps1` | ~5 MB | Minimal size, no comments |
 | `adPEAS_obf.ps1` | ~1.2 MB | Smallest size, obfuscated for transfer |
+| `adPEAS.exe` | ~8.2 MB | A PowerShell prompt with adPEAS already loaded - release download only |
 
-All four versions are functionally identical. Choose based on your deployment scenario.
+All of them are functionally identical. Choose based on your deployment scenario. `adPEAS.exe` is a console executable carrying `adPEAS.ps1`; it is attached to every [GitHub Release](https://github.com/61106960/adPEAS/releases) but not kept on `main` - see [Installation](docs/01-Installation.md#adpeasexe).
 
 ```powershell
 # Clone the repository
@@ -86,7 +87,7 @@ cd adPEAS
 .\Build-Release.ps1
 ```
 
-This produces all four variants (`adPEAS.ps1`, `adPEAS_min.ps1`, `adPEAS_ultra.ps1`, `adPEAS_obf.ps1`) in the repository root. Requires Windows PowerShell 5.1 and no additional dependencies.
+This produces all four variants (`adPEAS.ps1`, `adPEAS_min.ps1`, `adPEAS_ultra.ps1`, `adPEAS_obf.ps1`) and `adPEAS.exe` in the repository root. Requires Windows PowerShell 5.1 and no additional dependencies - the executable is compiled with the C# compiler that ships with the .NET Framework.
 
 ---
 
