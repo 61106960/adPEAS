@@ -5990,6 +5990,48 @@ Set-GPPermission -Name 'GPO_NAME' -TargetName 'Authenticated Users' -TargetType 
         )
     }
 
+    # Get-LAPSCredentialAccess puts lapsDecryption on a computer whose encrypted password the
+    # bound account may decrypt and that was not decrypted on the scanning host.
+    'LAPS_PASSWORD_DECRYPTABLE' = @{
+        Title = "Encrypted LAPS Password Decryptable by This Account"
+        Risk = "Finding"
+        BaseScore = 55
+        Description = "The account this scan runs as is in the group this computer's Windows LAPS password is encrypted for - its token groups hold the SID the blob names, which is exactly what a domain controller checks before it hands out the key. It can therefore read the password: the scan only did not take the last step on this host. The row says why - Windows' own error code, or a scanning host that is in no domain, where Windows requests no key at all. From a domain member of any domain, a Kerberos session of this account decrypts it."
+        Impact = @(
+            "The account can obtain the local administrator password of this computer"
+            "The password gives local administrator access, and with it the credentials cached on the machine"
+            "That the scan did not decrypt it here does not limit the account - only the host the scan ran on"
+        )
+        Attack = @(
+            "1. Read msLAPS-EncryptedPassword, which the account may read"
+            "2. Decrypt it on any domain member, with this account's credentials in the logon session"
+            "3. Log on to the computer as its local administrator"
+        )
+        Remediation = @(
+            "Review who is in the group ADPasswordEncryptionPrincipal names - by default Domain Admins - and keep it as small as the password deserves"
+            "Grant the read right on msLAPS-EncryptedPassword only to accounts that are meant to decrypt it"
+            "Expected for an administrative account: then this is the access the account is meant to have"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "Show the decryptor group and the password the account can read"
+                Command = "Get-LapsADPassword -Identity 'COMPUTER_NAME' | Select-Object ComputerName, Source, DecryptionStatus, AuthorizedDecryptor"
+            }
+        )
+        References = @(
+            @{ Title = "Windows LAPS password encryption - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-concepts-overview" }
+            @{ Title = "Get-LapsADPassword - Microsoft"; Url = "https://learn.microsoft.com/en-us/powershell/module/laps/get-lapsadpassword" }
+        )
+        Tools = @("LAPSToolkit")
+        MITRE = "T1552.004"
+        Triggers = @(
+            @{ Attribute = 'lapsDecryption'; Severity = 'Finding' }
+            # A privileged account is meant to hold it - the same rule as for a password
+            # that was read (LAPS_PASSWORD_READABLE).
+            @{ Attribute = 'lapsDecryption'; Custom = 'laps_read_is_expected'; Severity = 'Hint'; SeverityOnly = $true }
+        )
+    }
+
     'BITLOCKER_KEY_READABLE' = @{
         Title = "BitLocker Recovery Key Readable"
         Risk = "Hint"

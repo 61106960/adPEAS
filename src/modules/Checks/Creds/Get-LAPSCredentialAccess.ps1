@@ -1,3 +1,45 @@
+function Convert-LAPSRawComputer {
+    <#
+    .SYNOPSIS
+    Converts every attribute of a computer from a -Raw query the way an ordinary query does.
+
+    .DESCRIPTION
+    A -Raw query answers every attribute as LDAP sends it, and a card showed them so -
+    "userAccountControl: 4096", "pwdLastSet: 133839533787743374". Every attribute but the
+    ones named goes through ConvertFrom-LDAPAttribute, the conversion each object of a normal
+    query gets.
+
+    .PARAMETER Computer
+    The computer object; converted in place.
+
+    .PARAMETER Except
+    Attributes to leave as they are - the caller has its own use for them.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Computer,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Except = @()
+    )
+
+    foreach ($property in @($Computer.PSObject.Properties)) {
+        if ($Except -icontains $property.Name) { continue }
+        try {
+            $converted = ConvertFrom-LDAPAttribute -Name $property.Name -Value $property.Value
+        } catch {
+            Write-Log "[Convert-LAPSRawComputer] Could not convert $($property.Name): $_"
+            continue
+        }
+        $Computer.PSObject.Properties.Remove($property.Name)
+        if (-not $converted) { continue }
+        foreach ($convertedName in $converted.Keys) {
+            $Computer | Add-Member -NotePropertyName $convertedName -NotePropertyValue $converted[$convertedName] -Force
+        }
+    }
+}
+
 function Resolve-LAPSEncryptedComputer {
     <#
     .SYNOPSIS
@@ -52,20 +94,7 @@ function Resolve-LAPSEncryptedComputer {
         return $false
     }
 
-    foreach ($property in @($Computer.PSObject.Properties)) {
-        if ($property.Name -ieq 'msLAPS-EncryptedPassword') { continue }
-        try {
-            $converted = ConvertFrom-LDAPAttribute -Name $property.Name -Value $property.Value
-        } catch {
-            Write-Log "[Resolve-LAPSEncryptedComputer] Could not convert $($property.Name): $_"
-            continue
-        }
-        $Computer.PSObject.Properties.Remove($property.Name)
-        if (-not $converted) { continue }
-        foreach ($convertedName in $converted.Keys) {
-            $Computer | Add-Member -NotePropertyName $convertedName -NotePropertyValue $converted[$convertedName] -Force
-        }
-    }
+    Convert-LAPSRawComputer -Computer $Computer -Except @('msLAPS-EncryptedPassword')
 
     $Computer | Add-Member -NotePropertyName 'msLAPS-Password' -NotePropertyValue $decryptedInfo.Password -Force
     $Computer | Add-Member -NotePropertyName 'msLAPS-Account' -NotePropertyValue $decryptedInfo.Account -Force
@@ -92,14 +121,16 @@ function Get-LAPSCredentialAccess {
     - Parses encrypted LAPS metadata (timestamp, target SID)
     - Attempts decryption via NCryptUnprotectSecret if authorized
     - Reports which computers' passwords are accessible
-    - Reports separately the computers whose decryptor group the bound account is in but
-      whose blob Windows did not open, with Windows' error code
+    - Lists the computers whose decryptor group the bound account is in but whose blob was
+      not decrypted here, with the reason - Windows' error code, or a host in no domain - and
+      rates them by the account, as a password that was read: a finding for an account that
+      is not privileged, expected for one that is
     - Decrypts only where the bound account's groups name the blob's decryptor. A blob can
       open without the bound account - from the Windows key cache, or with the logon's own
       credentials after an NTLM bind - so where its groups cannot be read the encrypted
       passwords are counted as not tested rather than decrypted
     - Does not decrypt on a host outside any domain: Windows requests the key only on a
-      domain member, so these blobs are reported on a line of their own
+      domain member, so these blobs are listed as not tried
 
     Related Checks:
     - Get-LAPSConfiguration (Computer): Is LAPS deployed?
@@ -238,6 +269,9 @@ function Get-LAPSCredentialAccess {
             # passwords has to reach.
             $withheldDecryptors = @()
             $offDomainDecryptors = @()
+            # Both kinds above as computers, for the list under their line: the object, what
+            # its blob parsed to, and why it was not decrypted here.
+            $authorizedUnreadComputers = @()
 
             # -Identity narrows every query of this check to those computers; without it
             # each query runs once, domain-wide. A name gets a query of its own, ANDed with
@@ -388,10 +422,18 @@ function Get-LAPSCredentialAccess {
                                     # Check if Target SID is in our token groups (local check)
                                     if ($myTokenGroups -contains $lapsInfo.TargetSID) {
                                         $authorizedCount++
+                                        $blobLength = 0
+                                        try { $blobLength = ([byte[]]$blob).Length } catch { }
                                         if ($hostIsDomainMember -eq $false) {
                                             $authorizedUnread = $true
                                             $offDomainCount++
                                             $offDomainDecryptors += $decryptorName
+                                            $authorizedUnreadComputers += [PSCustomObject]@{
+                                                Object     = $comp
+                                                Info       = $lapsInfo
+                                                BlobLength = $blobLength
+                                                Reason     = 'Not tried - this host is not domain-joined'
+                                            }
                                             Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, not decrypted outside a domain: '$($comp.distinguishedName)'"
                                         } else {
                                             # Decrypt directly - no second LDAP query needed!
@@ -410,6 +452,13 @@ function Get-LAPSCredentialAccess {
                                                     Computer  = [string]$comp.distinguishedName
                                                     Reason    = $decryptionError
                                                     Decryptor = $decryptorName
+                                                }
+                                                $failureText = if ($decryptionError) { $decryptionError } else { 'no reason given' }
+                                                $authorizedUnreadComputers += [PSCustomObject]@{
+                                                    Object     = $comp
+                                                    Info       = $lapsInfo
+                                                    BlobLength = $blobLength
+                                                    Reason     = "Not decrypted here - $failureText"
                                                 }
                                                 Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, decryption failed for '$($comp.distinguishedName)': $decryptionError"
                                             }
@@ -557,6 +606,53 @@ function Get-LAPSCredentialAccess {
                 }
             }
 
+            # The passwords this account may decrypt that were not decrypted here - right
+            # after the ones it read, so the findings stand together and the notes follow. Its token
+            # groups hold the group the blob is encrypted for - the very thing the domain
+            # controller checks before it hands out the key - so only the last step is
+            # missing. Rated by the principal, as a password that was read is: a privileged
+            # account is expected to hold them, any other one is the finding this check
+            # exists for. They used to be a note in green, so a helpdesk account in the
+            # decryptor group, scanned from a workgroup host, came out clean.
+            if (@($authorizedUnreadComputers).Count -gt 0) {
+                $unreadCount = @($authorizedUnreadComputers).Count
+                if ($readerIsPrivileged) {
+                    Show-Line "$unreadCount computer(s) whose LAPS password this account may decrypt - not decrypted here, expected for this account:" -Class "Hint"
+                } else {
+                    Show-Line "$unreadCount computer(s) whose LAPS password this account may decrypt - not decrypted here:" -Class "Finding"
+                }
+
+                # Why. Windows' own code where it refused - no cause is guessed, and the
+                # bound account is none: its groups already say it may open the blob. And the
+                # one cause that is measured, so it is named: run from a domain member, of any
+                # domain, and with a Kerberos session Windows requests the key with its ticket.
+                foreach ($reasonGroup in @($decryptFailures | Group-Object -Property Reason)) {
+                    $reasonText = if ($reasonGroup.Name) { $reasonGroup.Name } else { 'no reason given' }
+                    Show-KeyValue "Decryption error" "$reasonText - $($reasonGroup.Count) computer(s)"
+                }
+                if ($offDomainCount -gt 0) {
+                    Show-KeyValue "Not tried" "This host is not domain-joined - Windows requests the key only on a domain member"
+                }
+                & $showDecryptors @(@($decryptFailures | ForEach-Object { $_.Decryptor }) + @($offDomainDecryptors))
+
+                # Each computer, with what its blob says and why it was not opened here
+                foreach ($unread in $authorizedUnreadComputers) {
+                    $computer = $unread.Object
+                    Convert-LAPSRawComputer -Computer $computer -Except @('msLAPS-EncryptedPassword')
+                    $computer | Add-Member -NotePropertyName 'msLAPS-EncryptedPassword' -NotePropertyValue (
+                        Format-LAPSEncryptedValue -Info $unread.Info -Length $unread.BlobLength) -Force
+                    $computer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'LAPSCredential' -Force
+                    $computer | Add-Member -NotePropertyName 'lapsDecryption' -NotePropertyValue $unread.Reason -Force
+                    if ($readerIsPrivileged) {
+                        $computer | Add-Member -NotePropertyName 'lapsReadContext' -NotePropertyValue (
+                            "Expected - the account this scan runs as is privileged ($readerName)") -Force
+                        Show-Object $computer -Class Hint
+                    } else {
+                        Show-Object $computer -Class Finding
+                    }
+                }
+            }
+
             # Say so rather than staying silent: these computers do have a LAPS password
             # stored, the directory just did not hand it over. That is a different fact
             # from "no LAPS in this domain" and it changes what the reader does next.
@@ -568,30 +664,6 @@ function Get-LAPSCredentialAccess {
 
             if ($untestedEncryptedCount -gt 0) {
                 Show-Line "$untestedEncryptedCount computer(s) have an encrypted LAPS password that was not tested - this account's groups could not be read" -Class "Note"
-            }
-
-            # The bound account is in the group the blob names, so the directory's answer is
-            # "readable"; Windows did not open it. The reason is Windows' own code and
-            # nothing more - no cause is guessed. The bound account is none: the token
-            # groups already say it may open the blob.
-            if (@($decryptFailures).Count -gt 0) {
-                Show-Line "$(@($decryptFailures).Count) computer(s) name a decryptor group this account is in, but Windows did not decrypt them" -Class "Note"
-                foreach ($reasonGroup in @($decryptFailures | Group-Object -Property Reason)) {
-                    $reasonText = if ($reasonGroup.Name) { $reasonGroup.Name } else { 'no reason given' }
-                    Show-KeyValue "Decryption error" "$reasonText - $($reasonGroup.Count) computer(s)"
-                }
-                & $showDecryptors @($decryptFailures | ForEach-Object { $_.Decryptor })
-            }
-
-            # A cause of a failed decryption that is measured, so it is named - in a row of
-            # its own, the way the error codes above are. The line says what happened, the
-            # row why, and neither runs past a terminal. Run from a domain member;
-            # membership of the scanned domain is not needed, and with a Kerberos session
-            # Windows requests the key with its ticket.
-            if ($offDomainCount -gt 0) {
-                Show-Line "$offDomainCount computer(s) name a decryptor group this account is in, not tried on this host" -Class "Note"
-                Show-KeyValue "Not tried" "This host is not domain-joined - Windows requests the key only on a domain member"
-                & $showDecryptors $offDomainDecryptors
             }
 
         } catch {
