@@ -499,11 +499,16 @@ function ConvertFrom-LDAPAttribute {
                 foreach ($historyBlob in $PropValue) {
                     $entryIndex++
                     try {
+                        # With the decryptor each entry names: an older password was encrypted
+                        # for whoever the policy named back then, which need not be today's.
                         $historyInfo = ConvertFrom-LAPSEncryptedPassword -Blob $historyBlob
+                        $historyDecryptor = Get-LAPSDecryptorName -Info $historyInfo
                         if ($historyInfo -and $historyInfo.UpdateTimestamp) {
-                            $historyEntries += "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
+                            $historyEntry = "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
+                            if ($historyDecryptor) { $historyEntry += " (for $historyDecryptor)" }
+                            $historyEntries += $historyEntry
                         } else {
-                            $historyEntries += "[$entryIndex] [Encrypted - $($historyBlob.Length) bytes]"
+                            $historyEntries += "[$entryIndex] $(Format-LAPSEncryptedValue -Info $historyInfo -Length $historyBlob.Length)"
                         }
                     } catch {
                         $historyEntries += "[$entryIndex] [Encrypted - $($historyBlob.Length) bytes]"
@@ -1012,14 +1017,11 @@ function ConvertFrom-LDAPAttribute {
                         $ConvertedProperties[$PropName] = "[Hash: $($PropValue[0].Length) bytes]"
                     }
                 } elseif ($PropName -ieq "msLAPS-EncryptedPassword") {
-                    # LAPS v2 Encrypted Password (single value) - binary blob
+                    # LAPS v2 Encrypted Password (single value) - binary blob, shown with the
+                    # decryptor it names (Format-LAPSEncryptedValue)
                     try {
                         $encryptedInfo = ConvertFrom-LAPSEncryptedPassword -Blob $PropValue[0]
-                        if ($encryptedInfo -and $encryptedInfo.UpdateTimestamp) {
-                            $ConvertedProperties[$PropName] = "[Encrypted - Updated: $(Format-adPEASDate $encryptedInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
-                        } else {
-                            $ConvertedProperties[$PropName] = "[Encrypted - $($PropValue[0].Length) bytes]"
-                        }
+                        $ConvertedProperties[$PropName] = Format-LAPSEncryptedValue -Info $encryptedInfo -Length $PropValue[0].Length
                     } catch {
                         $ConvertedProperties[$PropName] = "[Encrypted - $($PropValue[0].Length) bytes]"
                     }

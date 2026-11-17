@@ -233,6 +233,11 @@ function Get-LAPSCredentialAccess {
             # Blobs this account may open that were not tried: this host is in no domain, and
             # Windows requests the key only on a domain member.
             $offDomainCount = 0
+            # The decryptor each blob that did not open names - parsed out of the blob, no
+            # right needed. Collected per line below, so each line can say whom a path to its
+            # passwords has to reach.
+            $withheldDecryptors = @()
+            $offDomainDecryptors = @()
 
             # -Identity narrows every query of this check to those computers; without it
             # each query runs once, domain-wide. A name gets a query of its own, ANDed with
@@ -371,10 +376,14 @@ function Get-LAPSCredentialAccess {
                             # This account may open the blob and it did not come out:
                             # decryption failed, or was not tried outside a domain.
                             $authorizedUnread = $false
+                            # Reset per computer: a blob that does not parse must not inherit
+                            # the previous computer's decryptor.
+                            $decryptorName = $null
                             $blob = $comp.'msLAPS-EncryptedPassword'
                             if ($blob) {
                                 # Parse metadata only (no decryption attempt) - very fast, <1ms
                                 $lapsInfo = ConvertFrom-LAPSEncryptedPassword -Blob $blob
+                                $decryptorName = Get-LAPSDecryptorName -Info $lapsInfo
                                 if ($lapsInfo -and $lapsInfo.TargetSID) {
                                     # Check if Target SID is in our token groups (local check)
                                     if ($myTokenGroups -contains $lapsInfo.TargetSID) {
@@ -382,6 +391,7 @@ function Get-LAPSCredentialAccess {
                                         if ($hostIsDomainMember -eq $false) {
                                             $authorizedUnread = $true
                                             $offDomainCount++
+                                            $offDomainDecryptors += $decryptorName
                                             Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, not decrypted outside a domain: '$($comp.distinguishedName)'"
                                         } else {
                                             # Decrypt directly - no second LDAP query needed!
@@ -397,8 +407,9 @@ function Get-LAPSCredentialAccess {
                                                 # not read" to an account that may.
                                                 $authorizedUnread = $true
                                                 $decryptFailures += [PSCustomObject]@{
-                                                    Computer = [string]$comp.distinguishedName
-                                                    Reason   = $decryptionError
+                                                    Computer  = [string]$comp.distinguishedName
+                                                    Reason    = $decryptionError
+                                                    Decryptor = $decryptorName
                                                 }
                                                 Write-Log "[Get-LAPSCredentialAccess] Decryptor group held, decryption failed for '$($comp.distinguishedName)': $decryptionError"
                                             }
@@ -413,6 +424,7 @@ function Get-LAPSCredentialAccess {
                             # in green, with no mention that there were passwords at all.
                             if (-not $readable -and -not $authorizedUnread) {
                                 $withheldCount++
+                                if ($decryptorName) { $withheldDecryptors += $decryptorName }
                                 Write-Log "[Get-LAPSCredentialAccess] Encrypted LAPS password not readable for '$($comp.distinguishedName)'"
                             }
                         }
@@ -534,11 +546,24 @@ function Get-LAPSCredentialAccess {
                 Show-Line "No readable LAPS passwords found" -Class "Secure"
             }
 
+            # One row per decryptor, under the line whose blobs it opens: the principal a path
+            # to those passwords has to reach. The blob names it without any right, so this
+            # is what the check can say about a password it did not read. The most frequent
+            # first.
+            $showDecryptors = {
+                param([string[]]$Names)
+                foreach ($decryptorGroup in @($Names | Where-Object { $_ } | Group-Object | Sort-Object -Property Count -Descending)) {
+                    Show-KeyValue "Decryptor" "$($decryptorGroup.Name) - $($decryptorGroup.Count) computer(s)"
+                }
+            }
+
             # Say so rather than staying silent: these computers do have a LAPS password
             # stored, the directory just did not hand it over. That is a different fact
             # from "no LAPS in this domain" and it changes what the reader does next.
+            # Rows for the encrypted ones only: a legacy or plaintext password names no one.
             if ($withheldCount -gt 0) {
                 Show-Line "$withheldCount computer(s) have a LAPS password stored that this account may not read" -Class "Note"
+                & $showDecryptors $withheldDecryptors
             }
 
             if ($untestedEncryptedCount -gt 0) {
@@ -555,6 +580,7 @@ function Get-LAPSCredentialAccess {
                     $reasonText = if ($reasonGroup.Name) { $reasonGroup.Name } else { 'no reason given' }
                     Show-KeyValue "Decryption error" "$reasonText - $($reasonGroup.Count) computer(s)"
                 }
+                & $showDecryptors @($decryptFailures | ForEach-Object { $_.Decryptor })
             }
 
             # A cause of a failed decryption that is measured, so it is named - in a row of
@@ -565,6 +591,7 @@ function Get-LAPSCredentialAccess {
             if ($offDomainCount -gt 0) {
                 Show-Line "$offDomainCount computer(s) name a decryptor group this account is in, not tried on this host" -Class "Note"
                 Show-KeyValue "Not tried" "This host is not domain-joined - Windows requests the key only on a domain member"
+                & $showDecryptors $offDomainDecryptors
             }
 
         } catch {

@@ -358,6 +358,72 @@ function ConvertFrom-LAPSEncryptedPassword {
 }
 
 
+function Get-LAPSDecryptorName {
+    <#
+    .SYNOPSIS
+    The principal a parsed Windows LAPS blob is encrypted for, as a name - or its SID where
+    the name did not resolve, or $null where the blob names none.
+
+    .DESCRIPTION
+    The decryptor sits in the blob's protection descriptor and parses out of it without any
+    right. For a reader who cannot open the blob it is the one fact the blob gives away:
+    which principal a path to the password has to reach.
+
+    .PARAMETER Info
+    What ConvertFrom-LAPSEncryptedPassword returned for the blob.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Info
+    )
+
+    if (-not $Info) { return $null }
+    if ($Info.TargetSIDName) { return [string]$Info.TargetSIDName }
+    if ($Info.TargetSID) { return [string]$Info.TargetSID }
+    return $null
+}
+
+function Format-LAPSEncryptedValue {
+    <#
+    .SYNOPSIS
+    The text an msLAPS-EncryptedPassword value is shown as: the decryptor it names and when
+    the password was set.
+
+    .DESCRIPTION
+    "[Encrypted for CONTOSO\LAPSReader - Updated: 2026-10-25 12:15:28]". The decryptor used
+    to be parsed and then dropped, so the value said a password was encrypted without saying
+    for whom - the part a reader who cannot open it can act on. Without a readable header
+    timestamp the blob's size stands in its place; without a decryptor the "for" part is left
+    out rather than guessed.
+
+    .PARAMETER Info
+    What ConvertFrom-LAPSEncryptedPassword returned for the blob, or $null.
+
+    .PARAMETER Length
+    The blob's size in bytes, shown where no timestamp is.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        $Info,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Length
+    )
+
+    $decryptor = Get-LAPSDecryptorName -Info $Info
+    $for = if ($decryptor) { " for $decryptor" } else { '' }
+    if ($Info -and $Info.UpdateTimestamp) {
+        return "[Encrypted$for - Updated: $(Format-adPEASDate $Info.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
+    }
+    return "[Encrypted$for - $Length bytes]"
+}
+
 function Get-adPEASHostJoinStatus {
     <#
     .SYNOPSIS

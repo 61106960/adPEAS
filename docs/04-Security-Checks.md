@@ -263,6 +263,8 @@ Windows obtains the key itself. It asks a Domain Controller with the credentials
 
 The check therefore decides by the bound account's groups and decrypts only where they name the blob's decryptor. If those groups cannot be read, the encrypted passwords are counted as not tested instead of decrypted. On a host in no domain it does not try, and lists those blobs on a line of their own. A blob whose decryptor group the bound account is in but that Windows does not open is listed on its own line with the Windows error code, instead of being counted with the passwords this account may not read.
 
+Every blob names its decryptor, and that part parses out without any right. Under each line about passwords that did not open, a `Decryptor` row per principal says whom a path to them has to reach. `Get-DomainComputer` shows the same in the value itself: `msLAPS-EncryptedPassword: [Encrypted for CONTOSO\LAPSReader - Updated: 2026-10-25 12:15:28]`, and each `msLAPS-EncryptedPasswordHistory` entry names the decryptor it was encrypted for - which need not be today's.
+
 **Security Impact**: If the current user can read LAPS passwords, they can obtain local admin credentials for those computers, enabling lateral movement.
 
 **Usage**:
