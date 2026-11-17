@@ -990,6 +990,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Which principals are allowed to delegate to the resource"
             "Whether an entry grants anything: one with generic rights only (GA) is accepted by AD but ignored by the KDC, and is reported as inert"
             "Whether any of them is a broad group, or an identity this domain does not expect to delegate"
+            "An entry that names only a SID: an account holding it through sIDHistory is judged as that account; a SID of this domain nothing holds any more is a deleted principal and delegates nothing; one of another domain stays a finding"
             "Whether the resource itself is a Domain Controller"
             "Not tested: who may write the attribute, which decides who can add themselves to it - the ACL and ownership sections answer that"
         )
@@ -1133,6 +1134,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "msDS-GroupMSAMembership (who can retrieve passwords)"
             "Whether password access follows least privilege"
             "Non-privileged principals with password access"
+            "Readers that no longer exist: a SID of this domain no object carries and no account holds in its sIDHistory - a stale entry, reported apart, not as password access"
             "The owner of that descriptor, who may rewrite the DACL inside it"
             "msDS-ManagedPasswordInterval (how long a stolen password stays valid)"
             "accountExpires (when the account stops authenticating)"
@@ -1216,6 +1218,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
         WhatWeCheck = @(
             "msDS-GroupMSAMembership (who may use the dMSA)"
             "Principals other than privileged accounts, operators and service hosts"
+            "Principals that no longer exist - reported apart, as stale entries"
             "The owner of that descriptor, who may rewrite the DACL inside it"
             "Read only where the scan can read the dMSAs - by default only administrators, Account Operators and their creator can"
         )

@@ -1070,7 +1070,10 @@ $Script:FindingDefinitions = @{
             # a domain controller carried the same title - "Misconfiguration" - and the
             # same score. RBCD is a feature; what decides is who may use it and on what.
             @{ Attribute = 'rbcdTarget'; Severity = 'Finding' }
-            @{ Attribute = 'rbcdPrincipalRisk'; Pattern = 'a broad group|not an identity this domain expects|unresolved - a deleted or foreign principal'; Severity = 'Finding' }
+            # "unresolved - a principal ..." is a SID of another domain, or one nothing could
+            # identify. A SID of this domain whose principal is gone reads "deleted" and is no
+            # finding: nobody can hold that entry (Get-UnresolvedSIDState).
+            @{ Attribute = 'rbcdPrincipalRisk'; Pattern = 'a broad group|not an identity this domain expects|unresolved - a principal'; Severity = 'Finding' }
 
             # The attribute itself follows the verdict rather than carrying one: red where
             # the check found something to say, and otherwise the colour its own row earns.
@@ -14401,6 +14404,38 @@ $acl.Access | Where-Object {
         )
     }
 
+    # Set per principal by the transformer of msDS-GroupMSAMembership, from the verdict
+    # Get-ManagedServiceAccountSecurity leaves on the object (Deleted / DeletedOrHidden).
+    'MSA_READER_DELETED' = @{
+        Title = "Managed Service Account Names a Principal That No Longer Exists"
+        Risk = "Hint"
+        BaseScore = 10
+        Description = "msDS-GroupMSAMembership of this managed service account names a SID of this domain that no object carries any more, and that no account holds in its sIDHistory either. The principal it stood for has been deleted. A SID is never issued again, so no account can ever hold this entry, and nobody retrieves the password - or, on a delegated Managed Service Account, uses it - through it. It is a stale entry. Seen from an account that is not privileged, the same picture can also mean an object that account may not read; the row then says so."
+        Impact = @(
+            "Nobody can use the entry: the SID belongs to no account and is never reissued"
+            "Restoring the deleted principal from the Recycle Bin would bring it back with its SID - which takes a privileged account"
+            "The entry makes the list harder to review, and an unreadable SID is easily taken for an unknown reader"
+        )
+        Remediation = @(
+            "Remove the entry, so the list names only the hosts that run the service"
+            "Re-set PrincipalsAllowedToRetrieveManagedPassword to the principals that should be there - Set-ADServiceAccount writes the whole list"
+        )
+        RemediationCommands = @(
+            @{
+                Description = "List the principals the account names"
+                Command = "Get-ADServiceAccount -Identity 'GMSA_NAME' -Properties PrincipalsAllowedToRetrieveManagedPassword | Select-Object -ExpandProperty PrincipalsAllowedToRetrieveManagedPassword"
+            }
+            @{
+                Description = "Write the list again with only the principals that should be there"
+                Command = "Set-ADServiceAccount -Identity 'GMSA_NAME' -PrincipalsAllowedToRetrieveManagedPassword 'SERVICE_HOSTS'"
+            }
+        )
+        References = @(
+            @{ Title = "gMSA Overview"; Url = "https://learn.microsoft.com/en-us/windows-server/security/group-managed-service-accounts/group-managed-service-accounts-overview" }
+        )
+        MITRE = "T1078"
+    }
+
     'ACL_INHERITED_FROM' = @{
         Title = "ACL Inheritance Source"
         Risk = "Note"
@@ -18182,11 +18217,12 @@ function Test-CustomTrigger {
             # reads what the check decided rather than deciding again - see
             # Get-ResourceBasedConstrainedDelegation for the three cases that qualify: a
             # broad group, a principal the domain does not expect to delegate, and an
-            # unresolved trustee that still holds the delegation.
+            # unresolved trustee - of another domain, or unidentifiable - that may still
+            # hold the delegation. A deleted principal of this domain does not: nobody can.
             if ($SourceObject -and $SourceObject.rbcdTarget) { return $true }
             foreach ($entry in @($SourceObject.rbcdPrincipalRisk)) {
                 if ([string]::IsNullOrWhiteSpace($entry)) { continue }
-                if ($entry -match 'a broad group|not an identity this domain expects|unresolved - a deleted or foreign principal') { return $true }
+                if ($entry -match 'a broad group|not an identity this domain expects|unresolved - a principal') { return $true }
             }
             return $false
         }

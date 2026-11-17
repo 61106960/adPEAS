@@ -162,32 +162,49 @@ function Get-ManagedServiceAccountSecurity {
                 if ($totalGMSAs -gt $Script:ProgressThreshold) { Show-Progress -Activity "Analyzing gMSA security" -Completed }
 
                 # ----- Phase 2: what kind of principal each reader is -----
-                $readerKinds = Get-ManagedAccountReaderKind -SID @($allReaderSIDs.Keys) -ConnectionParams $connectionParams
+                $readerCarriers = @{}
+                $readerKinds = Get-ManagedAccountReaderKind -SID @($allReaderSIDs.Keys) -ConnectionParams $connectionParams -Carrier $readerCarriers
 
                 # ----- Phase 3: verdict per gMSA -----
                 #
                 # The verdict per reader is kept for every analyzed gMSA, flagged or not, and
-                # handed to the row that lists the readers - see the output below.
+                # handed to the row that lists the readers - see the output below. So is the
+                # text a reader is shown as where it is not the resolved name: a deleted
+                # principal, or the account that holds a SID through sIDHistory.
                 $readerVerdictsByGMSA = @{}
+                $readerLabelsByGMSA = @{}
+                $orphanedReaderGMSAs = @()
                 foreach ($gmsa in $gmsaAccounts) {
                     $gmsaName = $gmsa.sAMAccountName
                     if (-not $gmsaReaderSIDs.ContainsKey($gmsaName)) { continue }
 
-                    $passwordReaders = @(Get-ManagedAccountReader -SID $gmsaReaderSIDs[$gmsaName] -ReaderKind $readerKinds)
+                    $passwordReaders = @(Get-ManagedAccountReader -SID $gmsaReaderSIDs[$gmsaName] -ReaderKind $readerKinds -Carrier $readerCarriers)
                     $hasBroadGroupAccess = @($passwordReaders | Where-Object { $_.IsBroadGroup }).Count -gt 0
-                    $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected })
+                    # A deleted principal reads nothing - it is a stale entry, not a reader.
+                    $unexpectedReaders = @($passwordReaders | Where-Object { -not $_.IsExpected -and -not $_.IsOrphaned })
+                    $orphanedReaders = @($passwordReaders | Where-Object { $_.IsOrphaned })
 
                     # Keyed by SID, so a principal the descriptor names without granting
                     # ReadProperty finds no entry and reads as no reader at all.
                     $verdictMap = @{}
-                    foreach ($reader in $passwordReaders) { $verdictMap[[string]$reader.SID] = $reader.Verdict }
+                    $labelMap = @{}
+                    foreach ($reader in $passwordReaders) {
+                        $verdictMap[[string]$reader.SID] = $reader.Verdict
+                        if ($reader.Label) { $labelMap[[string]$reader.SID] = [string]$reader.Label }
+                    }
                     $readerVerdictsByGMSA[$gmsaName] = $verdictMap
+                    $readerLabelsByGMSA[$gmsaName] = $labelMap
 
                     if ($unexpectedReaders.Count -gt 0) {
                         $nonPrivilegedAccessFindings += [PSCustomObject]@{
                             gMSA = $gmsaName
                             DN = $gmsa.distinguishedName
                             HasBroadGroupAccess = $hasBroadGroupAccess
+                        }
+                    } elseif ($orphanedReaders.Count -gt 0) {
+                        $orphanedReaderGMSAs += [PSCustomObject]@{
+                            gMSA   = $gmsaName
+                            Hidden = (@($orphanedReaders | Where-Object { $_.Verdict -eq 'DeletedOrHidden' }).Count -gt 0)
                         }
                     }
                 }
@@ -244,6 +261,7 @@ function Get-ManagedServiceAccountSecurity {
                         # user account that makes the gMSA a finding yellow.
                         if ($readerVerdictsByGMSA.ContainsKey($finding.gMSA)) {
                             $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[$finding.gMSA] -Force
+                            $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $readerLabelsByGMSA[$finding.gMSA] -Force
                         }
 
                         # A finding, printed as one. Show-Object defaults to Standard, so the
@@ -256,14 +274,41 @@ function Get-ManagedServiceAccountSecurity {
                         # SID twice for every reader ConvertFrom-SID could not resolve.
                         Show-Object $gmsaObj -Class Finding
                     }
-                } elseif ($analyzedGMSAs -eq 0) {
-                    Show-Line "gMSA password access could not be analyzed - no membership descriptor could be read" -Class Note
-                } else {
-                    $unanalyzedCount = $totalGMSAs - $analyzedGMSAs
-                    if ($unanalyzedCount -gt 0) {
-                        Show-Line "gMSA password access is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs not analyzed)" -Class Note
+                }
+
+                # Readers that no longer exist, on a gMSA with no other reader to report. A
+                # deleted principal cannot retrieve anything - the entry is stale, and worth
+                # removing, not a password access. These were reported as non-privileged
+                # access: the SID resolved to nothing and was taken for an unknown reader.
+                if (@($orphanedReaderGMSAs).Count -gt 0) {
+                    $orphanCount = @($orphanedReaderGMSAs).Count
+                    # Worded around "password readers" on purpose: the readers are named by the
+                    # object's row, and no line under or above it lists them again.
+                    if (@($orphanedReaderGMSAs | Where-Object { $_.Hidden }).Count -gt 0) {
+                        Show-Line "$orphanCount gMSA(s) grant their password to principals this account cannot find - deleted, or not visible to it:" -Class Hint
                     } else {
-                        Show-Line "All gMSA password access is properly restricted to privileged accounts and service hosts" -Class Secure
+                        Show-Line "$orphanCount gMSA(s) still grant their password to principals that no longer exist:" -Class Hint
+                    }
+                    foreach ($orphaned in $orphanedReaderGMSAs) {
+                        $gmsaObj = $gmsaAccounts | Where-Object { $_.sAMAccountName -eq $orphaned.gMSA }
+                        $gmsaObj | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'gMSA' -Force
+                        $gmsaObj | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Stale password readers' -Force
+                        $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[$orphaned.gMSA] -Force
+                        $gmsaObj | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $readerLabelsByGMSA[$orphaned.gMSA] -Force
+                        Show-Object $gmsaObj -Class Hint
+                    }
+                }
+
+                if (@($nonPrivilegedAccessFindings).Count -eq 0 -and @($orphanedReaderGMSAs).Count -eq 0) {
+                    if ($analyzedGMSAs -eq 0) {
+                        Show-Line "gMSA password access could not be analyzed - no membership descriptor could be read" -Class Note
+                    } else {
+                        $unanalyzedCount = $totalGMSAs - $analyzedGMSAs
+                        if ($unanalyzedCount -gt 0) {
+                            Show-Line "gMSA password access is restricted to privileged accounts and service hosts ($unanalyzedCount of $totalGMSAs not analyzed)" -Class Note
+                        } else {
+                            Show-Line "All gMSA password access is properly restricted to privileged accounts and service hosts" -Class Secure
+                        }
                     }
                 }
 
@@ -482,9 +527,12 @@ function Get-ManagedServiceAccountSecurity {
                 # whose only problem is the owner of its descriptor was printed twice - as
                 # the finding, and again as properly configured.
                 $ownerFindingNames = @($descriptorOwnerFindings | ForEach-Object { $_.gMSA })
+                # Nor do stale readers: those gMSAs are shown above, as a hint.
+                $orphanedReaderNames = @($orphanedReaderGMSAs | ForEach-Object { $_.gMSA })
                 $gmsasWithoutFindings = @($gmsaAccounts | Where-Object {
                     $_.sAMAccountName -notin ($nonPrivilegedAccessFindings | ForEach-Object { $_.gMSA }) -and
-                    $_.sAMAccountName -notin $ownerFindingNames
+                    $_.sAMAccountName -notin $ownerFindingNames -and
+                    $_.sAMAccountName -notin $orphanedReaderNames
                 })
 
                 if ($gmsasWithoutFindings.Count -gt 0) {
@@ -497,6 +545,7 @@ function Get-ManagedServiceAccountSecurity {
                         # red and its service host yellow.
                         if ($readerVerdictsByGMSA.ContainsKey([string]$gmsa.sAMAccountName)) {
                             $gmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $readerVerdictsByGMSA[[string]$gmsa.sAMAccountName] -Force
+                            $gmsa | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $readerLabelsByGMSA[[string]$gmsa.sAMAccountName] -Force
                         }
                         # Secure: the sub header is the statement about these objects, and
                         # it says their password access is configured properly.
@@ -733,23 +782,37 @@ function Get-ManagedServiceAccountSecurity {
                         }
                     }
 
-                    $dmsaUserKinds = Get-ManagedAccountReaderKind -SID @($allDMSAUserSIDs.Keys) -ConnectionParams $connectionParams
+                    $dmsaCarriers = @{}
+                    $dmsaUserKinds = Get-ManagedAccountReaderKind -SID @($allDMSAUserSIDs.Keys) -ConnectionParams $connectionParams -Carrier $dmsaCarriers
                     $usableByOthers = @()
+                    $orphanedUserDMSAs = @()
                     foreach ($dmsa in $dmsaAccounts) {
                         $dmsaName = [string]$dmsa.sAMAccountName
                         if (-not $dmsaUserSIDs.ContainsKey($dmsaName)) { continue }
 
-                        $dmsaUsers = @(Get-ManagedAccountReader -SID $dmsaUserSIDs[$dmsaName] -ReaderKind $dmsaUserKinds)
+                        $dmsaUsers = @(Get-ManagedAccountReader -SID $dmsaUserSIDs[$dmsaName] -ReaderKind $dmsaUserKinds -Carrier $dmsaCarriers)
                         $verdictMap = @{}
-                        foreach ($dmsaUser in $dmsaUsers) { $verdictMap[[string]$dmsaUser.SID] = $dmsaUser.Verdict }
+                        $labelMap = @{}
+                        foreach ($dmsaUser in $dmsaUsers) {
+                            $verdictMap[[string]$dmsaUser.SID] = $dmsaUser.Verdict
+                            if ($dmsaUser.Label) { $labelMap[[string]$dmsaUser.SID] = [string]$dmsaUser.Label }
+                        }
                         # Read by the transformer of msDS-GroupMSAMembership, as on a gMSA.
                         $dmsa | Add-Member -NotePropertyName '_gmsaReaderVerdicts' -NotePropertyValue $verdictMap -Force
+                        $dmsa | Add-Member -NotePropertyName '_gmsaReaderLabels' -NotePropertyValue $labelMap -Force
 
-                        $unexpectedUsers = @($dmsaUsers | Where-Object { -not $_.IsExpected })
+                        # A deleted principal uses nothing - a stale entry, as on a gMSA.
+                        $unexpectedUsers = @($dmsaUsers | Where-Object { -not $_.IsExpected -and -not $_.IsOrphaned })
+                        $orphanedUsers = @($dmsaUsers | Where-Object { $_.IsOrphaned })
                         if ($unexpectedUsers.Count -gt 0) {
                             $usableByOthers += [PSCustomObject]@{
                                 Account  = $dmsa
                                 HasBroad = (@($unexpectedUsers | Where-Object { $_.IsBroadGroup }).Count -gt 0)
+                            }
+                        } elseif ($orphanedUsers.Count -gt 0) {
+                            $orphanedUserDMSAs += [PSCustomObject]@{
+                                Account = $dmsa
+                                Hidden  = (@($orphanedUsers | Where-Object { $_.Verdict -eq 'DeletedOrHidden' }).Count -gt 0)
                             }
                         }
                     }
@@ -768,6 +831,20 @@ function Get-ManagedServiceAccountSecurity {
                             # The principals are named by the object's msDS-GroupMSAMembership
                             # row, coloured by the verdicts - not repeated on a line below it.
                             Show-Object $entry.Account -Class Finding
+                        }
+                    }
+
+                    if (@($orphanedUserDMSAs).Count -gt 0) {
+                        $orphanCount = @($orphanedUserDMSAs).Count
+                        if (@($orphanedUserDMSAs | Where-Object { $_.Hidden }).Count -gt 0) {
+                            Show-Line "$orphanCount dMSA(s) name principals this account cannot find - deleted, or not visible to it:" -Class Hint
+                        } else {
+                            Show-Line "$orphanCount dMSA(s) still name principals that no longer exist:" -Class Hint
+                        }
+                        foreach ($entry in $orphanedUserDMSAs) {
+                            $entry.Account | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'dMSA' -Force
+                            $entry.Account | Add-Member -NotePropertyName '_adPEASContext' -NotePropertyValue 'Stale principals' -Force
+                            Show-Object $entry.Account -Class Hint
                         }
                     }
 
@@ -792,7 +869,7 @@ function Get-ManagedServiceAccountSecurity {
                         Show-Line "msDS-GroupMSAMembership could not be parsed on $(@($unparsedDMSAs).Count) dMSA(s) - who may use them is unknown: $(@($unparsedDMSAs) -join ', ')" -Class Note
                     }
 
-                    if (@($usableByOthers).Count -eq 0 -and @($ownedDMSAs).Count -eq 0 -and $dmsaUserSIDs.Count -gt 0) {
+                    if (@($usableByOthers).Count -eq 0 -and @($ownedDMSAs).Count -eq 0 -and @($orphanedUserDMSAs).Count -eq 0 -and $dmsaUserSIDs.Count -gt 0) {
                         $unanalyzedDMSAs = $dmsaAccounts.Count - $dmsaUserSIDs.Count
                         if ($unanalyzedDMSAs -gt 0) {
                             Show-Line "dMSA use is restricted to privileged accounts and service hosts ($unanalyzedDMSAs of $($dmsaAccounts.Count) not analyzed)" -Class Note
@@ -1039,8 +1116,16 @@ function Get-ManagedAccountDescriptorReader {
 .PARAMETER ConnectionParams
     Domain, Server and Credential of the calling check.
 
+.PARAMETER Carrier
+    Optional. Filled with SID -> @{ SID; Name } for every reader SID that no object carries
+    but an account holds in its sIDHistory. That account is the reader: its kind is the kind
+    recorded for the SID, and Get-ManagedAccountReader judges it by its own category.
+
 .OUTPUTS
-    Hashtable: SID -> 'DecidedByCategory', 'Host', 'Principal' or 'Unresolved'.
+    Hashtable: SID -> 'DecidedByCategory', 'Host', 'Principal', 'Deleted',
+    'DeletedOrHidden' or 'Unresolved'. 'Deleted' and 'DeletedOrHidden' are SIDs of this
+    domain that no object carries and no account holds (Get-UnresolvedSIDState); a SID of
+    another domain, or one nothing could identify, stays 'Unresolved'.
 #>
 function Get-ManagedAccountReaderKind {
     [CmdletBinding()]
@@ -1050,7 +1135,10 @@ function Get-ManagedAccountReaderKind {
         [string[]]$SID = @(),
 
         [Parameter(Mandatory = $false)]
-        [hashtable]$ConnectionParams = @{}
+        [hashtable]$ConnectionParams = @{},
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Carrier
     )
 
     $hostClasses = @('computer', 'msDS-ManagedServiceAccount', 'msDS-GroupManagedServiceAccount')
@@ -1067,8 +1155,19 @@ function Get-ManagedAccountReaderKind {
             if (-not $readerObject) {
                 # A SID the directory does not resolve is not a host, and treating what
                 # could not be looked up as harmless is exactly how a check reports an
-                # unchecked state as a clean one.
+                # unchecked state as a clean one. But a SID of this domain that no object
+                # carries and no account holds is a deleted principal, and calling that a
+                # non-privileged reader was just as wrong - nobody can ever hold it.
                 $readerKind = 'Unresolved'
+                $sidState = Get-UnresolvedSIDState -SID $readerSID -ConnectionParams $ConnectionParams
+                if ($sidState.State -in @('Deleted', 'DeletedOrHidden')) {
+                    $readerKind = $sidState.State
+                } elseif ($sidState.State -eq 'SIDHistory' -and $sidState.CarrierSID) {
+                    # The account that holds the SID is the reader; it is judged as one.
+                    $carrierKinds = Get-ManagedAccountReaderKind -SID @($sidState.CarrierSID) -ConnectionParams $ConnectionParams
+                    if ($carrierKinds.ContainsKey($sidState.CarrierSID)) { $readerKind = $carrierKinds[$sidState.CarrierSID] }
+                    if ($null -ne $Carrier) { $Carrier[$readerSID] = @{ SID = $sidState.CarrierSID; Name = $sidState.Carrier } }
+                }
             } elseif (@(@($readerObject.objectClass) | Where-Object { $hostClasses -icontains $_ }).Count -gt 0) {
                 $readerKind = 'Host'
             } elseif (@($readerObject.objectClass) -icontains 'group') {
@@ -1101,7 +1200,13 @@ function Get-ManagedAccountReaderKind {
                   means anyway, or a host - a computer account or a group of them, which is
                   what the attribute exists for
     - Unexpected: anything else - a user account, a group holding one, or a SID that does
-                  not resolve
+                  not resolve, of another domain or unidentifiable
+    - Deleted / DeletedOrHidden: a SID of this domain that no object carries and no account
+                  holds in its sIDHistory - a stale entry, not a reader (IsOrphaned). Said
+                  as DeletedOrHidden where the scan's account is not privileged and may not
+                  see every object.
+    A SID that an account holds in its sIDHistory is that account: judged by its category
+    and kind, and named after it.
 
 .PARAMETER SID
     The SIDs the descriptor grants.
@@ -1109,9 +1214,13 @@ function Get-ManagedAccountReaderKind {
 .PARAMETER ReaderKind
     Get-ManagedAccountReaderKind's answer for them.
 
+.PARAMETER Carrier
+    Get-ManagedAccountReaderKind's -Carrier table, for SIDs held through sIDHistory.
+
 .OUTPUTS
     One PSCustomObject per SID: Principal, SID, Category, Kind, IsExpected, IsBroadGroup,
-    Verdict.
+    IsOrphaned, Verdict, Label - the text the reader row shows where it differs from the
+    resolved name, else $null.
 #>
 function Get-ManagedAccountReader {
     [CmdletBinding()]
@@ -1121,28 +1230,47 @@ function Get-ManagedAccountReader {
         [string[]]$SID = @(),
 
         [Parameter(Mandatory = $false)]
-        [hashtable]$ReaderKind = @{}
+        [hashtable]$ReaderKind = @{},
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Carrier = @{}
     )
 
     foreach ($readerSID in @($SID | Where-Object { $_ })) {
         $principalName = ConvertFrom-SID -SID $readerSID
         if (-not $principalName) { $principalName = $readerSID }
 
-        $category = (Test-IsPrivileged -Identity $readerSID).Category
+        # Held through sIDHistory: the carrying account is the reader, judged by its own
+        # category.
+        $judgedSID = $readerSID
+        $label = $null
+        if ($Carrier.ContainsKey($readerSID)) {
+            $judgedSID = [string]$Carrier[$readerSID].SID
+            $principalName = "$($Carrier[$readerSID].Name) (sIDHistory: $readerSID)"
+            $label = $principalName
+        }
+
+        $category = (Test-IsPrivileged -Identity $judgedSID).Category
 
         # $kind, not $readerKind: PowerShell names are case-insensitive, and the
         # [hashtable] parameter would refuse the string.
         $kind = 'Unresolved'
         if ($ReaderKind.ContainsKey($readerSID)) { $kind = $ReaderKind[$readerSID] }
 
+        $isOrphaned = $kind -in @('Deleted', 'DeletedOrHidden')
         $isBroadGroup = $category -eq 'BroadGroup'
         $isExpected = $false
-        if (-not $isBroadGroup) {
+        if (-not $isBroadGroup -and -not $isOrphaned) {
             $isExpected = ($category -in @('Privileged', 'Operator')) -or ($kind -eq 'Host')
         }
 
         $verdict = 'Unexpected'
-        if ($isBroadGroup) { $verdict = 'Broad' } elseif ($isExpected) { $verdict = 'Expected' }
+        if ($isBroadGroup) { $verdict = 'Broad' }
+        elseif ($isOrphaned) {
+            $verdict = $kind
+            $label = if ($kind -eq 'Deleted') { "$readerSID (deleted)" } else { "$readerSID (deleted or not visible)" }
+        }
+        elseif ($isExpected) { $verdict = 'Expected' }
 
         [PSCustomObject]@{
             Principal    = $principalName
@@ -1151,7 +1279,9 @@ function Get-ManagedAccountReader {
             Kind         = $kind
             IsExpected   = $isExpected
             IsBroadGroup = $isBroadGroup
+            IsOrphaned   = $isOrphaned
             Verdict      = $verdict
+            Label        = $label
         }
     }
 }

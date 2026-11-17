@@ -645,6 +645,25 @@ function Convert-GMSAToRenderValues {
     if ($sourceObject -and $sourceObject.PSObject.Properties['_gmsaReaderVerdicts']) {
         $readerVerdicts = $sourceObject._gmsaReaderVerdicts
     }
+    # What a reader is shown as where it is not the resolved name: "<SID> (deleted)", or the
+    # account that holds a SID through sIDHistory. A deleted principal resolved to
+    # "<SID> (UNRESOLVABLE in DOMAIN)", which says nothing about why.
+    $readerLabels = $null
+    if ($sourceObject -and $sourceObject.PSObject.Properties['_gmsaReaderLabels']) {
+        $readerLabels = $sourceObject._gmsaReaderLabels
+    }
+    # One lookup for both maps: a hashtable as the check leaves it, or an object with one
+    # property per SID after a round trip through the JSON cache.
+    $lookupBySID = {
+        param($Map, [string]$Key)
+        if (-not $Map -or -not $Key) { return $null }
+        if ($Map -is [System.Collections.IDictionary]) {
+            if ($Map.Contains($Key)) { return [string]$Map[$Key] }
+            return $null
+        }
+        if ($Map.PSObject.Properties[$Key]) { return [string]$Map.PSObject.Properties[$Key].Value }
+        return $null
+    }
 
     # A delegated Managed Service Account carries the same descriptor, but nobody retrieves
     # its password - a principal named there requests the dMSA's ticket. Its card says so.
@@ -663,18 +682,17 @@ function Convert-GMSAToRenderValues {
         if ($readerVerdicts -and $principalSID) {
             # A SID the check has no verdict for is named by the descriptor without being
             # granted ReadProperty - a ReadControl ACE, say - and cannot retrieve anything.
-            $verdict = 'NotReader'
-            if ($readerVerdicts -is [System.Collections.IDictionary]) {
-                if ($readerVerdicts.Contains($principalSID)) { $verdict = [string]$readerVerdicts[$principalSID] }
-            } elseif ($readerVerdicts.PSObject.Properties[$principalSID]) {
-                # The same map after a round trip through the JSON cache, which turns the
-                # hashtable into an object with one property per SID.
-                $verdict = [string]$readerVerdicts.PSObject.Properties[$principalSID].Value
-            }
+            $verdict = & $lookupBySID $readerVerdicts $principalSID
+            if (-not $verdict) { $verdict = 'NotReader' }
 
             if ($verdict -in @('Broad', 'Unexpected')) {
                 $severity = 'Finding'
                 $findingId = $readerCard
+            } elseif ($verdict -in @('Deleted', 'DeletedOrHidden')) {
+                # A stale entry: nobody holds the SID, so nobody reads through it. Worth
+                # removing, not a password access.
+                $severity = 'Hint'
+                $findingId = 'MSA_READER_DELETED'
             } else {
                 $severity = 'Standard'
                 $findingId = $null
@@ -693,7 +711,10 @@ function Convert-GMSAToRenderValues {
                 $findingId = $null
             }
         }
-        $renderValues += New-RenderValue -Display $principal.Name -Severity $severity `
+        $display = $principal.Name
+        $label = & $lookupBySID $readerLabels $principalSID
+        if ($label) { $display = $label }
+        $renderValues += New-RenderValue -Display $display -Severity $severity `
             -FindingId $findingId -RawValue $principal -Metadata @{ SID = $principal.SID }
     }
 

@@ -158,6 +158,7 @@ if ($Script:ScriptPath) {
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-SID.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertTo-SID.ps1"
     . "$Script:ScriptPath\modules\Helpers\Test-IsPrivileged.ps1"
+    . "$Script:ScriptPath\modules\Helpers\Get-UnresolvedSIDState.ps1"
     . "$Script:ScriptPath\modules\Helpers\Resolve-SchemaClassName.ps1"
     . "$Script:ScriptPath\modules\Helpers\Get-ObjectOwner.ps1"
     . "$Script:ScriptPath\modules\Helpers\ConvertFrom-ADInterval.ps1"

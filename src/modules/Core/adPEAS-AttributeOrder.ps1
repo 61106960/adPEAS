@@ -953,7 +953,9 @@ $Script:ExcludeAttributes = @(
     '_adPEASObjectType', '_adPEASContext', '_Severity', '_Risk', '_isExchangeGroup',
     # The gMSA check's verdict per password reader, keyed by SID. Read by the transformer of
     # msDS-GroupMSAMembership, which colours each reader by it; the reader sees the colours.
-    '_gmsaReaderVerdicts',
+    # And the text a reader is shown as where it is not the resolved name - a deleted
+    # principal, or the account holding a SID through sIDHistory.
+    '_gmsaReaderVerdicts', '_gmsaReaderLabels',
     # Precedence bookkeeping behind the EffectiveSetting sentence. _IsEffective is the
     # boolean the row colouring still needs; the sentence is what a reader gets.
     '_IsEffective', '_HasAnyLink',

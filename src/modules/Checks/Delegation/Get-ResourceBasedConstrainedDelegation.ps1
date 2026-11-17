@@ -57,6 +57,12 @@ function Get-ResourceBasedConstrainedDelegation {
 
             Show-SubHeader "Searching for accounts with RBCD configured..." -ObjectType "RBCDelegation"
 
+            # The connection parameters as a hashtable, for the helpers that take one
+            $connectionParams = @{}
+            foreach ($connectionKey in @('Domain', 'Server', 'Credential')) {
+                if ($PSBoundParameters.ContainsKey($connectionKey)) { $connectionParams[$connectionKey] = $PSBoundParameters[$connectionKey] }
+            }
+
             $rbcdComputers = @(Get-DomainComputer -RBCD -Enabled -ShowOwner @PSBoundParameters)
             $rbcdUsers = @(Get-DomainUser -RBCD -Enabled -ShowOwner @PSBoundParameters)
             # Neither person nor computer: a managed service account's objectCategory is its
@@ -137,7 +143,24 @@ function Get-ResourceBasedConstrainedDelegation {
                 # a leftover, like one that allows nobody - on a domain controller too, where
                 # it was a finding.
                 $inertPattern = '^(.+) \[inert: generic rights only\]$'
-                $livePrincipals = @($principals | Where-Object { ([string]$_).Trim() -notmatch $inertPattern })
+
+                # What an entry that names only a SID stands for (Get-UnresolvedSIDState). A
+                # SID of this domain that no object carries and no account holds in its
+                # sIDHistory is a deleted principal: SIDs are never issued again, so nobody
+                # can ever use the entry. It was reported as "a deleted or foreign principal
+                # that still holds the delegation" - a finding for an entry nobody holds.
+                $sidStates = @{}
+                foreach ($principal in $principals) {
+                    $sidText = ([string]$principal).Trim()
+                    if ($sidText -match $inertPattern) { continue }
+                    if ($sidText -match '^S-1-') { $sidStates[$sidText] = Get-UnresolvedSIDState -SID $sidText -ConnectionParams $connectionParams }
+                }
+
+                # Neither an inert entry nor a deleted principal lets anybody delegate.
+                $livePrincipals = @($principals | Where-Object {
+                    $liveText = ([string]$_).Trim()
+                    ($liveText -notmatch $inertPattern) -and -not ($sidStates.ContainsKey($liveText) -and $sidStates[$liveText].State -eq 'Deleted')
+                })
                 $delegatesNobody = $emptyDescriptor -or ($principals.Count -gt 0 -and $livePrincipals.Count -eq 0)
 
                 if ($targetIsDC -and -not $delegatesNobody) {
@@ -167,42 +190,69 @@ function Get-ResourceBasedConstrainedDelegation {
                             continue
                         }
 
-                        # An unresolved SID is a deleted or foreign trustee. Worth naming:
-                        # the entry still grants delegation, and nobody can tell from the
-                        # report who holds it.
-                        if ($principalText -match '^S-1-') {
-                            $risks += "${principalText}: unresolved - a deleted or foreign principal that still holds the delegation"
-                            continue
+                        # $label names the entry in the risk text, $evalName is what is judged.
+                        # They differ where an account holds the entry through sIDHistory.
+                        $label = $principalText
+                        $evalName = $principalText
+
+                        # An entry that names only a SID - see $sidStates above.
+                        if ($sidStates.ContainsKey($principalText)) {
+                            $sidState = $sidStates[$principalText]
+                            if ($sidState.State -eq 'Deleted') {
+                                $risks += "${principalText}: deleted - no account holds this SID any more, so the entry delegates nothing"
+                                continue
+                            } elseif ($sidState.State -eq 'DeletedOrHidden') {
+                                # An account that is not privileged cannot tell a deleted
+                                # principal from one it may not read.
+                                $risks += "${principalText}: deleted, or not visible to this account - who holds it cannot be told from here"
+                                continue
+                            } elseif ($sidState.State -eq 'SIDHistory') {
+                                # That account receives the SID in its token: it holds the entry.
+                                $label = "$principalText (in the sIDHistory of $($sidState.Carrier))"
+                                $evalName = $sidState.Carrier
+                            } elseif ($sidState.State -eq 'Present') {
+                                # An object without a name - judged by its SID
+                                $evalName = $sidState.SID
+                            } elseif ($sidState.State -eq 'Foreign') {
+                                # Possibly a real principal of a trusted domain. Worth naming:
+                                # the entry may still grant delegation, and nobody can tell
+                                # from the report who holds it.
+                                $risks += "${principalText}: unresolved - a principal of another domain that may still hold the delegation"
+                                continue
+                            } else {
+                                $risks += "${principalText}: unresolved - a principal that could not be identified and may still hold the delegation"
+                                continue
+                            }
                         }
 
                         $principalSID = $null
-                        try { $principalSID = ConvertTo-SID -Identity $principalText @PSBoundParameters } catch { }
+                        try { $principalSID = ConvertTo-SID -Identity $evalName @PSBoundParameters } catch { }
 
                         if ($principalSID -and (Test-IsBroadTrustee -SID ([string]$principalSID))) {
                             # Everyone, Authenticated Users, Domain Users, Domain Computers:
                             # every member may impersonate any account to this resource.
-                            $risks += "${principalText}: a broad group - every member of it can impersonate any account to this resource"
+                            $risks += "${label}: a broad group - every member of it can impersonate any account to this resource"
                             $rbcdClass = 'Finding'
                             continue
                         }
 
                         $verdict = $null
                         try {
-                            $verdict = Test-IsExpectedInScope -Identity $principalText -Scope 'KerberosDelegation' -ReturnDetails
+                            $verdict = Test-IsExpectedInScope -Identity $evalName -Scope 'KerberosDelegation' -ReturnDetails
                         } catch {
-                            Write-Log "[Get-ResourceBasedConstrainedDelegation] Scope check failed for '$principalText': $_"
+                            Write-Log "[Get-ResourceBasedConstrainedDelegation] Scope check failed for '$evalName': $_"
                         }
 
                         if ($verdict -and $verdict.Severity -eq 'Secure') {
-                            $risks += "${principalText}: expected - $($verdict.Reason)"
+                            $risks += "${label}: expected - $($verdict.Reason)"
                         } elseif ($verdict -and $verdict.Severity -eq 'Finding') {
-                            $risks += "${principalText}: $($verdict.Reason)"
+                            $risks += "${label}: $($verdict.Reason)"
                             $rbcdClass = 'Finding'
                         } elseif ($verdict -and $verdict.Reason) {
-                            $risks += "${principalText}: $($verdict.Reason)"
+                            $risks += "${label}: $($verdict.Reason)"
                         } else {
                             # No verdict available: say that rather than imply one.
-                            $risks += "${principalText}: not assessed - the principal could not be resolved"
+                            $risks += "${label}: not assessed - the principal could not be resolved"
                         }
                     }
 
