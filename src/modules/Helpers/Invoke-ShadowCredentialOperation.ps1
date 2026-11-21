@@ -423,6 +423,9 @@ function Invoke-ShadowCredentialOperation {
                         CreationTime = $null
                     }
 
+                    $KeySource = $null
+                    $CreationBytes = $null
+
                     # Parse LTV entries starting at offset 4
                     $offset = 4
                     while ($offset + 3 -le $KeyCredBytes.Length) {
@@ -442,18 +445,20 @@ function Invoke-ShadowCredentialOperation {
                                     $ParsedCred.DeviceID = (New-Object GUID(,[byte[]]$EntryData)).ToString()
                                 }
                             }
+                            0x05 {
+                                if ($EntryData.Length -ge 1) { $KeySource = $EntryData[0] }
+                            }
                             0x09 {
-                                if ($EntryData.Length -eq 8) {
-                                    $FileTime = [BitConverter]::ToInt64($EntryData, 0)
-                                    if ($FileTime -gt 0) {
-                                        # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
-                                        $ParsedCred.CreationTime = [DateTime]::FromFileTime($FileTime)
-                                    }
-                                }
+                                # Decoded after the loop: the encoding depends on KeySource
+                                $CreationBytes = [byte[]]$EntryData
                             }
                         }
 
                         $offset += $EntryLength
+                    }
+
+                    if ($null -ne $CreationBytes) {
+                        $ParsedCred.CreationTime = ConvertFrom-KeyCredentialTime -Bytes $CreationBytes -KeySource $KeySource
                     }
 
                     $ParsedCredentials += [PSCustomObject]$ParsedCred
@@ -513,7 +518,7 @@ function Invoke-ShadowCredentialOperation {
                             Show-KeyValue "DeviceID:" $cred.DeviceID
                             Show-KeyValue "KeyID:" $cred.KeyID
                             if ($cred.CreationTime) {
-                                Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') UTC"
+                                Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
                             }
                             Show-EmptyLine
                         }
@@ -635,7 +640,7 @@ function Invoke-ShadowCredentialOperation {
                         Show-KeyValue "[$index] DeviceID:" $cred.DeviceID
                         Show-KeyValue "    KeyID:" $cred.KeyID
                         if ($cred.CreationTime) {
-                            Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') UTC"
+                            Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
                         }
                         Show-EmptyLine
                         $index++

@@ -612,20 +612,26 @@ function Get-DomainObject {
 
             # Post-processing for AccountExpired filter (LDAP can't compare to "now")
             if ($AccountExpired -and $Objects.Count -gt 0) {
-                $Now = [DateTime]::UtcNow
-                $NowFileTime = $Now.ToFileTimeUtc()
+                $NowUtc = [DateTime]::UtcNow
+                $NowFileTime = $NowUtc.ToFileTimeUtc()
                 $FilteredObjects = @()
 
                 foreach ($Obj in $Objects) {
                     if ($Obj.accountExpires) {
                         try {
+                            # ConvertFrom-LDAPAttribute hands a real expiry over as a local
+                            # DateTime and keeps only a value it cannot convert as the raw
+                            # FILETIME string. Each needs its own comparison: a DateTime
+                            # compared with an Int64 makes PowerShell read the FILETIME as
+                            # ticks since year 1 (year 0426), so no account ever came out as
+                            # expired.
                             $ExpireTime = $Obj.accountExpires
-                            # Convert to Int64 if it's a string
-                            if ($ExpireTime -is [string]) {
-                                $ExpireTime = [Int64]::Parse($ExpireTime)
+                            if ($ExpireTime -is [DateTime]) {
+                                $IsExpired = $ExpireTime.ToUniversalTime() -lt $NowUtc
+                            } else {
+                                $IsExpired = [Int64]::Parse([string]$ExpireTime, [System.Globalization.CultureInfo]::InvariantCulture) -lt $NowFileTime
                             }
-                            # Check if expired (value is less than now)
-                            if ($ExpireTime -lt $NowFileTime) {
+                            if ($IsExpired) {
                                 $FilteredObjects += $Obj
                             }
                         } catch {

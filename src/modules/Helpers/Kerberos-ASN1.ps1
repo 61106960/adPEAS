@@ -3067,12 +3067,16 @@ function Build-KRBCred {
         [byte[]]$TicketFlags
     )
 
-    # Default times if not provided
+    # Defaults only for a time the caller does not know - every field is written, since
+    # Windows LSA wants the authtime. They follow from the times that are known rather
+    # than from this host's clock: the authtime used to be the moment of the export, and
+    # a ticket the KDC issued without renew-till (not renewable) was written as renewable
+    # for seven days from the export. A ticket that cannot be renewed ends at its end time.
     $now = [datetime]::UtcNow
-    if (-not $AuthTime) { $AuthTime = $now }
-    if (-not $StartTime) { $StartTime = $now }
-    if (-not $EndTime) { $EndTime = $now.AddHours(10) }
-    if (-not $RenewTill) { $RenewTill = $now.AddDays(7) }
+    if (-not $StartTime) { $StartTime = if ($AuthTime) { $AuthTime } else { $now } }
+    if (-not $AuthTime) { $AuthTime = $StartTime }
+    if (-not $EndTime) { $EndTime = $StartTime.AddHours(10) }
+    if (-not $RenewTill) { $RenewTill = $EndTime }
 
     # Default flags if not provided: forwardable (bit 1) + renewable (bit 8) + initial (bit 9) + pre-authent (bit 10)
     # 0x50800000 = these standard TGT flags

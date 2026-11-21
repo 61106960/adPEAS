@@ -1345,16 +1345,23 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
                 if (-not $sessionKey -or $sessionKey.Length -eq 0) {
                     Write-Warning "[Invoke-PKINITAuth-Native] Cannot save kirbi: Session key not available"
                 } else {
-                    $krbCredBytes = Build-KRBCred -Ticket $asRep.Ticket `
-                        -SessionKey $sessionKey `
-                        -SessionKeyType $asRep.EType `
-                        -Realm $Domain.ToUpper() `
-                        -ClientName $UserName `
-                        -ServerName "krbtgt" `
-                        -ServerInstance $Domain.ToUpper() `
-                        -StartTime $startTime `
-                        -EndTime $endTime `
-                        -RenewTill $renewTill
+                    # The times the KDC issued, the authtime included, and only those the
+                    # reply carries: starttime and renew-till are optional, and $null bound
+                    # to a [datetime] parameter throws
+                    $kirbiParams = @{
+                        Ticket         = $asRep.Ticket
+                        SessionKey     = $sessionKey
+                        SessionKeyType = $asRep.EType
+                        Realm          = $Domain.ToUpper()
+                        ClientName     = $UserName
+                        ServerName     = "krbtgt"
+                        ServerInstance = $Domain.ToUpper()
+                    }
+                    if ($authTime) { $kirbiParams['AuthTime'] = $authTime }
+                    if ($startTime) { $kirbiParams['StartTime'] = $startTime }
+                    if ($endTime) { $kirbiParams['EndTime'] = $endTime }
+                    if ($renewTill) { $kirbiParams['RenewTill'] = $renewTill }
+                    $krbCredBytes = Build-KRBCred @kirbiParams
 
                     $exportResult = Export-adPEASFile -Path $OutputKirbi -Content $krbCredBytes -Type Binary -Force
                     if ($exportResult.Success) {

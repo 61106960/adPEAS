@@ -452,7 +452,9 @@ function Invoke-KerberosAuth {
                     if ($errorCode -eq 37 -and $serverTime) {
                         $localTimeUTC = [DateTime]::UtcNow
                         $skew = $serverTime - $localTimeUTC
-                        $skewStr = if ($skew.TotalSeconds -ge 0) { "+$($skew.ToString('hh\:mm\:ss'))" } else { "-$(([Math]::Abs($skew.TotalSeconds) -as [TimeSpan]).ToString('hh\:mm\:ss'))" }
+                        # DC minus local: positive when the DC is ahead
+                        $skewStr = Format-adPEASDuration $skew
+                        if ($skew -ge [TimeSpan]::Zero) { $skewStr = "+$skewStr" }
                         $result.Error += " | DC time: $(Format-adPEASDate $serverTime 'yyyy-MM-dd HH:mm:ss') UTC, Local: $(Format-adPEASDate $localTimeUTC 'yyyy-MM-dd HH:mm:ss') UTC, Offset: $skewStr"
                     }
 
@@ -745,6 +747,7 @@ function Invoke-KerberosAuth {
                 [string]$Realm,
                 [string]$ClientName,
                 [byte[]]$TicketFlags,
+                $AuthTime,
                 $StartTime,
                 $EndTime,
                 $RenewTill
@@ -768,10 +771,15 @@ function Invoke-KerberosAuth {
                 ClientName = $ClientName
                 ServerName = "krbtgt"
                 ServerInstance = $Realm
-                StartTime = $StartTime
-                EndTime = $EndTime
-                RenewTill = $RenewTill
             }
+            # The times the KDC issued, the authtime included - Build-KRBCred used to write
+            # the moment of the export for it. Only the ones the reply carries: starttime
+            # and renew-till are optional in EncKDCRepPart, and $null bound to a [datetime]
+            # parameter throws.
+            if ($AuthTime) { $buildParams['AuthTime'] = $AuthTime }
+            if ($StartTime) { $buildParams['StartTime'] = $StartTime }
+            if ($EndTime) { $buildParams['EndTime'] = $EndTime }
+            if ($RenewTill) { $buildParams['RenewTill'] = $RenewTill }
             if ($TicketFlags) { $buildParams['TicketFlags'] = $TicketFlags }
 
             $krbCred = Build-KRBCred @buildParams
@@ -987,6 +995,7 @@ function Invoke-KerberosAuth {
                                 -Realm $realmUpper `
                                 -ClientName $UserName `
                                 -TicketFlags $pkInitResult.TicketFlags `
+                                -AuthTime $pkInitResult.AuthTime `
                                 -StartTime $pkInitResult.StartTime `
                                 -EndTime $pkInitResult.EndTime `
                                 -RenewTill $pkInitResult.RenewTill
@@ -1166,17 +1175,24 @@ function Invoke-KerberosAuth {
                 if (-not $sessionKey) {
                     Write-Warning "[Invoke-KerberosAuth] Cannot save kirbi: Session key not available (decryption failed)"
                 } else {
-                    # Build proper KRB-CRED structure (not just raw ticket!)
-                    $krbCredBytes = Build-KRBCred -Ticket $asRep.Ticket `
-                        -SessionKey $sessionKey `
-                        -SessionKeyType $asRep.EType `
-                        -Realm $realmUpper `
-                        -ClientName $UserName `
-                        -ServerName "krbtgt" `
-                        -ServerInstance $realmUpper `
-                        -StartTime $encRepPart.StartTime `
-                        -EndTime $encRepPart.EndTime `
-                        -RenewTill $encRepPart.RenewTill
+                    # Build proper KRB-CRED structure (not just raw ticket!), with the
+                    # times the KDC issued - only those the reply carries (see
+                    # ConvertTo-KRBCredBase64)
+                    $kirbiParams = @{
+                        Ticket         = $asRep.Ticket
+                        SessionKey     = $sessionKey
+                        SessionKeyType = $asRep.EType
+                        Realm          = $realmUpper
+                        ClientName     = $UserName
+                        ServerName     = "krbtgt"
+                        ServerInstance = $realmUpper
+                    }
+                    if ($encRepPart.AuthTime) { $kirbiParams['AuthTime'] = $encRepPart.AuthTime }
+                    if ($encRepPart.StartTime) { $kirbiParams['StartTime'] = $encRepPart.StartTime }
+                    if ($encRepPart.EndTime) { $kirbiParams['EndTime'] = $encRepPart.EndTime }
+                    if ($encRepPart.RenewTill) { $kirbiParams['RenewTill'] = $encRepPart.RenewTill }
+                    if ($encRepPart.TicketFlags) { $kirbiParams['TicketFlags'] = $encRepPart.TicketFlags }
+                    $krbCredBytes = Build-KRBCred @kirbiParams
 
                     $exportResult = Export-adPEASFile -Path $OutputKirbi -Content $krbCredBytes -Type Binary -Force
                     if ($exportResult.Success) {
@@ -1231,6 +1247,7 @@ function Invoke-KerberosAuth {
                     -Realm $realmUpper `
                     -ClientName $UserName `
                     -TicketFlags $encRepPart.TicketFlags `
+                    -AuthTime $encRepPart.AuthTime `
                     -StartTime $encRepPart.StartTime `
                     -EndTime $encRepPart.EndTime `
                     -RenewTill $encRepPart.RenewTill

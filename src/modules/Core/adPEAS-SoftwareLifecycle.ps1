@@ -710,7 +710,10 @@ function Get-ExchangeSeverity {
         return 'Standard'
     }
 
-    if ($ReferenceDate -ge $eolDate) { return 'Finding' }
+    # The table holds the last day of support, as the Windows table does: out of support
+    # from the day after, the rule Test-IsOutdatedOS applies. -ge made the end date itself
+    # a Finding here while Windows 10, ending on the same 2025-10-14, was still Supported.
+    if ($ReferenceDate.Date -gt $eolDate) { return 'Finding' }
 
     # The last half year before the date. Still supported, and too late to start
     # planning the migration - which is what a hint is for.

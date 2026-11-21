@@ -25015,7 +25015,7 @@ function Get-ExchangeSeverity {
             [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$eolDate)) {
         return 'Standard'
     }
-    if ($ReferenceDate -ge $eolDate) { return 'Finding' }
+    if ($ReferenceDate.Date -gt $eolDate) { return 'Finding' }
     if ($ReferenceDate -ge $eolDate.AddDays(-180)) { return 'Hint' }
     return 'Standard'
 }
@@ -26487,6 +26487,8 @@ function ConvertFrom-KeyCredentialLink {
                 RawBytes = $KeyCredentialBytes
                 ByteLength = $KeyCredentialBytes.Length
             }
+            $LastLogonBytes = $null
+            $CreationBytes = $null
             $Offset = 4
             while ($Offset + 3 -le $KeyCredentialBytes.Length) {
                 $EntryLength = [BitConverter]::ToUInt16($KeyCredentialBytes, $Offset)
@@ -26547,26 +26549,18 @@ function ConvertFrom-KeyCredentialLink {
                         $Result.CustomKeyInfo = [BitConverter]::ToString($EntryData).Replace('-', '').ToLower()
                     }
                     0x08 {
-                        if ($EntryData.Length -eq 8) {
-                            try {
-                                $FileTime = [BitConverter]::ToInt64($EntryData, 0)
-                                if ($FileTime -gt 0) {
-                                    $Result.KeyLastLogonTime = [DateTime]::FromFileTime($FileTime)
-                                }
-                            } catch { }
-                        }
+                        $LastLogonBytes = $EntryData
                     }
                     0x09 {
-                        if ($EntryData.Length -eq 8) {
-                            try {
-                                $FileTime = [BitConverter]::ToInt64($EntryData, 0)
-                                if ($FileTime -gt 0) {
-                                    $Result.KeyCreationTime = [DateTime]::FromFileTime($FileTime)
-                                }
-                            } catch { }
-                        }
+                        $CreationBytes = $EntryData
                     }
                 }
+            }
+            if ($null -ne $LastLogonBytes) {
+                $Result.KeyLastLogonTime = ConvertFrom-KeyCredentialTime -Bytes $LastLogonBytes -KeySource $Result.KeySource
+            }
+            if ($null -ne $CreationBytes) {
+                $Result.KeyCreationTime = ConvertFrom-KeyCredentialTime -Bytes $CreationBytes -KeySource $Result.KeySource
             }
             if ($Raw) {
                 return $Result
@@ -26600,6 +26594,30 @@ function ConvertFrom-KeyCredentialLink {
             }
             return "[Parse error: $($_.Exception.Message)]"
         }
+    }
+}
+function ConvertFrom-KeyCredentialTime {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes,
+        [Parameter(Mandatory = $false)]
+        $KeySource
+    )
+    if ($Bytes.Length -ne 8) { return $null }
+    $value = [BitConverter]::ToInt64($Bytes, 0)
+    if ($value -eq 0) { return $null }
+    try {
+        if ($null -eq $KeySource -or [int]$KeySource -eq 0) {
+            if ($value -lt 0) { return $null }
+            return [DateTime]::FromFileTime($value)
+        }
+        $time = [DateTime]::FromBinary($value)
+        if ($time.Kind -eq [DateTimeKind]::Local) { return $time }
+        return [TimeZoneInfo]::ConvertTimeFromUtc($time, [TimeZoneInfo]::Local)
+    } catch {
+        return $null
     }
 }
 function Connect-LDAP {
@@ -28471,6 +28489,7 @@ function Connect-adPEAS {
                                 ServerName = "krbtgt"
                                 ServerInstance = $Realm
                             }
+                            if ($PKINITResult.AuthTime) { $pttParams['AuthTime'] = $PKINITResult.AuthTime }
                             if ($PKINITResult.StartTime) { $pttParams['StartTime'] = $PKINITResult.StartTime }
                             if ($PKINITResult.EndTime) { $pttParams['EndTime'] = $PKINITResult.EndTime }
                             if ($PKINITResult.RenewTill) { $pttParams['RenewTill'] = $PKINITResult.RenewTill }
@@ -28754,9 +28773,6 @@ function Connect-adPEAS {
                             $Script:AuthInfo.Method = 'Kerberos'
                             $Script:AuthInfo.KerberosUsed = $true
                             $importedClockSkew = $null
-                            if ($PTTResult.AuthTime) {
-                                $importedClockSkew = $PTTResult.AuthTime - [DateTime]::UtcNow
-                            }
                             $Script:AuthInfo.TGTInfo = @{
                                 UserName = $PTTResult.UserName
                                 Domain = $PTTResult.Realm
@@ -29060,8 +29076,8 @@ function Disconnect-adPEAS {
                     Show-KeyValue "Authenticated as:" "$env:USERDOMAIN\$env:USERNAME"
                 }
                 if ($Script:LDAPContext.SessionStartTime) {
-                    $sessionDuration = (Get-Date) - $Script:LDAPContext.SessionStartTime
-                    Show-KeyValue "Session Duration:" $sessionDuration.ToString('hh\:mm\:ss')
+                    $sessionDuration = [DateTime]::UtcNow - $Script:LDAPContext.SessionStartTime.ToUniversalTime()
+                    Show-KeyValue "Session Duration:" (Format-adPEASDuration $sessionDuration)
                 }
             }
             $cleanupErrors = @()
@@ -31151,17 +31167,19 @@ function Get-DomainObject {
                 Write-Log "[Get-DomainObject] After cross-domain post-filter: $($Objects.Count) object(s)"
             }
             if ($AccountExpired -and $Objects.Count -gt 0) {
-                $Now = [DateTime]::UtcNow
-                $NowFileTime = $Now.ToFileTimeUtc()
+                $NowUtc = [DateTime]::UtcNow
+                $NowFileTime = $NowUtc.ToFileTimeUtc()
                 $FilteredObjects = @()
                 foreach ($Obj in $Objects) {
                     if ($Obj.accountExpires) {
                         try {
                             $ExpireTime = $Obj.accountExpires
-                            if ($ExpireTime -is [string]) {
-                                $ExpireTime = [Int64]::Parse($ExpireTime)
+                            if ($ExpireTime -is [DateTime]) {
+                                $IsExpired = $ExpireTime.ToUniversalTime() -lt $NowUtc
+                            } else {
+                                $IsExpired = [Int64]::Parse([string]$ExpireTime, [System.Globalization.CultureInfo]::InvariantCulture) -lt $NowFileTime
                             }
-                            if ($ExpireTime -lt $NowFileTime) {
+                            if ($IsExpired) {
                                 $FilteredObjects += $Obj
                             }
                         } catch {
@@ -38993,7 +39011,7 @@ $principalXml
         </Settings>
         <Triggers>
           <TimeTrigger>
-            <StartBoundary>$((Get-Date).ToString('yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture))</StartBoundary>
+            <StartBoundary>%LocalTimeXmlEx%</StartBoundary>
             <Enabled>true</Enabled>
           </TimeTrigger>
         </Triggers>
@@ -41661,6 +41679,19 @@ function Get-adPEASTimeZoneLabel {
     $sign = if ($offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
     $abs = $offset.Duration()
     return ('UTC' + $sign + $abs.Hours.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture) + ':' + $abs.Minutes.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture))
+}
+function Format-adPEASDuration {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [TimeSpan]$Duration
+    )
+    $sign = if ($Duration -lt [TimeSpan]::Zero) { '-' } else { '' }
+    $abs = $Duration.Duration()
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    return ($sign + ([Math]::Floor($abs.TotalHours)).ToString('00', $inv) + ':' +
+        $abs.Minutes.ToString('00', $inv) + ':' + $abs.Seconds.ToString('00', $inv))
 }
 function Get-adPEASOutputBasePath {
     [CmdletBinding()]
@@ -46141,10 +46172,9 @@ function Get-adPEASSession {
                 $LiveTicketStatus = Test-KerberosTGTExists -Detailed -Force
                 if ($LiveTicketStatus.Valid) {
                     $endTimeLocal = $LiveTicketStatus.EndTime.ToLocalTime()
-                    $now = Get-Date
-                    $timeRemaining = $LiveTicketStatus.EndTime - $now
+                    $timeRemaining = $LiveTicketStatus.EndTime.ToUniversalTime() - [DateTime]::UtcNow
                     if ($timeRemaining.TotalSeconds -gt 0) {
-                        $remainingDisplay = "{0:hh\:mm\:ss}" -f $timeRemaining
+                        $remainingDisplay = Format-adPEASDuration $timeRemaining
                         Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss') (in $remainingDisplay)"
                     }
                     else {
@@ -46176,10 +46206,10 @@ function Get-adPEASSession {
             Show-EmptyLine
             Show-Line "Session:" -Class Hint
             if ($Script:LDAPContext.SessionStartTime) {
-                $sessionDuration = (Get-Date) - $Script:LDAPContext.SessionStartTime
+                $sessionDuration = [DateTime]::UtcNow - $Script:LDAPContext.SessionStartTime.ToUniversalTime()
                 Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
                 Show-KeyValue "Time Zone:" (Get-adPEASTimeZoneLabel $Script:LDAPContext.SessionStartTime)
-                Show-KeyValue "Session Duration:" ('{0:00}:{1:mm\:ss}' -f [Math]::Floor($sessionDuration.TotalHours), $sessionDuration)
+                Show-KeyValue "Session Duration:" (Format-adPEASDuration $sessionDuration)
             }
             if ($Script:LDAPContext.KerberosUsed) {
                 if (-not $LiveTicketStatus) {
@@ -49788,10 +49818,10 @@ function Build-KRBCred {
         [byte[]]$TicketFlags
     )
     $now = [datetime]::UtcNow
-    if (-not $AuthTime) { $AuthTime = $now }
-    if (-not $StartTime) { $StartTime = $now }
-    if (-not $EndTime) { $EndTime = $now.AddHours(10) }
-    if (-not $RenewTill) { $RenewTill = $now.AddDays(7) }
+    if (-not $StartTime) { $StartTime = if ($AuthTime) { $AuthTime } else { $now } }
+    if (-not $AuthTime) { $AuthTime = $StartTime }
+    if (-not $EndTime) { $EndTime = $StartTime.AddHours(10) }
+    if (-not $RenewTill) { $RenewTill = $EndTime }
     if (-not $TicketFlags -or $TicketFlags.Length -ne 4) {
         $TicketFlags = [byte[]]@(0x50, 0x80, 0x00, 0x00)
     }
@@ -51988,16 +52018,20 @@ FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22
                 if (-not $sessionKey -or $sessionKey.Length -eq 0) {
                     Write-Warning "[Invoke-PKINITAuth-Native] Cannot save kirbi: Session key not available"
                 } else {
-                    $krbCredBytes = Build-KRBCred -Ticket $asRep.Ticket `
-                        -SessionKey $sessionKey `
-                        -SessionKeyType $asRep.EType `
-                        -Realm $Domain.ToUpper() `
-                        -ClientName $UserName `
-                        -ServerName "krbtgt" `
-                        -ServerInstance $Domain.ToUpper() `
-                        -StartTime $startTime `
-                        -EndTime $endTime `
-                        -RenewTill $renewTill
+                    $kirbiParams = @{
+                        Ticket         = $asRep.Ticket
+                        SessionKey     = $sessionKey
+                        SessionKeyType = $asRep.EType
+                        Realm          = $Domain.ToUpper()
+                        ClientName     = $UserName
+                        ServerName     = "krbtgt"
+                        ServerInstance = $Domain.ToUpper()
+                    }
+                    if ($authTime) { $kirbiParams['AuthTime'] = $authTime }
+                    if ($startTime) { $kirbiParams['StartTime'] = $startTime }
+                    if ($endTime) { $kirbiParams['EndTime'] = $endTime }
+                    if ($renewTill) { $kirbiParams['RenewTill'] = $renewTill }
+                    $krbCredBytes = Build-KRBCred @kirbiParams
                     $exportResult = Export-adPEASFile -Path $OutputKirbi -Content $krbCredBytes -Type Binary -Force
                     if ($exportResult.Success) {
                         Write-Log "[Invoke-PKINITAuth-Native] Kirbi (KRB-CRED) saved to: $($exportResult.Path) ($($exportResult.BytesWritten) bytes)"
@@ -53240,7 +53274,8 @@ function Invoke-KerberosAuth {
                     if ($errorCode -eq 37 -and $serverTime) {
                         $localTimeUTC = [DateTime]::UtcNow
                         $skew = $serverTime - $localTimeUTC
-                        $skewStr = if ($skew.TotalSeconds -ge 0) { "+$($skew.ToString('hh\:mm\:ss'))" } else { "-$(([Math]::Abs($skew.TotalSeconds) -as [TimeSpan]).ToString('hh\:mm\:ss'))" }
+                        $skewStr = Format-adPEASDuration $skew
+                        if ($skew -ge [TimeSpan]::Zero) { $skewStr = "+$skewStr" }
                         $result.Error += " | DC time: $(Format-adPEASDate $serverTime 'yyyy-MM-dd HH:mm:ss') UTC, Local: $(Format-adPEASDate $localTimeUTC 'yyyy-MM-dd HH:mm:ss') UTC, Offset: $skewStr"
                     }
                     if ($edata -and $errorCode -eq 25) {
@@ -53443,6 +53478,7 @@ function Invoke-KerberosAuth {
                 [string]$Realm,
                 [string]$ClientName,
                 [byte[]]$TicketFlags,
+                $AuthTime,
                 $StartTime,
                 $EndTime,
                 $RenewTill
@@ -53463,10 +53499,11 @@ function Invoke-KerberosAuth {
                 ClientName = $ClientName
                 ServerName = "krbtgt"
                 ServerInstance = $Realm
-                StartTime = $StartTime
-                EndTime = $EndTime
-                RenewTill = $RenewTill
             }
+            if ($AuthTime) { $buildParams['AuthTime'] = $AuthTime }
+            if ($StartTime) { $buildParams['StartTime'] = $StartTime }
+            if ($EndTime) { $buildParams['EndTime'] = $EndTime }
+            if ($RenewTill) { $buildParams['RenewTill'] = $RenewTill }
             if ($TicketFlags) { $buildParams['TicketFlags'] = $TicketFlags }
             $krbCred = Build-KRBCred @buildParams
             return [Convert]::ToBase64String($krbCred)
@@ -53639,6 +53676,7 @@ function Invoke-KerberosAuth {
                                 -Realm $realmUpper `
                                 -ClientName $UserName `
                                 -TicketFlags $pkInitResult.TicketFlags `
+                                -AuthTime $pkInitResult.AuthTime `
                                 -StartTime $pkInitResult.StartTime `
                                 -EndTime $pkInitResult.EndTime `
                                 -RenewTill $pkInitResult.RenewTill
@@ -53762,16 +53800,21 @@ function Invoke-KerberosAuth {
                 if (-not $sessionKey) {
                     Write-Warning "[Invoke-KerberosAuth] Cannot save kirbi: Session key not available (decryption failed)"
                 } else {
-                    $krbCredBytes = Build-KRBCred -Ticket $asRep.Ticket `
-                        -SessionKey $sessionKey `
-                        -SessionKeyType $asRep.EType `
-                        -Realm $realmUpper `
-                        -ClientName $UserName `
-                        -ServerName "krbtgt" `
-                        -ServerInstance $realmUpper `
-                        -StartTime $encRepPart.StartTime `
-                        -EndTime $encRepPart.EndTime `
-                        -RenewTill $encRepPart.RenewTill
+                    $kirbiParams = @{
+                        Ticket         = $asRep.Ticket
+                        SessionKey     = $sessionKey
+                        SessionKeyType = $asRep.EType
+                        Realm          = $realmUpper
+                        ClientName     = $UserName
+                        ServerName     = "krbtgt"
+                        ServerInstance = $realmUpper
+                    }
+                    if ($encRepPart.AuthTime) { $kirbiParams['AuthTime'] = $encRepPart.AuthTime }
+                    if ($encRepPart.StartTime) { $kirbiParams['StartTime'] = $encRepPart.StartTime }
+                    if ($encRepPart.EndTime) { $kirbiParams['EndTime'] = $encRepPart.EndTime }
+                    if ($encRepPart.RenewTill) { $kirbiParams['RenewTill'] = $encRepPart.RenewTill }
+                    if ($encRepPart.TicketFlags) { $kirbiParams['TicketFlags'] = $encRepPart.TicketFlags }
+                    $krbCredBytes = Build-KRBCred @kirbiParams
                     $exportResult = Export-adPEASFile -Path $OutputKirbi -Content $krbCredBytes -Type Binary -Force
                     if ($exportResult.Success) {
                         Write-Log "[Invoke-KerberosAuth] Kirbi (KRB-CRED) saved to: $($exportResult.Path) ($($exportResult.BytesWritten) bytes)"
@@ -53817,6 +53860,7 @@ function Invoke-KerberosAuth {
                     -Realm $realmUpper `
                     -ClientName $UserName `
                     -TicketFlags $encRepPart.TicketFlags `
+                    -AuthTime $encRepPart.AuthTime `
                     -StartTime $encRepPart.StartTime `
                     -EndTime $encRepPart.EndTime `
                     -RenewTill $encRepPart.RenewTill
@@ -55614,7 +55658,7 @@ function Import-KerberosTicket {
                     if ($lenInfo.Length -lt 15) { return $null }
                     $timeStr = [System.Text.Encoding]::ASCII.GetString($bytes, $offset, $lenInfo.Length)
                     try {
-                        return [DateTime]::ParseExact($timeStr, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+                        return [DateTime]::ParseExact($timeStr, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, ([System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal))
                     } catch {
                         return $null
                     }
@@ -56179,13 +56223,14 @@ public class LSATicketImport
                 }
                 if ($returnObj.EndTime) {
                     $now = [DateTime]::UtcNow
-                    if ($returnObj.EndTime -lt $now) {
-                        $expiredAgo = $now - $returnObj.EndTime
-                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1')) hours ago at $($returnObj.EndTime.ToString('u')))"
-                        $returnObj.Message = "Ticket imported but is EXPIRED since $($returnObj.EndTime.ToString('u'))"
+                    $endUtc = $returnObj.EndTime.ToUniversalTime()
+                    if ($endUtc -lt $now) {
+                        $expiredAgo = $now - $endUtc
+                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $($endUtc.ToString('u')))"
+                        $returnObj.Message = "Ticket imported but is EXPIRED since $($endUtc.ToString('u'))"
                     }
-                    elseif (($returnObj.EndTime - $now).TotalMinutes -lt 5) {
-                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $($returnObj.EndTime.ToString('u')))"
+                    elseif (($endUtc - $now).TotalMinutes -lt 5) {
+                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $($endUtc.ToString('u')))"
                     }
                 }
                 return $returnObj
@@ -66991,6 +67036,8 @@ function Invoke-ShadowCredentialOperation {
                         KeyID = $null
                         CreationTime = $null
                     }
+                    $KeySource = $null
+                    $CreationBytes = $null
                     $offset = 4
                     while ($offset + 3 -le $KeyCredBytes.Length) {
                         $EntryLength = [BitConverter]::ToUInt16($KeyCredBytes, $offset)
@@ -67006,16 +67053,17 @@ function Invoke-ShadowCredentialOperation {
                                     $ParsedCred.DeviceID = (New-Object GUID(,[byte[]]$EntryData)).ToString()
                                 }
                             }
+                            0x05 {
+                                if ($EntryData.Length -ge 1) { $KeySource = $EntryData[0] }
+                            }
                             0x09 {
-                                if ($EntryData.Length -eq 8) {
-                                    $FileTime = [BitConverter]::ToInt64($EntryData, 0)
-                                    if ($FileTime -gt 0) {
-                                        $ParsedCred.CreationTime = [DateTime]::FromFileTime($FileTime)
-                                    }
-                                }
+                                $CreationBytes = [byte[]]$EntryData
                             }
                         }
                         $offset += $EntryLength
+                    }
+                    if ($null -ne $CreationBytes) {
+                        $ParsedCred.CreationTime = ConvertFrom-KeyCredentialTime -Bytes $CreationBytes -KeySource $KeySource
                     }
                     $ParsedCredentials += [PSCustomObject]$ParsedCred
                 }
@@ -67066,7 +67114,7 @@ function Invoke-ShadowCredentialOperation {
                             Show-KeyValue "DeviceID:" $cred.DeviceID
                             Show-KeyValue "KeyID:" $cred.KeyID
                             if ($cred.CreationTime) {
-                                Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') UTC"
+                                Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
                             }
                             Show-EmptyLine
                         }
@@ -67167,7 +67215,7 @@ function Invoke-ShadowCredentialOperation {
                         Show-KeyValue "[$index] DeviceID:" $cred.DeviceID
                         Show-KeyValue "    KeyID:" $cred.KeyID
                         if ($cred.CreationTime) {
-                            Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') UTC"
+                            Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
                         }
                         Show-EmptyLine
                         $index++
@@ -74529,6 +74577,22 @@ function Format-PasswordHistoryLength {
     if ([int]$Value -lt 24) { return "$Value passwords remembered - fewer than the 24 Microsoft sets by default" }
     return "$Value passwords remembered"
 }
+function Format-PasswordAge {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Span,
+        [Parameter(Mandatory=$true)]
+        [string]$ZeroText
+    )
+    if ($null -eq $Span -or $Span.Ticks -eq 0) { return $ZeroText }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    if ($Span.TotalDays -ge 1) { return "$($Span.TotalDays.ToString('0.##', $inv)) days" }
+    if ($Span.TotalHours -ge 1) { return "$($Span.TotalHours.ToString('0.##', $inv)) hours" }
+    return "$($Span.TotalMinutes.ToString('0.##', $inv)) minutes"
+}
 function Get-PSOAssignment {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
@@ -74619,12 +74683,12 @@ function Get-DomainPasswordPolicy {
             $hasMinPwdAge = ($null -ne $rawMinPwdAge) -and
                             (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdAge))
             $minPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMinPwdAge
-            $minPwdAge = if ($minPwdAgeSpan) { [Math]::Round($minPwdAgeSpan.TotalDays) } else { 0 }
+            $minPwdAge = if ($minPwdAgeSpan) { $minPwdAgeSpan.TotalDays } else { 0 }
             $rawMaxPwdAge = $domainPolicy.maxPwdAge
             $hasMaxPwdAge = ($null -ne $rawMaxPwdAge) -and
                             (-not [string]::IsNullOrWhiteSpace([string]$rawMaxPwdAge))
             $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMaxPwdAge
-            $maxPwdAge = if ($maxPwdAgeSpan) { [Math]::Round($maxPwdAgeSpan.TotalDays) } else { 0 }
+            $maxPwdAge = if ($maxPwdAgeSpan) { $maxPwdAgeSpan.TotalDays } else { 0 }
             $rawLockoutThreshold = $domainPolicy.lockoutThreshold
             $hasLockoutThreshold = ($null -ne $rawLockoutThreshold) -and
                                    (-not [string]::IsNullOrWhiteSpace([string]$rawLockoutThreshold))
@@ -74690,9 +74754,9 @@ function Get-DomainPasswordPolicy {
                 minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
                                elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
                 minPwdAge = if (-not $hasMinPwdAge) { "Unknown - the value could not be read" }
-                            elseif ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
+                            else { Format-PasswordAge -Span $minPwdAgeSpan -ZeroText 'Disabled' }
                 maxPwdAge = if (-not $hasMaxPwdAge) { "Unknown - the value could not be read" }
-                            elseif ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
+                            else { Format-PasswordAge -Span $maxPwdAgeSpan -ZeroText 'Disabled (Never expires)' }
                 passwordComplexity = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
                                      elseif ($complexityEnabled) { "Enabled" } else { "Disabled" }
                 reversibleEncryption = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
@@ -74853,9 +74917,9 @@ function Get-DomainPasswordPolicy {
                                 lockoutThreshold = if ($null -eq $lockoutThresholdPSO) { $unknownValue }
                                                    elseif ($lockoutThresholdPSO -eq 0) { "Disabled" } else { "After $lockoutThresholdPSO failed attempts" }
                                 minPwdAge = if ($null -eq $minAgePSO) { $unknownValue }
-                                            elseif ([Math]::Round($minAgePSO.TotalDays) -eq 0) { "Disabled" } else { "$([Math]::Round($minAgePSO.TotalDays)) days" }
+                                            else { Format-PasswordAge -Span $minAgePSO -ZeroText 'Disabled' }
                                 maxPwdAge = if ($null -eq $maxAgePSO) { $unknownValue }
-                                            elseif ([Math]::Round($maxAgePSO.TotalDays) -eq 0) { "Disabled (Never expires)" } else { "$([Math]::Round($maxAgePSO.TotalDays)) days" }
+                                            else { Format-PasswordAge -Span $maxAgePSO -ZeroText 'Disabled (Never expires)' }
                                 pwdHistoryLength = Format-PasswordHistoryLength -Value $historyPSO
                                 lockoutDuration = if ($null -eq $lockoutDurationPSO) { $unknownValue }
                                                   elseif ($lockoutDurationPSO.TotalMinutes -gt 0) { "$($lockoutDurationPSO.TotalMinutes) minutes" }
@@ -105467,7 +105531,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.11.0+20261121-1037"
+$Script:adPEASVersion = "2.11.0+20261121-1632"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

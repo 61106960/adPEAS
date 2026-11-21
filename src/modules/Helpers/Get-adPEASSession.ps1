@@ -311,11 +311,10 @@ function Get-adPEASSession {
                 if ($LiveTicketStatus.Valid) {
                     # Tickets are valid - show live EndTime from LSA
                     $endTimeLocal = $LiveTicketStatus.EndTime.ToLocalTime()
-                    $now = Get-Date
-                    $timeRemaining = $LiveTicketStatus.EndTime - $now
+                    $timeRemaining = $LiveTicketStatus.EndTime.ToUniversalTime() - [DateTime]::UtcNow
 
                     if ($timeRemaining.TotalSeconds -gt 0) {
-                        $remainingDisplay = "{0:hh\:mm\:ss}" -f $timeRemaining
+                        $remainingDisplay = Format-adPEASDuration $timeRemaining
                         Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss') (in $remainingDisplay)"
                     }
                     else {
@@ -355,16 +354,16 @@ function Get-adPEASSession {
             Show-EmptyLine
             Show-Line "Session:" -Class Hint
             if ($Script:LDAPContext.SessionStartTime) {
-                $sessionDuration = (Get-Date) - $Script:LDAPContext.SessionStartTime
+                $sessionDuration = [DateTime]::UtcNow - $Script:LDAPContext.SessionStartTime.ToUniversalTime()
                 # Through Format-adPEASDate like every other date: handed over as a DateTime,
                 # the start read "10/18/2026 14:55:10" - the invariant culture's month first.
-                # And the hours in full: 'hh' is the hour of the day, so a session of 26
-                # hours read "02:00:00".
+                # And the hours in full (Format-adPEASDuration): 'hh' is the hour of the
+                # day, so a session of 26 hours read "02:00:00".
                 Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
                 # Every directory time adPEAS prints is local time of this host
                 # (ConvertFrom-adPEASGeneralizedTime); this names the offset once.
                 Show-KeyValue "Time Zone:" (Get-adPEASTimeZoneLabel $Script:LDAPContext.SessionStartTime)
-                Show-KeyValue "Session Duration:" ('{0:00}:{1:mm\:ss}' -f [Math]::Floor($sessionDuration.TotalHours), $sessionDuration)
+                Show-KeyValue "Session Duration:" (Format-adPEASDuration $sessionDuration)
             }
 
             # Connection State - check live TGT status for Kerberos sessions

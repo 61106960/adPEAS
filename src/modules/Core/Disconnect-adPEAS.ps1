@@ -91,8 +91,8 @@ function Disconnect-adPEAS {
 
                 # Calculate session duration if available
                 if ($Script:LDAPContext.SessionStartTime) {
-                    $sessionDuration = (Get-Date) - $Script:LDAPContext.SessionStartTime
-                    Show-KeyValue "Session Duration:" $sessionDuration.ToString('hh\:mm\:ss')
+                    $sessionDuration = [DateTime]::UtcNow - $Script:LDAPContext.SessionStartTime.ToUniversalTime()
+                    Show-KeyValue "Session Duration:" (Format-adPEASDuration $sessionDuration)
                 }
             }
 

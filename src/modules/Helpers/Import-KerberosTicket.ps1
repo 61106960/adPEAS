@@ -507,9 +507,13 @@ function Import-KerberosTicket {
                     $offset += $lenInfo.BytesConsumed
                     if ($lenInfo.Length -lt 15) { return $null }
                     $timeStr = [System.Text.Encoding]::ASCII.GetString($bytes, $offset, $lenInfo.Length)
-                    # Format: YYYYMMDDHHmmssZ
+                    # Format: YYYYMMDDHHmmssZ. A protocol time, so UTC - as the ccache
+                    # path returns it. AssumeUniversal alone hands back local time
+                    # (Kind Local); compared with UtcNow, which ignores Kind, an expired
+                    # ticket counted as valid for another UTC offset, and 'u' printed the
+                    # local wall clock with a Z.
                     try {
-                        return [DateTime]::ParseExact($timeStr, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+                        return [DateTime]::ParseExact($timeStr, "yyyyMMddHHmmssZ", [System.Globalization.CultureInfo]::InvariantCulture, ([System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal))
                     } catch {
                         return $null
                     }
@@ -1307,13 +1311,14 @@ public class LSATicketImport
                 # Check if ticket is expired and warn user
                 if ($returnObj.EndTime) {
                     $now = [DateTime]::UtcNow
-                    if ($returnObj.EndTime -lt $now) {
-                        $expiredAgo = $now - $returnObj.EndTime
-                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1')) hours ago at $($returnObj.EndTime.ToString('u')))"
-                        $returnObj.Message = "Ticket imported but is EXPIRED since $($returnObj.EndTime.ToString('u'))"
+                    $endUtc = $returnObj.EndTime.ToUniversalTime()
+                    if ($endUtc -lt $now) {
+                        $expiredAgo = $now - $endUtc
+                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $($endUtc.ToString('u')))"
+                        $returnObj.Message = "Ticket imported but is EXPIRED since $($endUtc.ToString('u'))"
                     }
-                    elseif (($returnObj.EndTime - $now).TotalMinutes -lt 5) {
-                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $($returnObj.EndTime.ToString('u')))"
+                    elseif (($endUtc - $now).TotalMinutes -lt 5) {
+                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $($endUtc.ToString('u')))"
                     }
                 }
 

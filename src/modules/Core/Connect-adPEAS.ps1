@@ -1609,6 +1609,7 @@ function Connect-adPEAS {
                                 ServerInstance = $Realm
                             }
                             # Add actual ticket times from EncKDCRepPart (critical for Windows LSA to accept)
+                            if ($PKINITResult.AuthTime) { $pttParams['AuthTime'] = $PKINITResult.AuthTime }
                             if ($PKINITResult.StartTime) { $pttParams['StartTime'] = $PKINITResult.StartTime }
                             if ($PKINITResult.EndTime) { $pttParams['EndTime'] = $PKINITResult.EndTime }
                             if ($PKINITResult.RenewTill) { $pttParams['RenewTill'] = $PKINITResult.RenewTill }
@@ -1984,11 +1985,12 @@ function Connect-adPEAS {
                             # Track auth info
                             $Script:AuthInfo.Method = 'Kerberos'
                             $Script:AuthInfo.KerberosUsed = $true
-                            # For imported tickets, estimate clock skew from AuthTime
+                            # No clock skew for an imported ticket. AuthTime minus now is the
+                            # skew only for a ticket the KDC issued a moment ago, as in
+                            # Invoke-KerberosAuth; for a ticket imported from a file it is the
+                            # ticket's age, and every ticket older than five minutes was
+                            # reported as "exceeds 5-minute Kerberos limit".
                             $importedClockSkew = $null
-                            if ($PTTResult.AuthTime) {
-                                $importedClockSkew = $PTTResult.AuthTime - [DateTime]::UtcNow
-                            }
                             $Script:AuthInfo.TGTInfo = @{
                                 UserName = $PTTResult.UserName
                                 Domain = $PTTResult.Realm

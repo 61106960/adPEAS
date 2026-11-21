@@ -20,11 +20,10 @@
     The standard specifiers 'o' and 's' already force the Gregorian calendar and need no
     help; every custom pattern ('yyyy-MM-dd', 'yyyyMMddHHmmss', ...) needs this.
 
-    Two places deliberately do not call this and spell the invariant culture out inline
-    instead, because what they produce is read by a machine rather than by a person and
-    the contract belongs next to the code: the KerberosTime in
-    Kerberos-ASN1.ps1 (New-ASN1GeneralizedTime) and the scheduled-task StartBoundary in
-    Set-DomainGPO.ps1.
+    One place deliberately does not call this and spells the invariant culture out inline
+    instead, because what it produces is read by a machine rather than by a person and the
+    contract belongs next to the code: the KerberosTime in Kerberos-ASN1.ps1
+    (New-ASN1GeneralizedTime).
 
 .PARAMETER Date
     The value to format.
@@ -139,4 +138,40 @@ function Get-adPEASTimeZoneLabel {
     $sign = if ($offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
     $abs = $offset.Duration()
     return ('UTC' + $sign + $abs.Hours.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture) + ':' + $abs.Minutes.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture))
+}
+
+<#
+.SYNOPSIS
+    Formats a length of time as hours:minutes:seconds, the hours counted in full.
+
+.DESCRIPTION
+    The TimeSpan format 'hh' is the hours component, 0 to 23, not the total: a session of
+    26.5 hours read "02:30:00", a ticket valid for ten more years "(in 05:12:00)". And a
+    TimeSpan built from seconds with -as [TimeSpan] counts ticks, so a clock seven minutes
+    ahead read "Offset: -00:00:00". This counts the hours in full and puts a minus sign in
+    front of a negative length.
+
+.PARAMETER Duration
+    The length of time.
+
+.EXAMPLE
+    Format-adPEASDuration ([TimeSpan]::FromHours(26.5))
+    Returns "26:30:00".
+
+.OUTPUTS
+    [string] such as "26:30:00" or "-00:07:00".
+#>
+function Format-adPEASDuration {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [TimeSpan]$Duration
+    )
+
+    $sign = if ($Duration -lt [TimeSpan]::Zero) { '-' } else { '' }
+    $abs = $Duration.Duration()
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    return ($sign + ([Math]::Floor($abs.TotalHours)).ToString('00', $inv) + ':' +
+        $abs.Minutes.ToString('00', $inv) + ':' + $abs.Seconds.ToString('00', $inv))
 }

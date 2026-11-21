@@ -19,8 +19,8 @@
     - 0x0005: KeySource (0=AD, 1=AzureAD)
     - 0x0006: DeviceId (GUID)
     - 0x0007: CustomKeyInformation
-    - 0x0008: KeyApproximateLastLogonTimeStamp (FILETIME)
-    - 0x0009: KeyCreationTime (FILETIME)
+    - 0x0008: KeyApproximateLastLogonTimeStamp (FILETIME, or DateTime binary for AzureAD)
+    - 0x0009: KeyCreationTime (FILETIME, or DateTime binary for AzureAD)
 
 .PARAMETER KeyCredentialBytes
     The raw binary bytes of the KeyCredentialLink blob.
@@ -124,6 +124,9 @@ function ConvertFrom-KeyCredentialLink {
                 ByteLength = $KeyCredentialBytes.Length
             }
 
+            $LastLogonBytes = $null
+            $CreationBytes = $null
+
             # Parse LTV entries starting at offset 4
             # MS-ADTS 2.2.19: Each entry is Length (2 bytes) + Identifier (1 byte) + Data (variable)
             $Offset = 4
@@ -214,28 +217,22 @@ function ConvertFrom-KeyCredentialLink {
                     0x07 {  # CustomKeyInformation
                         $Result.CustomKeyInfo = [BitConverter]::ToString($EntryData).Replace('-', '').ToLower()
                     }
-                    0x08 {  # KeyApproximateLastLogonTimeStamp (FILETIME)
-                        if ($EntryData.Length -eq 8) {
-                            try {
-                                $FileTime = [BitConverter]::ToInt64($EntryData, 0)
-                                if ($FileTime -gt 0) {
-                                    # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
-                                    $Result.KeyLastLogonTime = [DateTime]::FromFileTime($FileTime)
-                                }
-                            } catch { }
-                        }
+                    # The two time entries are decoded after the loop: their encoding
+                    # depends on KeySource (see ConvertFrom-KeyCredentialTime).
+                    0x08 {  # KeyApproximateLastLogonTimeStamp
+                        $LastLogonBytes = $EntryData
                     }
-                    0x09 {  # KeyCreationTime (FILETIME)
-                        if ($EntryData.Length -eq 8) {
-                            try {
-                                $FileTime = [BitConverter]::ToInt64($EntryData, 0)
-                                if ($FileTime -gt 0) {
-                                    $Result.KeyCreationTime = [DateTime]::FromFileTime($FileTime)
-                                }
-                            } catch { }
-                        }
+                    0x09 {  # KeyCreationTime
+                        $CreationBytes = $EntryData
                     }
                 }
+            }
+
+            if ($null -ne $LastLogonBytes) {
+                $Result.KeyLastLogonTime = ConvertFrom-KeyCredentialTime -Bytes $LastLogonBytes -KeySource $Result.KeySource
+            }
+            if ($null -ne $CreationBytes) {
+                $Result.KeyCreationTime = ConvertFrom-KeyCredentialTime -Bytes $CreationBytes -KeySource $Result.KeySource
             }
 
             # Return based on mode
@@ -303,5 +300,61 @@ function ConvertFrom-KeyCredentialLink {
             }
             return "[Parse error: $($_.Exception.Message)]"
         }
+    }
+}
+
+<#
+.SYNOPSIS
+    Decodes a time entry of a KEYCREDENTIALLINK_BLOB (version 2) as local time.
+
+.DESCRIPTION
+    KeyCreationTime (0x09) and KeyApproximateLastLogonTimeStamp (0x08) are eight bytes each,
+    but not in one encoding. A key written by Active Directory (KeySource 0, or no KeySource
+    entry) carries a FILETIME; a key written by Entra ID (any other KeySource) carries a .NET
+    DateTime.ToBinary value - the rule DSInternals decodes these blobs by. Read as a FILETIME,
+    such a value lands in the 37th century or past year 9999, and the key lost its creation
+    time.
+
+    Both parsers of the blob use this: ConvertFrom-KeyCredentialLink and
+    Invoke-ShadowCredentialOperation.
+
+.PARAMETER Bytes
+    The eight bytes of the entry.
+
+.PARAMETER KeySource
+    The value of the KeySource entry (0x05), or $null when the blob has none.
+
+.OUTPUTS
+    DateTime with Kind Local, or $null for zero and for a value that is no valid time.
+#>
+function ConvertFrom-KeyCredentialTime {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes,
+
+        [Parameter(Mandatory = $false)]
+        $KeySource
+    )
+
+    if ($Bytes.Length -ne 8) { return $null }
+    $value = [BitConverter]::ToInt64($Bytes, 0)
+    if ($value -eq 0) { return $null }
+
+    try {
+        if ($null -eq $KeySource -or [int]$KeySource -eq 0) {
+            if ($value -lt 0) { return $null }
+            # Local time, like every directory time (ConvertFrom-adPEASGeneralizedTime)
+            return [DateTime]::FromFileTime($value)
+        }
+
+        # ToBinary keeps the Kind. A Local value comes back converted to this host already;
+        # a Utc or an Unspecified one is read as UTC.
+        $time = [DateTime]::FromBinary($value)
+        if ($time.Kind -eq [DateTimeKind]::Local) { return $time }
+        return [TimeZoneInfo]::ConvertTimeFromUtc($time, [TimeZoneInfo]::Local)
+    } catch {
+        return $null
     }
 }

@@ -28,6 +28,44 @@ function Format-PasswordHistoryLength {
 
 <#
 .SYNOPSIS
+    The minPwdAge and maxPwdAge rows, for the domain policy and a fine-grained one alike.
+
+.DESCRIPTION
+    Only a length of zero (or the never sentinel, which arrives as $null) is "none". The
+    rows used to be [Math]::Round of the days, which rounds half to even: a fine-grained
+    policy whose passwords expire every 12 hours read "Disabled (Never expires)", and 1.5
+    and 2.5 days both read "2 days". A part of a day stays visible now, and a length under
+    a day is given in hours or minutes.
+
+.PARAMETER Span
+    The interval as ConvertFrom-ADInterval returns it. The caller has already decided that
+    the attribute was read.
+
+.PARAMETER ZeroText
+    What a length of zero means for this setting.
+#>
+function Format-PasswordAge {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        $Span,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ZeroText
+    )
+
+    if ($null -eq $Span -or $Span.Ticks -eq 0) { return $ZeroText }
+
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    if ($Span.TotalDays -ge 1) { return "$($Span.TotalDays.ToString('0.##', $inv)) days" }
+    if ($Span.TotalHours -ge 1) { return "$($Span.TotalHours.ToString('0.##', $inv)) hours" }
+    return "$($Span.TotalMinutes.ToString('0.##', $inv)) minutes"
+}
+
+<#
+.SYNOPSIS
     The Fine-Grained Password Policies an account outside Domain Admins can find: by name
     in the Password Settings Container, and through the users and groups they are
     assigned to.
@@ -241,7 +279,7 @@ function Get-DomainPasswordPolicy {
                 try { $minPwdLength = [int]$rawMinPwdLength } catch { $hasMinPwdLength = $false }
             }
 
-            # minPwdAge / maxPwdAge in whole days. ConvertFrom-ADInterval answers $null
+            # minPwdAge / maxPwdAge in days, not rounded (Format-PasswordAge). ConvertFrom-ADInterval answers $null
             # for three different things - an unreadable value, an absent one, and the
             # Int64.MinValue "never" sentinel - so the raw attribute decides whether
             # anything was read, and the TimeSpan decides what it said.
@@ -249,13 +287,13 @@ function Get-DomainPasswordPolicy {
             $hasMinPwdAge = ($null -ne $rawMinPwdAge) -and
                             (-not [string]::IsNullOrWhiteSpace([string]$rawMinPwdAge))
             $minPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMinPwdAge
-            $minPwdAge = if ($minPwdAgeSpan) { [Math]::Round($minPwdAgeSpan.TotalDays) } else { 0 }
+            $minPwdAge = if ($minPwdAgeSpan) { $minPwdAgeSpan.TotalDays } else { 0 }
 
             $rawMaxPwdAge = $domainPolicy.maxPwdAge
             $hasMaxPwdAge = ($null -ne $rawMaxPwdAge) -and
                             (-not [string]::IsNullOrWhiteSpace([string]$rawMaxPwdAge))
             $maxPwdAgeSpan = ConvertFrom-ADInterval -Value $rawMaxPwdAge
-            $maxPwdAge = if ($maxPwdAgeSpan) { [Math]::Round($maxPwdAgeSpan.TotalDays) } else { 0 }
+            $maxPwdAge = if ($maxPwdAgeSpan) { $maxPwdAgeSpan.TotalDays } else { 0 }
 
             # The same split for the lockout threshold. Its 0 carries the no_lockout
             # verdict, and an absent attribute became that 0 - "Account lockout disabled"
@@ -375,9 +413,9 @@ function Get-DomainPasswordPolicy {
                 minPwdLength = if (-not $hasMinPwdLength) { "Unknown - the value could not be read" }
                                elseif ($minPwdLength -eq 0) { "Disabled" } else { "$minPwdLength characters" }
                 minPwdAge = if (-not $hasMinPwdAge) { "Unknown - the value could not be read" }
-                            elseif ($minPwdAge -eq 0) { "Disabled" } else { "$minPwdAge days" }
+                            else { Format-PasswordAge -Span $minPwdAgeSpan -ZeroText 'Disabled' }
                 maxPwdAge = if (-not $hasMaxPwdAge) { "Unknown - the value could not be read" }
-                            elseif ($maxPwdAge -eq 0) { "Disabled (Never expires)" } else { "$maxPwdAge days" }
+                            else { Format-PasswordAge -Span $maxPwdAgeSpan -ZeroText 'Disabled (Never expires)' }
                 passwordComplexity = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
                                      elseif ($complexityEnabled) { "Enabled" } else { "Disabled" }
                 reversibleEncryption = if (-not $hasPwdProperties) { "Unknown - the value could not be read" }
@@ -639,9 +677,9 @@ function Get-DomainPasswordPolicy {
                                 # The rows and their texts are the domain policy's, so its
                                 # triggers judge a policy and the domain alike.
                                 minPwdAge = if ($null -eq $minAgePSO) { $unknownValue }
-                                            elseif ([Math]::Round($minAgePSO.TotalDays) -eq 0) { "Disabled" } else { "$([Math]::Round($minAgePSO.TotalDays)) days" }
+                                            else { Format-PasswordAge -Span $minAgePSO -ZeroText 'Disabled' }
                                 maxPwdAge = if ($null -eq $maxAgePSO) { $unknownValue }
-                                            elseif ([Math]::Round($maxAgePSO.TotalDays) -eq 0) { "Disabled (Never expires)" } else { "$([Math]::Round($maxAgePSO.TotalDays)) days" }
+                                            else { Format-PasswordAge -Span $maxAgePSO -ZeroText 'Disabled (Never expires)' }
                                 pwdHistoryLength = Format-PasswordHistoryLength -Value $historyPSO
                                 lockoutDuration = if ($null -eq $lockoutDurationPSO) { $unknownValue }
                                                   elseif ($lockoutDurationPSO.TotalMinutes -gt 0) { "$($lockoutDurationPSO.TotalMinutes) minutes" }

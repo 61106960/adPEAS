@@ -1076,13 +1076,14 @@ function Set-DomainGPO {
 
                             # Build single task entry XML.
                             #
-                            # StartBoundary below spells out InvariantCulture rather than going
-                            # through Format-adPEASDate: the Task Scheduler reads it, so the
-                            # Gregorian calendar is part of the file format and the contract
-                            # belongs next to the value. A custom format string renders through
-                            # the host culture's calendar - on a Thai regional format the
-                            # trigger was written as year 2569 and would have fired in 543
-                            # years; on a Saudi one it landed in the past.
+                            # StartBoundary is %LocalTimeXmlEx%, the Preferences variable GPMC
+                            # writes for an immediate task: each client fills in its own local
+                            # time when it applies the policy (see Split-GPOTaskBoundary in
+                            # Get-GPOScheduledTasks). It used to be the operator's wall clock
+                            # without an offset, which the client reads as its own local time -
+                            # a client six hours behind the operator started the task six hours
+                            # late. Before that it went through the host culture's calendar, and
+                            # on a Thai regional format the trigger was written as year 2569.
                             $taskEntryXml = @"
   <ImmediateTaskV2 clsid="{9756B581-76EC-4169-9AFC-0CA8D43ADB5F}" name="$([System.Security.SecurityElement]::Escape($taskNameVal))" image="0" changed="$(Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')" uid="$taskUID">
     <Properties action="C" name="$([System.Security.SecurityElement]::Escape($taskNameVal))" runAs="$propertiesRunAs" logonType="$propertiesLogonType">
@@ -1118,7 +1119,7 @@ $principalXml
         </Settings>
         <Triggers>
           <TimeTrigger>
-            <StartBoundary>$((Get-Date).ToString('yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture))</StartBoundary>
+            <StartBoundary>%LocalTimeXmlEx%</StartBoundary>
             <Enabled>true</Enabled>
           </TimeTrigger>
         </Triggers>
