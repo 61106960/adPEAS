@@ -29121,6 +29121,7 @@ function Disconnect-adPEAS {
         }
     }
 }
+$Script:adPEAS_KeepRunState = $false
 function Clear-SessionState {
     $Script:LdapConnection = $null
     $Script:GCConnection = $null
@@ -29142,7 +29143,6 @@ function Clear-SessionState {
     $Script:AnonymousAccessTested = $null
     $Script:AnonymousAccessSkipReason = $null
     $Script:RuntimeLicense = $null
-    $Script:adPEASDisclaimer = $null
     $Script:KirbiMetadata = $null
     $Script:CcacheMetadata = $null
     $Script:SIDResolutionCache = @{}
@@ -29170,20 +29170,23 @@ function Clear-SessionState {
     $Script:SYSVOLContentCache = $null
     $Script:SYSVOLFileGaps = $null
     $Script:CertificateTrustAnchor = $null
-    $Script:adPEAS_FindingsCollection = $null
-    $Script:adPEAS_FindingsCollectionEnabled = $false
-    $Script:adPEAS_IncompleteChecks = $null
-    $Script:adPEAS_CurrentCheckContext = $null
     $Script:adPEASLogoOnScreen = $false
-    $Script:LDAPStatistics = $null
-    $Script:DefaultInactiveDays = $null
-    $Script:IncludePrivilegedMode = $null
-    $Script:adPEAS_OutputColor = $true
-    $Script:adPEAS_VerboseLogging = $false
-    $Script:ModuleCategoryHeaders = $null
-    $Script:adPEAS_Outputfile = $null
-    $Script:HTMLOutputPath = $null
-    $Script:JSONOutputPath = $null
+    if (-not $Script:adPEAS_KeepRunState) {
+        $Script:adPEAS_FindingsCollection = $null
+        $Script:adPEAS_FindingsCollectionEnabled = $false
+        $Script:adPEAS_IncompleteChecks = $null
+        $Script:adPEAS_CurrentCheckContext = $null
+        $Script:adPEASDisclaimer = $null
+        $Script:LDAPStatistics = $null
+        $Script:DefaultInactiveDays = $null
+        $Script:IncludePrivilegedMode = $null
+        $Script:adPEAS_OutputColor = $true
+        $Script:adPEAS_VerboseLogging = $false
+        $Script:ModuleCategoryHeaders = $null
+        $Script:adPEAS_Outputfile = $null
+        $Script:HTMLOutputPath = $null
+        $Script:JSONOutputPath = $null
+    }
     $Script:InheritanceACLCache = $null
     $Script:ExchangeGroupCache = $null
     $Script:OUPermissionsCache = $null
@@ -105448,7 +105451,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.11.0"
+$Script:adPEASVersion = "2.11.0+20261121-0906"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -105672,6 +105675,7 @@ try {
             }
         }
         try {
+            $Script:adPEAS_KeepRunState = $true
             $Connection = Connect-adPEAS @ConnectionParams -Quiet
             if (-not $Connection) {
                 Show-Error -Type Connection
@@ -105694,6 +105698,8 @@ try {
         } catch {
             Show-Error -Type Connection
             return
+        } finally {
+            $Script:adPEAS_KeepRunState = $false
         }
     }
     Write-Log "[adPEAS] Verifying Domain Controller connectivity..."

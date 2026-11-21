@@ -188,13 +188,21 @@ function Disconnect-adPEAS {
     }
 }
 
+# Raised by Invoke-adPEAS while it replaces the session of a previous run (see the run
+# configuration block in Clear-SessionState). Lowered in the finally block of that call, so
+# it never outlives it; set here so that reading it is safe before the first run.
+$Script:adPEAS_KeepRunState = $false
+
 function Clear-SessionState {
     <#
     .SYNOPSIS
         Clears all session-specific $Script: variables and caches.
     .DESCRIPTION
-        Internal helper used by Disconnect-adPEAS (normal and force path).
+        Internal helper used by Disconnect-adPEAS (normal and force path) and by
+        Connect-adPEAS when it replaces an existing session.
         Only clears session state - does NOT dispose connections or revert impersonation.
+        The configuration of an Invoke-adPEAS run stays while $Script:adPEAS_KeepRunState
+        is set: that run is the one replacing the session.
     #>
 
     # Connection references (already disposed at this point)
@@ -238,7 +246,6 @@ function Clear-SessionState {
 
     # License (runtime-provided via -License parameter)
     $Script:RuntimeLicense = $null
-    $Script:adPEASDisclaimer = $null
 
     # Kerberos ticket metadata
     $Script:KirbiMetadata = $null
@@ -299,30 +306,48 @@ function Clear-SessionState {
     # (Get-CertificateTrustAnchor). Per domain, so it must not survive a reconnect.
     $Script:CertificateTrustAnchor = $null
 
-    # Findings collection (adPEAS-Messages / HTML export)
-    $Script:adPEAS_FindingsCollection = $null
-    $Script:adPEAS_FindingsCollectionEnabled = $false
-    # Checks that threw during the last run; named in the Scan Summary
-    $Script:adPEAS_IncompleteChecks = $null
-    $Script:adPEAS_CurrentCheckContext = $null
     # Whether the import's logo is still the last thing on the console (Show-ScanLogo).
     # Disconnecting prints, so it is not any more.
     $Script:adPEASLogoOnScreen = $false
 
-    # LDAP Statistics tracking (set by Invoke-adPEAS -Statistics)
-    $Script:LDAPStatistics = $null
+    # The configuration of an Invoke-adPEAS run: its report files, its findings, its
+    # switches, the disclaimer its reports carry. Invoke-adPEAS sets all of it up before
+    # it connects, and connecting with -Domain, -Credential and the rest goes through
+    # Connect-adPEAS, which replaces an existing session by calling this function. A run
+    # that replaced a session therefore went on without its own configuration: the text
+    # report stopped at the connection, the JSON held no findings, no HTML was written,
+    # and -NoColor, -InactiveDays, -IncludePrivileged and -Statistics no longer applied.
+    # The first scan of a session never noticed, because there was nothing to replace.
+    #
+    # Invoke-adPEAS raises $Script:adPEAS_KeepRunState around that one call, and this part
+    # is left to the run then. Disconnect-adPEAS and a Connect-adPEAS of its own still
+    # clear it, as before.
+    if (-not $Script:adPEAS_KeepRunState) {
+        # Findings collection (adPEAS-Messages / HTML export)
+        $Script:adPEAS_FindingsCollection = $null
+        $Script:adPEAS_FindingsCollectionEnabled = $false
+        # Checks that threw during the last run; named in the Scan Summary
+        $Script:adPEAS_IncompleteChecks = $null
+        $Script:adPEAS_CurrentCheckContext = $null
 
-    # Runtime configuration (set by Invoke-adPEAS)
-    $Script:DefaultInactiveDays = $null
-    $Script:IncludePrivilegedMode = $null
-    $Script:adPEAS_OutputColor = $true
-    $Script:adPEAS_VerboseLogging = $false
-    $Script:ModuleCategoryHeaders = $null
+        # Report disclaimer (set by Invoke-adPEAS from the license, read by Export-HTMLReport)
+        $Script:adPEASDisclaimer = $null
 
-    # Output file (set by Invoke-adPEAS -Outputfile)
-    $Script:adPEAS_Outputfile = $null
-    $Script:HTMLOutputPath = $null
-    $Script:JSONOutputPath = $null
+        # LDAP Statistics tracking (set by Invoke-adPEAS -Statistics)
+        $Script:LDAPStatistics = $null
+
+        # Runtime configuration (set by Invoke-adPEAS)
+        $Script:DefaultInactiveDays = $null
+        $Script:IncludePrivilegedMode = $null
+        $Script:adPEAS_OutputColor = $true
+        $Script:adPEAS_VerboseLogging = $false
+        $Script:ModuleCategoryHeaders = $null
+
+        # Output file (set by Invoke-adPEAS -Outputfile)
+        $Script:adPEAS_Outputfile = $null
+        $Script:HTMLOutputPath = $null
+        $Script:JSONOutputPath = $null
+    }
 
     # ACE Inheritance source cache (parent ACL cache for Get-OUPermissions)
     $Script:InheritanceACLCache = $null

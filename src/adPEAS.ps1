@@ -810,6 +810,15 @@ try {
         try {
             # Call Connect-adPEAS with pass-through parameters (use -Quiet to suppress session info)
             # Connect-adPEAS handles all auth logic, error messages, and user verification
+            #
+            # When a session exists, Connect-adPEAS replaces it through Clear-SessionState,
+            # which also holds what this run set up above: report files, findings
+            # collection, -NoColor, -InactiveDays and the rest. Cleared here, the second
+            # scan of a session wrote a text report that ended at this point, a JSON
+            # without findings and no HTML. The flag leaves the run's part to the run.
+            # Lowered in finally, so a throwing connect cannot leave it raised for the next
+            # Disconnect-adPEAS.
+            $Script:adPEAS_KeepRunState = $true
             $Connection = Connect-adPEAS @ConnectionParams -Quiet
 
             if (-not $Connection) {
@@ -840,6 +849,8 @@ try {
             # Connect-adPEAS threw an error (already displayed by Connect-adPEAS)
             Show-Error -Type Connection
             return
+        } finally {
+            $Script:adPEAS_KeepRunState = $false
         }
     }
 
