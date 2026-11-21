@@ -21,6 +21,8 @@ adPEAS v2 supports multiple authentication methods for maximum flexibility in pe
 | Ccache Ticket        | `-Ccache`                          | Yes (PTT) | No (requires Kerberos) |
 **Note**: Kerberos PTT (Pass-the-Ticket) uses `LsaConnectUntrusted` and does NOT require admin privileges.
 
+**Target domain**: `-Domain` names the domain to connect to. Left out, adPEAS takes the domain of the logged-on user with `-UseWindowsAuth`, and the domain this computer is joined to with every other method - except `-Kirbi` and `-Ccache`, which require it. On a computer that is in no domain, give `-Domain`.
+
 ---
 
 ## Kerberos-First Architecture

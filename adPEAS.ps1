@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-11-21 09:06:58
-    Version: 2.11.0+20261121-0906
+    Build: 2026-11-21 10:37:17
+    Version: 2.11.0+20261121-1037
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -37921,7 +37921,10 @@ function Connect-adPEAS {
 
 .PARAMETER Domain
     The target domain (FQDN).
-    MANDATORY - Explicit specification required for security tool.
+    Optional - Default: with Windows authentication the domain of the logged-on user, with
+    every other credential (-Credential, -Username, -NTHash, -AES256Key, -AES128Key,
+    -Certificate) the domain this computer is joined to. Required for -Kirbi and -Ccache,
+    and on a computer in no domain.
 
 .PARAMETER Server
     Specific Domain Controller (FQDN or IP).
@@ -38189,13 +38192,16 @@ function Connect-adPEAS {
 #>
     [CmdletBinding(DefaultParameterSetName='WindowsAuth')]
     param(
+        # Optional where a default exists (process{}, "Default Domain"): the user's domain for
+        # Windows authentication, the computer's for every other credential. Mandatory for a
+        # ticket, which comes with no default.
         [Parameter(Mandatory=$false, ParameterSetName='WindowsAuth')]
-        [Parameter(Mandatory=$true, ParameterSetName='PSCredential')]
-        [Parameter(Mandatory=$true, ParameterSetName='UsernamePassword')]
-        [Parameter(Mandatory=$true, ParameterSetName='Certificate')]
-        [Parameter(Mandatory=$true, ParameterSetName='NTHash')]
-        [Parameter(Mandatory=$true, ParameterSetName='AES256')]
-        [Parameter(Mandatory=$true, ParameterSetName='AES128')]
+        [Parameter(Mandatory=$false, ParameterSetName='PSCredential')]
+        [Parameter(Mandatory=$false, ParameterSetName='UsernamePassword')]
+        [Parameter(Mandatory=$false, ParameterSetName='Certificate')]
+        [Parameter(Mandatory=$false, ParameterSetName='NTHash')]
+        [Parameter(Mandatory=$false, ParameterSetName='AES256')]
+        [Parameter(Mandatory=$false, ParameterSetName='AES128')]
         [Parameter(Mandatory=$true, ParameterSetName='Kirbi')]
         [Parameter(Mandatory=$true, ParameterSetName='Ccache')]
         [AllowEmptyString()]
@@ -38509,6 +38515,35 @@ function Connect-adPEAS {
                     Show-ConnectionError -ErrorType "GenericError" -Details "Invalid AES128 key format: $Detail" -NoThrow
                     return $null
                 }
+            }
+
+            # ===== Default Domain (every credential but Windows authentication) =====
+            # Without -Domain, the domain this computer is joined to - so that a scheduled
+            # or scripted run on a member computer can leave it out. Windows authentication
+            # has its own default further down, the domain of the logged-on user: there the
+            # account is the user's own, here it is whatever account was passed, and the one
+            # domain the host can name for it is its own.
+            #
+            # Here, before the first use of $Domain (custom DNS server, hosts file), and read
+            # locally rather than through the DC locator: a computer in no domain is told
+            # exactly that, not that no domain controller answered.
+            if (-not $PSBoundParameters.ContainsKey('Domain') -and
+                $AuthMethod -in @('PSCredential', 'UsernamePassword', 'Certificate', 'NTHash', 'AES256', 'AES128')) {
+                $computerSystem = $null
+                try {
+                    $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+                }
+                catch {
+                    Write-Log "[Connect-adPEAS] Could not read the domain membership of this computer: $_"
+                }
+
+                if (-not $computerSystem -or -not $computerSystem.PartOfDomain -or [string]::IsNullOrWhiteSpace($computerSystem.Domain)) {
+                    Show-ConnectionError -ErrorType "GenericError" -Details "No -Domain given, and this computer is not joined to a domain. Name the target domain with -Domain." -NoThrow
+                    return $null
+                }
+
+                $Domain = $computerSystem.Domain
+                Write-Log "[Connect-adPEAS] No domain specified, using the domain this computer is joined to: $Domain"
             }
 
             # ===== Initialize Auth Info Tracking =====
@@ -165797,7 +165832,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.11.0+20261121-0906"
+$Script:adPEASVersion = "2.11.0+20261121-1037"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -165851,7 +165886,9 @@ function Invoke-adPEAS {
     Use Disconnect-adPEAS to explicitly close the session when done.
 
 .PARAMETER Domain
-    The Active Directory domain to analyze (optional).
+    The Active Directory domain to analyze (optional). Default: with -UseWindowsAuth the
+    domain of the logged-on user, with -Credential, -Username or -Certificate the domain
+    this computer is joined to.
 
 .PARAMETER Server
     Specific Domain Controller (FQDN or IP) (optional).
@@ -166366,7 +166403,12 @@ try {
 
             Show-Line "Successfully connected to domain '$($Connection.Domain)' on server '$($Connection.Server)' as '$AuthenticatedUser' via $AuthDisplay" -Class Note
         } catch {
-            # Connect-adPEAS threw an error (already displayed by Connect-adPEAS)
+            # Connect-adPEAS threw an error (already displayed by Connect-adPEAS) - unless
+            # the call never got into it. A parameter combination it refuses at binding has
+            # displayed nothing, and "see error messages above" then pointed at nothing.
+            if ($_.Exception -is [System.Management.Automation.ParameterBindingException]) {
+                Show-Line "Connect-adPEAS refused the parameters: $($_.Exception.Message)" -Class Finding
+            }
             Show-Error -Type Connection
             return
         } finally {

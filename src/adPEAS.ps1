@@ -331,7 +331,9 @@ function Invoke-adPEAS {
     Use Disconnect-adPEAS to explicitly close the session when done.
 
 .PARAMETER Domain
-    The Active Directory domain to analyze (optional).
+    The Active Directory domain to analyze (optional). Default: with -UseWindowsAuth the
+    domain of the logged-on user, with -Credential, -Username or -Certificate the domain
+    this computer is joined to.
 
 .PARAMETER Server
     Specific Domain Controller (FQDN or IP) (optional).
@@ -846,7 +848,12 @@ try {
 
             Show-Line "Successfully connected to domain '$($Connection.Domain)' on server '$($Connection.Server)' as '$AuthenticatedUser' via $AuthDisplay" -Class Note
         } catch {
-            # Connect-adPEAS threw an error (already displayed by Connect-adPEAS)
+            # Connect-adPEAS threw an error (already displayed by Connect-adPEAS) - unless
+            # the call never got into it. A parameter combination it refuses at binding has
+            # displayed nothing, and "see error messages above" then pointed at nothing.
+            if ($_.Exception -is [System.Management.Automation.ParameterBindingException]) {
+                Show-Line "Connect-adPEAS refused the parameters: $($_.Exception.Message)" -Class Finding
+            }
             Show-Error -Type Connection
             return
         } finally {

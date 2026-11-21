@@ -27419,12 +27419,12 @@ function Connect-adPEAS {
 	[CmdletBinding(DefaultParameterSetName='WindowsAuth')]
 	param(
 	    [Parameter(Mandatory=$false, ParameterSetName='WindowsAuth')]
-	    [Parameter(Mandatory=$true, ParameterSetName='PSCredential')]
-	    [Parameter(Mandatory=$true, ParameterSetName='UsernamePassword')]
-	    [Parameter(Mandatory=$true, ParameterSetName='Certificate')]
-	    [Parameter(Mandatory=$true, ParameterSetName='NTHash')]
-	    [Parameter(Mandatory=$true, ParameterSetName='AES256')]
-	    [Parameter(Mandatory=$true, ParameterSetName='AES128')]
+	    [Parameter(Mandatory=$false, ParameterSetName='PSCredential')]
+	    [Parameter(Mandatory=$false, ParameterSetName='UsernamePassword')]
+	    [Parameter(Mandatory=$false, ParameterSetName='Certificate')]
+	    [Parameter(Mandatory=$false, ParameterSetName='NTHash')]
+	    [Parameter(Mandatory=$false, ParameterSetName='AES256')]
+	    [Parameter(Mandatory=$false, ParameterSetName='AES128')]
 	    [Parameter(Mandatory=$true, ParameterSetName='Kirbi')]
 	    [Parameter(Mandatory=$true, ParameterSetName='Ccache')]
 	    [AllowEmptyString()]
@@ -27637,6 +27637,20 @@ function Connect-adPEAS {
 	                Show-ConnectionError -ErrorType "GenericError" -Details "Invalid AES128 key format: $Detail" -NoThrow
 	                return $null
 	            }
+	        }
+	        if (-not $PSBoundParameters.ContainsKey('Domain') -and
+	            $AuthMethod -in @('PSCredential', 'UsernamePassword', 'Certificate', 'NTHash', 'AES256', 'AES128')) {
+	            $computerSystem = $null
+	            try {
+	                $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+	            }
+	            catch {
+	            }
+	            if (-not $computerSystem -or -not $computerSystem.PartOfDomain -or [string]::IsNullOrWhiteSpace($computerSystem.Domain)) {
+	                Show-ConnectionError -ErrorType "GenericError" -Details "No -Domain given, and this computer is not joined to a domain. Name the target domain with -Domain." -NoThrow
+	                return $null
+	            }
+	            $Domain = $computerSystem.Domain
 	        }
 	        $Script:AuthInfo = @{
 	            Method = $null
@@ -102256,7 +102270,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.11.0+20261121-0906"
+$Script:adPEASVersion = "2.11.0+20261121-1037"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -102493,6 +102507,9 @@ try {
 	        }
 	        Show-Line "Successfully connected to domain '$($Connection.Domain)' on server '$($Connection.Server)' as '$AuthenticatedUser' via $AuthDisplay" -Class Note
 	    } catch {
+	        if ($_.Exception -is [System.Management.Automation.ParameterBindingException]) {
+	            Show-Line "Connect-adPEAS refused the parameters: $($_.Exception.Message)" -Class Finding
+	        }
 	        Show-Error -Type Connection
 	        return
 	    } finally {
