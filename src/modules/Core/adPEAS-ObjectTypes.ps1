@@ -871,6 +871,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Permissions on Enrollment Services container"
             "Permissions on NTAuth Store container"
             "Permissions on OID container (ESC13-related)"
+            "Permissions and owner of each issuance policy object - write access links a policy to a group (ESC13)"
         )
         FilteringNote = "High-privileged accounts (Domain Admins, Enterprise Admins, SYSTEM, Cert Publishers) are filtered from output as they are expected to manage PKI infrastructure."
         SecureMessage = "No vulnerabilities detected - PKI container permissions are properly restricted to authorized administrators."

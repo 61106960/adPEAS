@@ -205,6 +205,8 @@ $Script:PropertyGUIDs = @{
     'msPKI-Certificate-Application-Policy' = [GUID]'dbd90548-aa37-4202-9966-8c537ba5ce32'
     'msPKI-RA-Signature'                   = [GUID]'fe17e04b-937d-4f7e-8e0e-9292c8d5683e'
     'nTSecurityDescriptor'                 = [GUID]'bf9679e3-0de6-11d0-a285-00aa003049e2'
+    'msDS-OIDToGroupLink'                  = [GUID]'f9c9a57c-3941-438d-bebf-0edaf2aca187'
+    'msPKI-Cert-Template-OID'              = [GUID]'3164c36a-ba26-468c-8bda-c1e5cc256728'
     'gPCFileSysPath'                 = [GUID]'f30e3bc1-9ff0-11d1-b603-0000f80367c1'
     'gPCMachineExtensionNames'       = [GUID]'32ff8ecc-783f-11d2-9916-0000f87a57d4'
     'gPCUserExtensionNames'          = [GUID]'42a75fc6-783f-11d2-9916-0000f87a57d4'
@@ -3682,7 +3684,7 @@ $Script:PrimaryAttributes = @{
         'RASignatureCount', 'RAApplicationPolicies', 'TemplateKeySettings',
         'EnrollmentPrincipals',
         'DangerousACEs',
-        'IssuancePolicyGroupLinks'
+        'IssuancePolicyGroupLinks', 'IssuancePolicyWriters'
     )
     GPO = @(
         'displayName', 'Name', 'distinguishedName', 'gPCFileSysPath',
@@ -6160,6 +6162,7 @@ $dangerousTemplates | Export-Csv "DangerousTemplateACLs.csv" -NoTypeInformation
             "Attackers can modify existing secure templates to make them vulnerable"
             "Attackers can grant themselves enrollment permissions on any template"
             "Attackers can manipulate the NTAuth store to trust rogue CAs"
+            "Attackers with write access to an issuance policy can link it to an empty universal group - every certificate carrying the policy then logs on with that group's SID (ESC13)"
             "Complete PKI infrastructure takeover possible"
         )
         Attack = @(
@@ -6179,6 +6182,7 @@ $dangerousTemplates | Export-Csv "DangerousTemplateACLs.csv" -NoTypeInformation
             "  - CN=Enrollment Services,CN=Public Key Services,..."
             "  - CN=NTAuthCertificates,CN=Public Key Services,..."
             "  - CN=OID,CN=Public Key Services,..."
+            "  - each issuance policy object in CN=OID (msDS-OIDToGroupLink, msPKI-Cert-Template-OID, owner)"
             "Audit existing templates for unauthorized modifications"
         )
         RemediationCommands = @(
@@ -6288,6 +6292,7 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'pkiContainersAffected'; Severity = 'Finding' }
+            @{ Attribute = 'pkiContainersAffected'; Pattern = '\[on no template an unprivileged account can log on with\]'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
     'ESC8_WEB_ENROLLMENT' = @{
@@ -6445,7 +6450,8 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
         MITRE = "T1649"
         Triggers = @(
-            @{ Attribute = 'EnrollmentPrincipals'; Custom = 'is_broad_group_sid'; Severity = 'Finding' }
+            @{ Attribute = 'EnrollmentPrincipals'; Custom = 'broad_enrollment_on_vulnerable_template'; Severity = 'Finding'; SeverityOnly = $true }
+            @{ Attribute = 'EnrollmentPrincipals'; Custom = 'is_broad_group_sid'; Severity = 'Hint' }
             @{ Attribute = 'EnrollmentPrincipals'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
@@ -15481,12 +15487,13 @@ $altSecGuid = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
         Title = "ESC13 - Issuance Policy Linked to AD Group"
         Risk = "Finding"
         BaseScore = 70
-        Description = "A certificate template references an issuance policy OID that is linked to an AD group via the msDS-OIDToGroupLink attribute. When a user enrolls in this template, the resulting certificate grants automatic membership in the linked group. This can be abused for privilege escalation if non-privileged users can enroll."
+        Description = "A certificate template that authenticates carries an issuance policy whose OID object is linked to an AD group through msDS-OIDToGroupLink. Whoever logs on with a certificate from this template by Kerberos PKINIT receives the SID of that group in the ticket, as if they were a member. The group itself stays empty - Active Directory accepts a link only to an empty universal group - so the membership appears in no member list, only in the ticket."
         Impact = @(
-            "Attacker enrolls in the template and gains membership in the linked AD group"
-            "If the linked group is privileged, this directly escalates privileges"
-            "Certificate-based group membership bypasses traditional group management controls"
-            "The group membership is granted automatically upon certificate issuance"
+            "An account that may enroll requests a certificate, logs on with it by PKINIT and holds the linked group's SID in its Kerberos ticket"
+            "If the linked group is privileged, or holds rights of its own, this is a direct escalation"
+            "An audit of the group's members finds nobody: the group stays empty, the membership exists only in the ticket"
+            "It holds for every logon with the certificate until the certificate expires or is revoked, whatever happens to the account's group memberships"
+            "Where an unprivileged account may write the issuance policy (IssuancePolicyWriters), it sets the link itself, to any empty universal group - Schema Admins and Enterprise Key Admins are empty in many forests"
         )
         Remediation = @(
             "Remove the msDS-OIDToGroupLink attribute from the issuance policy OID object"
@@ -15547,7 +15554,7 @@ foreach ($oid in $linkedOIDs) {
             }
         )
         References = @(
-            @{ Title = "ESC13 - ADCS Abuse Technique"; Url = "https://posts.specterops.io/adcs-esc13-abuse-technique-fda4272fbd53" }
+            @{ Title = "ESC13 - ADCS Abuse Technique"; Url = "https://specterops.io/blog/2024/02/14/adcs-esc13-abuse-technique/" }
             @{ Title = "Certified Pre-Owned - SpecterOps"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
             @{ Title = "Issuance Policies and OID Group Links - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/certificate-template-concepts" }
         )
@@ -15555,8 +15562,9 @@ foreach ($oid in $linkedOIDs) {
         MITRE = "T1649"
         Triggers = @(
             @{ Attribute = 'Vulnerabilities'; Pattern = 'ESC13'; Severity = 'Finding' }
-            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[privileged'; Severity = 'Finding' }
-            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Hint' }
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[privilege(d|\snot assessed)'; Severity = 'Finding' }
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[not a privileged group\]'; Severity = 'Hint' }
+            @{ Attribute = 'IssuancePolicyWriters'; Severity = 'Finding' }
             @{ Attribute = 'Vulnerabilities'; Custom = 'esc13_group_not_privileged'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
@@ -20588,6 +20596,19 @@ function Get-EncryptionTypeList {
     if (@($names).Count -eq 0) { return $null }
     return [string[]]$names
 }
+function Get-TemplateESCRowSeverity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Template
+    )
+    if (-not $Template) { return $null }
+    $vulnProperty = $Template.PSObject.Properties['Vulnerabilities']
+    if (-not $vulnProperty -or [string]::IsNullOrWhiteSpace([string]$vulnProperty.Value)) { return $null }
+    $rowMatch = Get-TriggerMatch -Name 'Vulnerabilities' -Value $vulnProperty.Value -SourceObject $Template
+    return [string]$rowMatch.Severity
+}
 function Test-CustomTrigger {
     param(
         [string]$CustomType,
@@ -20640,11 +20661,12 @@ function Test-CustomTrigger {
         }
         'esc13_group_not_privileged' {
             if (-not $SourceObject) { return $false }
+            if ($SourceObject.PSObject.Properties['IssuancePolicyWriters']) { return $false }
             $linkFlag = $SourceObject.PSObject.Properties['issuancePolicyGroupPrivileged']
             if (-not $linkFlag) { return $false }
             if ([string]::IsNullOrWhiteSpace([string]$SourceObject.Vulnerabilities)) { return $false }
             if ([string]$SourceObject.Vulnerabilities -notmatch 'ESC13') { return $false }
-            return (-not $linkFlag.Value)
+            return ($linkFlag.Value -is [bool] -and -not $linkFlag.Value)
         }
         'adcs_http_relayable' {
             if (-not $SourceObject) { return $true }
@@ -20734,6 +20756,10 @@ function Test-CustomTrigger {
             }
             $privResult = Test-IsPrivileged -Identity $sid
             return ($privResult.Category -eq 'BroadGroup')
+        }
+        'broad_enrollment_on_vulnerable_template' {
+            if (-not (Test-CustomTrigger -CustomType 'is_broad_group_sid' -Value $Value -IsComputer $IsComputer -SourceObject $SourceObject)) { return $false }
+            return ((Get-TemplateESCRowSeverity -Template $SourceObject) -eq 'Finding')
         }
         'is_deleted_object' {
             return ($SourceObject -and ([string]$SourceObject.isDeleted -match '^(?i:true)$'))
@@ -21753,8 +21779,10 @@ function Convert-EnrollPrincipalsToRenderValues {
     param([string]$Name, $Value, $Context)
     $principals = @($Value)
     $principalSIDs = @()
+    $escRowSeverity = $null
     if ($Context -and $Context.SourceObject) {
         $principalSIDs = @($Context.SourceObject.EnrollmentPrincipalSIDs)
+        $escRowSeverity = Get-TemplateESCRowSeverity -Template $Context.SourceObject
     }
     $renderValues = @()
     for ($pIndex = 0; $pIndex -lt @($principals).Count; $pIndex++) {
@@ -21767,7 +21795,7 @@ function Convert-EnrollPrincipalsToRenderValues {
         $privCheck = Test-IsPrivileged -Identity $pIdentity
         $severity = switch ($privCheck.Category) {
             'Privileged'  { 'Standard' }
-            'BroadGroup'  { 'Finding' }
+            'BroadGroup'  { if ($escRowSeverity -eq 'Finding') { 'Finding' } else { 'Hint' } }
             default       { 'Hint' }
         }
         $findingId = switch ($severity) {
@@ -23358,6 +23386,7 @@ $Script:ObjectTypeDefinitions = [ordered]@{
             "Permissions on Enrollment Services container"
             "Permissions on NTAuth Store container"
             "Permissions on OID container (ESC13-related)"
+            "Permissions and owner of each issuance policy object - write access links a policy to a group (ESC13)"
         )
         FilteringNote = "High-privileged accounts (Domain Admins, Enterprise Admins, SYSTEM, Cert Publishers) are filtered from output as they are expected to manage PKI infrastructure."
         SecureMessage = "No vulnerabilities detected - PKI container permissions are properly restricted to authorized administrators."
@@ -89731,6 +89760,39 @@ function Get-ADCSVulnerabilities {
                     Show-EmptyLine
                 }
             }
+            $templateResults = @(Get-ADCSTemplate @CredParams)
+            $templateQueryError = $templateResults | Where-Object { $_._QueryError -eq $true }
+            $templates = @($templateResults | Where-Object { $_._QueryError -ne $true })
+            $enrollStateCache = @{}
+            $agentTemplateNames = @()
+            foreach ($preTemplate in $templates) {
+                $preKey = [string]$preTemplate.DistinguishedName
+                $preRightsRead = $true
+                if ($null -ne $preTemplate.PSObject.Properties['EnrollmentRightsRead']) {
+                    $preRightsRead = [bool]$preTemplate.EnrollmentRightsRead
+                }
+                $preState = Get-EnrollmentPrivilegeState -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -EnrollmentRightsRead $preRightsRead -CredParams $CredParams
+                $enrollStateCache[$preKey] = $preState
+                if ($preTemplate.EnrollmentAgent -and $preState -eq 'NonPrivileged') {
+                    $agentTemplateNames += $preTemplate.Name
+                }
+            }
+            if (@($agentTemplateNames).Count -gt 0) {
+                Write-Log "[Get-ADCSVulnerabilities] ESC3 chain: $(@($agentTemplateNames).Count) enrollment agent template(s) enrollable by non-privileged principals: $($agentTemplateNames -join ', ')"
+            }
+            $logonTemplatesByPolicy = @{}
+            foreach ($candidate in $templates) {
+                if (-not $candidate.ClientAuthentication) { continue }
+                $candidateState = $enrollStateCache[[string]$candidate.DistinguishedName]
+                if ($candidateState -eq 'Privileged' -or $candidateState -eq 'NotEnrollable') { continue }
+                foreach ($candidatePolicy in @($candidate.CertificatePolicies)) {
+                    $candidateKey = [string]$candidatePolicy
+                    if (-not $candidateKey) { continue }
+                    if (-not $logonTemplatesByPolicy.ContainsKey($candidateKey)) { $logonTemplatesByPolicy[$candidateKey] = @() }
+                    $logonTemplatesByPolicy[$candidateKey] += [string]$candidate.Name
+                }
+            }
+            $policyWritersByOID = @{}
             try {
                 Show-SubHeader "Checking PKI container permissions..." -ObjectType "PKIContainer"
                 $pkiContainers = @(
@@ -89775,15 +89837,66 @@ function Get-ADCSVulnerabilities {
                         Description = "Controls the key recovery agents that can recover archived private keys"
                     }
                 )
+                try {
+                    $templatePolicyOIDs = @()
+                    foreach ($policyTemplate in $templates) {
+                        foreach ($templatePolicyOID in @($policyTemplate.CertificatePolicies)) {
+                            if ($templatePolicyOID) { $templatePolicyOIDs += [string]$templatePolicyOID }
+                        }
+                    }
+                    $policySelectors = @('(flags=2)', '(msDS-OIDToGroupLink=*)')
+                    foreach ($templatePolicyOID in @($templatePolicyOIDs | Select-Object -Unique)) {
+                        $policySelectors += "(msPKI-Cert-Template-OID=$(Escape-LDAPFilterValue -Value $templatePolicyOID))"
+                    }
+                    $policyObjects = @(Invoke-LDAPSearch -Filter "(&(objectClass=msPKI-Enterprise-Oid)(|$($policySelectors -join '')))" `
+                        -SearchBase "CN=OID,CN=Public Key Services,CN=Services,$configNC" -Scope OneLevel `
+                        -Properties 'distinguishedName', 'displayName', 'cn', 'msPKI-Cert-Template-OID', 'nTSecurityDescriptor' -Raw)
+                    foreach ($policyObject in $policyObjects) {
+                        if (-not $policyObject -or -not $policyObject.distinguishedName -or -not $policyObject.nTSecurityDescriptor) { continue }
+                        $policyName = [string]$policyObject.displayName
+                        if (-not $policyName) { $policyName = [string]$policyObject.cn }
+                        $policyOID = [string]$policyObject.'msPKI-Cert-Template-OID'
+                        $policyReach = ''
+                        $policyReachable = $true
+                        if ($templateQueryError) {
+                            $policyReach = '[templates not read]'
+                        } elseif ($policyOID -and $logonTemplatesByPolicy.ContainsKey($policyOID)) {
+                            $policyReach = "[on template: $(@($logonTemplatesByPolicy[$policyOID]) -join ', ')]"
+                        } else {
+                            $policyReach = '[on no template an unprivileged account can log on with]'
+                            $policyReachable = $false
+                        }
+                        $pkiContainers += @{
+                            DN = [string]$policyObject.distinguishedName
+                            Name = "Issuance Policy '$policyName'"
+                            Description = "Write access links the policy to a group, which every certificate carrying it logs on with (ESC13)"
+                            Descriptor = $policyObject.nTSecurityDescriptor
+                            IssuancePolicy = $true
+                            PolicyOID = $policyOID
+                            Reach = $policyReach
+                            Reachable = $policyReachable
+                        }
+                    }
+                    Write-Log "[Get-ADCSVulnerabilities] ESC5: $(@($policyObjects).Count) issuance policy object(s) added to the permission check"
+                }
+                catch {
+                    Write-Log "[Get-ADCSVulnerabilities] ESC5: Issuance policy objects could not be read: $_" -Level Warning
+                }
                 $allFindings = @()
                 foreach ($container in $pkiContainers) {
                     Write-Log "[Get-ADCSVulnerabilities] ESC5: Checking $($container.Name)..."
                     try {
-                        $containerObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$($container.DN))" -SearchBase $configNC -Properties 'nTSecurityDescriptor' -Raw -Scope Subtree)[0]
+                        $containerDescriptor = $null
+                        if ($container.Descriptor) {
+                            $containerDescriptor = $container.Descriptor
+                        } else {
+                            $containerObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$($container.DN))" -SearchBase $configNC -Properties 'nTSecurityDescriptor' -Raw -Scope Subtree)[0]
+                            if ($containerObj) { $containerDescriptor = $containerObj.nTSecurityDescriptor }
+                        }
                         $containerACL = @()
-                        if ($containerObj -and $containerObj.nTSecurityDescriptor) {
+                        if ($containerDescriptor) {
                             $secDescriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                            $secDescriptor.SetSecurityDescriptorBinaryForm($containerObj.nTSecurityDescriptor)
+                            $secDescriptor.SetSecurityDescriptorBinaryForm($containerDescriptor)
                             $dacl = $secDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
                             foreach ($ace in $dacl) {
                                 $containerRights = ConvertTo-ExpandedADRightsName -Rights $ace.ActiveDirectoryRights
@@ -89794,19 +89907,29 @@ function Get-ADCSVulnerabilities {
                                     $scopeName = if ($scopeResolved -and $scopeResolved.Name) { $scopeResolved.Name } else { [string]$ace.ObjectType }
                                     $scopeIsClass = ($scopeResolved -and $scopeResolved.Type -eq 'SchemaClass')
                                     $scopedRights = @()
-                                    if ($containerRights -match 'GenericAll|CreateChild' -and ($scopeIsClass -or -not $scopeResolved)) {
-                                        $scopedRights += "CreateChild ($scopeName)"
-                                    }
-                                    if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and -not $scopeIsClass) {
-                                        $scopedRights += "WriteProperty ($scopeName)"
+                                    if ($container.IssuancePolicy) {
+                                        if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and
+                                            $scopeName -in @('msDS-OIDToGroupLink', 'msPKI-Cert-Template-OID')) {
+                                            $scopedRights += "WriteProperty ($scopeName)"
+                                        }
+                                    } else {
+                                        if ($containerRights -match 'GenericAll|CreateChild' -and ($scopeIsClass -or -not $scopeResolved)) {
+                                            $scopedRights += "CreateChild ($scopeName)"
+                                        }
+                                        if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and -not $scopeIsClass) {
+                                            $scopedRights += "WriteProperty ($scopeName)"
+                                        }
                                     }
                                     $containerRights = $scopedRights -join ', '
+                                } elseif ($container.IssuancePolicy) {
+                                    $containerRights = (@($containerRights -split ',') | Where-Object { $_ -and $_ -ne 'CreateChild' }) -join ','
                                 }
                                 $containerACL += [PSCustomObject]@{
                                     AccessControlType = $ace.AccessControlType
                                     IdentityReference = $ace.IdentityReference
                                     ActiveDirectoryRights = $ace.ActiveDirectoryRights
                                     ExpandedRights = $containerRights
+                                    IsInherited = [bool]$ace.IsInherited
                                 }
                             }
                         }
@@ -89819,6 +89942,11 @@ function Get-ADCSVulnerabilities {
                                 foreach ($ace in $dangerousACEs) {
                                     $aceSID = $ace.IdentityReference.Value
                                     $aceRights = $ace.ExpandedRights
+                                    if ($container.IssuancePolicy -and $ace.IsInherited -and
+                                        @($allFindings | Where-Object { $_.SID -eq $aceSID -and $_.Rights -eq $aceRights -and -not $_.IssuancePolicy }).Count -gt 0) {
+                                        Write-Log "[Get-ADCSVulnerabilities] ESC5: $aceSID holds $aceRights on $($container.Name) by inheritance, already reported on a container"
+                                        continue
+                                    }
                                     $severity = 'Finding'
                                     if (-not $IncludePrivileged) {
                                         $scopeResult = Test-IsExpectedInScope -Identity $aceSID -Scope 'PKIContainer' -ReturnDetails
@@ -89836,12 +89964,18 @@ function Get-ADCSVulnerabilities {
                                         $severity = $scopeResult.Severity
                                         Write-Log "[Get-ADCSVulnerabilities] IncludePrivileged: Including $aceSID with severity $severity"
                                     }
+                                    if ($container.IssuancePolicy -and -not $container.Reachable -and $severity -eq 'Finding') {
+                                        $severity = 'Hint'
+                                    }
                                     $allFindings += [PSCustomObject]@{
                                         SID = $aceSID
                                         Rights = $aceRights
                                         Severity = $severity
                                         ContainerName = $container.Name
                                         ContainerDescription = $container.Description
+                                        IssuancePolicy = [bool]$container.IssuancePolicy
+                                        PolicyOID = $container.PolicyOID
+                                        Reach = $container.Reach
                                     }
                                 }
                             }
@@ -89855,12 +89989,19 @@ function Get-ADCSVulnerabilities {
                                 $ownerScope = Test-IsExpectedInScope -Identity $containerOwnerSID -Scope 'PKIContainer' -ReturnDetails
                                 $ownerExpected = ($ownerScope.Severity -eq 'Expected' -or $ownerScope.Severity -eq 'Attention')
                                 if ($IncludePrivileged -or -not $ownerExpected) {
+                                    $ownerSeverity = $ownerScope.Severity
+                                    if ($container.IssuancePolicy -and -not $container.Reachable -and $ownerSeverity -eq 'Finding') {
+                                        $ownerSeverity = 'Hint'
+                                    }
                                     $allFindings += [PSCustomObject]@{
                                         SID = $containerOwnerSID
                                         Rights = 'Owner (may rewrite the DACL)'
-                                        Severity = $ownerScope.Severity
+                                        Severity = $ownerSeverity
                                         ContainerName = $container.Name
                                         ContainerDescription = $container.Description
+                                        IssuancePolicy = [bool]$container.IssuancePolicy
+                                        PolicyOID = $container.PolicyOID
+                                        Reach = $container.Reach
                                     }
                                 } else {
                                     Write-Log "[Get-ADCSVulnerabilities] ESC5: $($container.Name) is owned by $containerOwnerSID, which the PKIContainer scope expects"
@@ -89874,7 +90015,19 @@ function Get-ADCSVulnerabilities {
                 }
                 if (@($allFindings).Count -gt 0) {
                     $countText = if ($IncludePrivileged) { "$(@($allFindings).Count) finding(s)" } else { "$(@($allFindings).Count) non-privileged finding(s)" }
-                    Show-Line "Found $countText with dangerous PKI container permissions" -Class Finding
+                    $headlineClass = 'Finding'
+                    if (@($allFindings | Where-Object { $_.Severity -eq 'Finding' }).Count -eq 0 -and
+                        @($allFindings | Where-Object { $_.Severity -eq 'Hint' }).Count -gt 0) {
+                        $headlineClass = 'Hint'
+                    }
+                    Show-Line "Found $countText with dangerous PKI container permissions" -Class $headlineClass
+                    foreach ($policyFinding in @($allFindings | Where-Object { $_.IssuancePolicy -and $_.PolicyOID -and $_.Severity -in @('Finding', 'Hint') })) {
+                        $writerName = ConvertFrom-SID -SID $policyFinding.SID
+                        if (-not $writerName) { $writerName = $policyFinding.SID }
+                        $writerKey = [string]$policyFinding.PolicyOID
+                        if (-not $policyWritersByOID.ContainsKey($writerKey)) { $policyWritersByOID[$writerKey] = @() }
+                        $policyWritersByOID[$writerKey] += "$($policyFinding.ContainerName): $writerName ($($policyFinding.Rights))"
+                    }
                     $groupedFindings = $allFindings | Group-Object -Property SID
                     foreach ($group in $groupedFindings) {
                         $sid = $group.Name
@@ -89883,10 +90036,13 @@ function Get-ADCSVulnerabilities {
                         $allContainers = @()
                         foreach ($finding in $findings) {
                             $allRights += $finding.Rights
-                            $allContainers += "$($finding.ContainerName) ($($finding.Rights))"
+                            $containerLine = "$($finding.ContainerName) ($($finding.Rights))"
+                            if ($finding.IssuancePolicy -and $finding.Reach) { $containerLine += " $($finding.Reach)" }
+                            $allContainers += $containerLine
                         }
                         $allRights = $allRights | Select-Object -Unique
                         $severity = ($findings | Select-Object -First 1).Severity
+                        if (@($findings | Where-Object { $_.Severity -eq 'Finding' }).Count -gt 0) { $severity = 'Finding' }
                         $sidHex = ConvertTo-LDAPSIDHex -SID $sid
                         $adObject = $null
                         if ($sidHex) {
@@ -89921,14 +90077,11 @@ function Get-ADCSVulnerabilities {
                 Show-Line "Error checking PKI container permissions" -Class Hint
             }
             Show-SubHeader "Searching for certificate templates..." -ObjectType "CertificateTemplate"
-            $templateResults = @(Get-ADCSTemplate @CredParams)
-            $templateQueryError = $templateResults | Where-Object { $_._QueryError -eq $true }
             if ($templateQueryError) {
                 Write-Log "[Get-ADCSVulnerabilities] Template query failed: $($templateQueryError.ErrorMessage)"
                 Show-Line "Failed to query certificate templates - LDAP query failed (authentication/network issue)" -Class Finding
                 return
             }
-            $templates = @($templateResults | Where-Object { $_._QueryError -ne $true })
             if (@($templates).Count -eq 0) {
                 Show-Line "No enabled certificate templates found" -Class Note
                 return
@@ -89965,23 +90118,6 @@ function Get-ADCSVulnerabilities {
             }
             if (@($templates | Where-Object { $_.PublicationUnknown }).Count -gt 0) {
                 Show-Line "Which templates are published to a CA could not be determined - disabled templates may appear below" -Class "Note"
-            }
-            $enrollStateCache = @{}
-            $agentTemplateNames = @()
-            foreach ($preTemplate in $templates) {
-                $preKey = [string]$preTemplate.DistinguishedName
-                $preRightsRead = $true
-                if ($null -ne $preTemplate.PSObject.Properties['EnrollmentRightsRead']) {
-                    $preRightsRead = [bool]$preTemplate.EnrollmentRightsRead
-                }
-                $preState = Get-EnrollmentPrivilegeState -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -EnrollmentRightsRead $preRightsRead -CredParams $CredParams
-                $enrollStateCache[$preKey] = $preState
-                if ($preTemplate.EnrollmentAgent -and $preState -eq 'NonPrivileged') {
-                    $agentTemplateNames += $preTemplate.Name
-                }
-            }
-            if (@($agentTemplateNames).Count -gt 0) {
-                Write-Log "[Get-ADCSVulnerabilities] ESC3 chain: $(@($agentTemplateNames).Count) enrollment agent template(s) enrollable by non-privileged principals: $($agentTemplateNames -join ', ')"
             }
             $templateDescriptors = @{}
             try {
@@ -90199,18 +90335,32 @@ function Get-ADCSVulnerabilities {
                         Reference = "https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc9"
                     }
                 }
-                if (-not $allEnrollmentPrivileged -and $oidToGroupLink.Count -gt 0 -and @($template.CertificatePolicies).Count -gt 0) {
+                if (-not $allEnrollmentPrivileged -and $template.ClientAuthentication -and $oidToGroupLink.Count -gt 0 -and @($template.CertificatePolicies).Count -gt 0) {
                     $linkedPolicies = @()
                     $anyPrivilegedGroupLink = $false
+                    $anyUnassessedGroupLink = $false
                     foreach ($policyOID in @($template.CertificatePolicies)) {
                         if ($oidToGroupLink.ContainsKey($policyOID)) {
                             $linkInfo = $oidToGroupLink[$policyOID]
                             $groupName = $linkInfo.GroupLinkDN
                             $groupPrivileged = $null
                             $groupReason = ''
+                            $groupUnreadReason = 'the group could not be read'
                             try {
                                 $escapedDN = Escape-LDAPFilterDN -DistinguishedName $linkInfo.GroupLinkDN
                                 $groupObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDN)" @CredParams)[0]
+                                if (-not $groupObj) {
+                                    $scannedDomainDN = [string]$Script:LDAPContext.DomainDN
+                                    $linkDN = [string]$linkInfo.GroupLinkDN
+                                    if ($scannedDomainDN -and -not $linkDN.EndsWith(",$scannedDomainDN", [System.StringComparison]::OrdinalIgnoreCase)) {
+                                        $groupUnreadReason = 'the group is in another domain and the Global Catalog did not return it'
+                                        $gcConnection = Get-GCConnection
+                                        if ($gcConnection) {
+                                            $groupObj = @(Invoke-LDAPSearch -LdapConnection $gcConnection -SearchBase $linkDN -Scope Base `
+                                                -Filter '(objectClass=group)' -Properties 'sAMAccountName', 'name', 'objectSid', 'distinguishedName')[0]
+                                        }
+                                    }
+                                }
                                 if ($groupObj) {
                                     $groupName = if ($groupObj.sAMAccountName) { $groupObj.sAMAccountName } else { $groupObj.name }
                                     $groupSID = [string]$groupObj.objectSid
@@ -90226,12 +90376,14 @@ function Get-ADCSVulnerabilities {
                             catch {
                                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error resolving group '$($linkInfo.GroupLinkDN)': $_" -Level Debug
                             }
-                            $verdictText = 'privilege not assessed - the group could not be resolved'
+                            $verdictText = "privilege not assessed - $groupUnreadReason"
                             if ($groupPrivileged -eq $true) {
                                 $verdictText = if ($groupReason) { "privileged: $groupReason" } else { 'privileged' }
                                 $anyPrivilegedGroupLink = $true
                             } elseif ($groupPrivileged -eq $false) {
                                 $verdictText = 'not a privileged group'
+                            } else {
+                                $anyUnassessedGroupLink = $true
                             }
                             $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName [$verdictText]"
                             Write-Log "[Get-ADCSVulnerabilities] ESC13: Template '$($template.Name)' - Policy '$($linkInfo.PolicyName)' linked to group '$groupName'"
@@ -90242,12 +90394,38 @@ function Get-ADCSVulnerabilities {
                             ESC = "ESC13"
                             Title = "Issuance Policy Linked to Group"
                             Severity = "High"
-                            Description = "Template uses issuance policy OID(s) linked to AD groups via msDS-OIDToGroupLink. Enrollment grants automatic group membership."
+                            Description = "Template carries issuance policy OID(s) linked to AD groups via msDS-OIDToGroupLink. A PKINIT logon with its certificate puts the linked group's SID in the ticket."
                             Remediation = "Remove msDS-OIDToGroupLink from the issuance policy OID, OR remove the policy from the template's msPKI-Certificate-Policy, OR restrict enrollment to privileged users."
-                            Reference = "https://posts.specterops.io/adcs-esc13-abuse-technique-fda4272fbd53"
+                            Reference = "https://specterops.io/blog/2024/02/14/adcs-esc13-abuse-technique/"
                         }
                         $template | Add-Member -NotePropertyName 'IssuancePolicyGroupLinks' -NotePropertyValue $linkedPolicies -Force
-                        $template | Add-Member -NotePropertyName 'issuancePolicyGroupPrivileged' -NotePropertyValue $anyPrivilegedGroupLink -Force
+                        $linkWorth = $false
+                        if ($anyPrivilegedGroupLink) {
+                            $linkWorth = $true
+                        } elseif ($anyUnassessedGroupLink) {
+                            $linkWorth = $null
+                        }
+                        $template | Add-Member -NotePropertyName 'issuancePolicyGroupPrivileged' -NotePropertyValue $linkWorth -Force
+                    }
+                }
+                if (-not $allEnrollmentPrivileged -and $template.ClientAuthentication -and $policyWritersByOID.Count -gt 0) {
+                    $writerRows = @()
+                    foreach ($policyOID in @($template.CertificatePolicies)) {
+                        if ($policyWritersByOID.ContainsKey([string]$policyOID)) {
+                            $writerRows += @($policyWritersByOID[[string]$policyOID])
+                        }
+                    }
+                    if ($writerRows.Count -gt 0) {
+                        $template | Add-Member -NotePropertyName 'IssuancePolicyWriters' -NotePropertyValue $writerRows -Force
+                        $templateVulns += [PSCustomObject]@{
+                            ESC = "ESC13"
+                            Title = "Issuance Policy Writable by Non-Privileged Principals"
+                            Severity = "High"
+                            Description = "An unprivileged principal may write an issuance policy this template carries, and so link it to a group via msDS-OIDToGroupLink. A PKINIT logon with a certificate of this template then puts that group's SID in the ticket."
+                            Remediation = "Remove the write access from the issuance policy object, OR remove the policy from the template's msPKI-Certificate-Policy, OR restrict enrollment to privileged users."
+                            Reference = "https://specterops.io/blog/2024/02/14/adcs-esc13-abuse-technique/"
+                        }
+                        Write-Log "[Get-ADCSVulnerabilities] ESC13: Template '$($template.Name)' carries an issuance policy unprivileged principals may write"
                     }
                 }
                 if ($template.EnrolleeSuppliesSubject -and $template.SchemaVersion -eq 1 -and -not $allEnrollmentPrivileged) {
@@ -90298,7 +90476,12 @@ function Get-ADCSVulnerabilities {
             $interestingCount = @($interestingTemplates).Count
             if ($interestingCount -gt 0) {
                 if ($totalVulnerabilities -gt 0) {
-                    Show-Line "Found $interestingCount of $($templates.Count) templates with findings" -Class Finding
+                    $enrollmentOnlyCount = $interestingCount - $totalVulnerabilities
+                    $templateHeadline = "Found $totalVulnerabilities of $($templates.Count) templates with findings"
+                    if ($enrollmentOnlyCount -gt 0) {
+                        $templateHeadline += ", $enrollmentOnlyCount more with non-privileged enrollment"
+                    }
+                    Show-Line $templateHeadline -Class Finding
                 } else {
                     Show-Line "Found $interestingCount of $($templates.Count) templates with non-privileged enrollment" -Class Hint
                 }
@@ -105830,7 +106013,7 @@ function Collect-BHIssuancePolicies {
     return $bhPolicies
 }
 #Requires -Version 5.1
-$Script:adPEASVersion = "2.12.0"
+$Script:adPEASVersion = "2.12.0+20261122-1615"
 if ($MyInvocation.MyCommand.Path) {
     $Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {

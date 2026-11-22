@@ -893,6 +893,65 @@ function Get-ADCSVulnerabilities {
                 }
             }
 
+            # The templates are read before the PKI object permissions, though they are shown
+            # after them. ESC5 needs them for the issuance policies: write access to a policy
+            # is a single step to ESC13 only where a template that logs on carries it, and the
+            # templates in turn name the accounts that may write their policy. Nothing here
+            # prints - the template section reports a failed query where it always did.
+            $templateResults = @(Get-ADCSTemplate @CredParams)
+            $templateQueryError = $templateResults | Where-Object { $_._QueryError -eq $true }
+            $templates = @($templateResults | Where-Object { $_._QueryError -ne $true })
+
+            # Pre-pass: resolve enrollment privilege for every template once, and record which
+            # templates hand out enrollment agent certificates to non-privileged principals.
+            # ESC3 needs both halves of the chain and they can appear in any order in the result
+            # set, so the answer must be known before the first template is judged.
+            # The cache is keyed by DistinguishedName and reused in the main loop, so
+            # Get-EnrollmentPrivilegeState still runs exactly once per template.
+            $enrollStateCache = @{}
+            $agentTemplateNames = @()
+            foreach ($preTemplate in $templates) {
+                $preKey = [string]$preTemplate.DistinguishedName
+                $preRightsRead = $true
+                if ($null -ne $preTemplate.PSObject.Properties['EnrollmentRightsRead']) {
+                    $preRightsRead = [bool]$preTemplate.EnrollmentRightsRead
+                }
+                $preState = Get-EnrollmentPrivilegeState -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -EnrollmentRightsRead $preRightsRead -CredParams $CredParams
+                $enrollStateCache[$preKey] = $preState
+
+                # The ESC3 chain needs a template that really does hand enrollment agent
+                # certificates to someone unprivileged. 'Unknown' is not that, and
+                # 'NotEnrollable' is the opposite of it.
+                if ($preTemplate.EnrollmentAgent -and $preState -eq 'NonPrivileged') {
+                    $agentTemplateNames += $preTemplate.Name
+                }
+            }
+            if (@($agentTemplateNames).Count -gt 0) {
+                Write-Log "[Get-ADCSVulnerabilities] ESC3 chain: $(@($agentTemplateNames).Count) enrollment agent template(s) enrollable by non-privileged principals: $($agentTemplateNames -join ', ')"
+            }
+
+            # The templates a group link written to a policy would take effect through, by
+            # policy OID: published (the list holds published templates only), able to log on,
+            # and open to enrollment by somebody unprivileged - or not known to be closed,
+            # which is the undamped reading here as everywhere else in this check. The same
+            # predicate decides ESC13 on a template, so the policy row and the template row
+            # cannot disagree.
+            $logonTemplatesByPolicy = @{}
+            foreach ($candidate in $templates) {
+                if (-not $candidate.ClientAuthentication) { continue }
+                $candidateState = $enrollStateCache[[string]$candidate.DistinguishedName]
+                if ($candidateState -eq 'Privileged' -or $candidateState -eq 'NotEnrollable') { continue }
+                foreach ($candidatePolicy in @($candidate.CertificatePolicies)) {
+                    $candidateKey = [string]$candidatePolicy
+                    if (-not $candidateKey) { continue }
+                    if (-not $logonTemplatesByPolicy.ContainsKey($candidateKey)) { $logonTemplatesByPolicy[$candidateKey] = @() }
+                    $logonTemplatesByPolicy[$candidateKey] += [string]$candidate.Name
+                }
+            }
+
+            # Filled by ESC5, read by the template loop: who may write which policy, by OID.
+            $policyWritersByOID = @{}
+
             # --- ESC5: Vulnerable PKI Object Access Control ---
             # Check for dangerous permissions on PKI container objects
             # If unprivileged users can write to these containers, they can:
@@ -956,6 +1015,82 @@ function Get-ADCSVulnerabilities {
                     }
                 )
 
+                # Each issuance policy on its own, beside the containers. Write access to one
+                # lets its holder set msDS-OIDToGroupLink, and every certificate of a template
+                # that carries the policy then logs on with the SID of the group it names
+                # (ESC13). Active Directory accepts any empty universal group there - Schema
+                # Admins and Enterprise Key Admins are empty in many forests. The ACL of the
+                # OID container does not show this: an ACE on a single policy, an inherit-only
+                # ACE on the container that reaches the policies only, and the owner of a
+                # policy - by default the account that created it - all sit on the policy
+                # objects.
+                #
+                # Which OID objects are issuance policies: flags 2 marks one (1 is a template
+                # OID, 3 an application policy). Measured in a forest with an Enterprise CA
+                # (2026-11-22): Low, Medium and High Assurance carry 2, the twelve template
+                # OIDs 1. No published specification at hand states the value, so the
+                # selection does not rest on it alone: an object that already carries a
+                # group link counts, and so does every object whose OID a template carries
+                # as its issuance policy - the case in which a single write to the policy
+                # is enough. The descriptors come with the one query, so no policy is read
+                # twice. One level only: CN=OID itself is of the same class.
+                try {
+                    $templatePolicyOIDs = @()
+                    foreach ($policyTemplate in $templates) {
+                        foreach ($templatePolicyOID in @($policyTemplate.CertificatePolicies)) {
+                            if ($templatePolicyOID) { $templatePolicyOIDs += [string]$templatePolicyOID }
+                        }
+                    }
+
+                    $policySelectors = @('(flags=2)', '(msDS-OIDToGroupLink=*)')
+                    foreach ($templatePolicyOID in @($templatePolicyOIDs | Select-Object -Unique)) {
+                        $policySelectors += "(msPKI-Cert-Template-OID=$(Escape-LDAPFilterValue -Value $templatePolicyOID))"
+                    }
+
+                    $policyObjects = @(Invoke-LDAPSearch -Filter "(&(objectClass=msPKI-Enterprise-Oid)(|$($policySelectors -join '')))" `
+                        -SearchBase "CN=OID,CN=Public Key Services,CN=Services,$configNC" -Scope OneLevel `
+                        -Properties 'distinguishedName', 'displayName', 'cn', 'msPKI-Cert-Template-OID', 'nTSecurityDescriptor' -Raw)
+
+                    foreach ($policyObject in $policyObjects) {
+                        if (-not $policyObject -or -not $policyObject.distinguishedName -or -not $policyObject.nTSecurityDescriptor) { continue }
+
+                        $policyName = [string]$policyObject.displayName
+                        if (-not $policyName) { $policyName = [string]$policyObject.cn }
+                        $policyOID = [string]$policyObject.'msPKI-Cert-Template-OID'
+
+                        # Where a written link would take effect, said on the row. Without a
+                        # template that logs on and is open to an unprivileged enrollee, the
+                        # write is half of a path: the other half is write access to a
+                        # template, which ESC4 reports on its own - so the row is a hint.
+                        # Unread templates leave it undecided, and undamped.
+                        $policyReach = ''
+                        $policyReachable = $true
+                        if ($templateQueryError) {
+                            $policyReach = '[templates not read]'
+                        } elseif ($policyOID -and $logonTemplatesByPolicy.ContainsKey($policyOID)) {
+                            $policyReach = "[on template: $(@($logonTemplatesByPolicy[$policyOID]) -join ', ')]"
+                        } else {
+                            $policyReach = '[on no template an unprivileged account can log on with]'
+                            $policyReachable = $false
+                        }
+
+                        $pkiContainers += @{
+                            DN = [string]$policyObject.distinguishedName
+                            Name = "Issuance Policy '$policyName'"
+                            Description = "Write access links the policy to a group, which every certificate carrying it logs on with (ESC13)"
+                            Descriptor = $policyObject.nTSecurityDescriptor
+                            IssuancePolicy = $true
+                            PolicyOID = $policyOID
+                            Reach = $policyReach
+                            Reachable = $policyReachable
+                        }
+                    }
+                    Write-Log "[Get-ADCSVulnerabilities] ESC5: $(@($policyObjects).Count) issuance policy object(s) added to the permission check"
+                }
+                catch {
+                    Write-Log "[Get-ADCSVulnerabilities] ESC5: Issuance policy objects could not be read: $_" -Level Warning
+                }
+
                 # Collect findings per container
                 $allFindings = @()
 
@@ -966,12 +1101,19 @@ function Get-ADCSVulnerabilities {
                         # Get ACL for container - use Invoke-LDAPSearch with explicit SearchBase and -Raw
                         # (Configuration partition DNs require SearchBase to be set to configNC)
                         # -Raw is required to get nTSecurityDescriptor as byte[] instead of converted object
-                        $containerObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$($container.DN))" -SearchBase $configNC -Properties 'nTSecurityDescriptor' -Raw -Scope Subtree)[0]
+                        # An issuance policy brought its descriptor along from the query above.
+                        $containerDescriptor = $null
+                        if ($container.Descriptor) {
+                            $containerDescriptor = $container.Descriptor
+                        } else {
+                            $containerObj = @(Invoke-LDAPSearch -Filter "(distinguishedName=$($container.DN))" -SearchBase $configNC -Properties 'nTSecurityDescriptor' -Raw -Scope Subtree)[0]
+                            if ($containerObj) { $containerDescriptor = $containerObj.nTSecurityDescriptor }
+                        }
 
                         $containerACL = @()
-                        if ($containerObj -and $containerObj.nTSecurityDescriptor) {
+                        if ($containerDescriptor) {
                             $secDescriptor = New-Object System.DirectoryServices.ActiveDirectorySecurity
-                            $secDescriptor.SetSecurityDescriptorBinaryForm($containerObj.nTSecurityDescriptor)
+                            $secDescriptor.SetSecurityDescriptorBinaryForm($containerDescriptor)
                             $dacl = $secDescriptor.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 
                             # Convert to PSCustomObject format
@@ -995,13 +1137,28 @@ function Get-ADCSVulnerabilities {
                                     $scopeName = if ($scopeResolved -and $scopeResolved.Name) { $scopeResolved.Name } else { [string]$ace.ObjectType }
                                     $scopeIsClass = ($scopeResolved -and $scopeResolved.Type -eq 'SchemaClass')
                                     $scopedRights = @()
-                                    if ($containerRights -match 'GenericAll|CreateChild' -and ($scopeIsClass -or -not $scopeResolved)) {
-                                        $scopedRights += "CreateChild ($scopeName)"
-                                    }
-                                    if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and -not $scopeIsClass) {
-                                        $scopedRights += "WriteProperty ($scopeName)"
+                                    if ($container.IssuancePolicy) {
+                                        # A policy is a leaf: nothing is created below it, and
+                                        # of its attributes two decide which group a
+                                        # certificate logs on with - the link itself, and the
+                                        # OID the link is looked up by. Write access to its
+                                        # display name or its description decides nothing.
+                                        if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and
+                                            $scopeName -in @('msDS-OIDToGroupLink', 'msPKI-Cert-Template-OID')) {
+                                            $scopedRights += "WriteProperty ($scopeName)"
+                                        }
+                                    } else {
+                                        if ($containerRights -match 'GenericAll|CreateChild' -and ($scopeIsClass -or -not $scopeResolved)) {
+                                            $scopedRights += "CreateChild ($scopeName)"
+                                        }
+                                        if ($containerRights -match 'GenericAll|GenericWrite|WriteProperty' -and -not $scopeIsClass) {
+                                            $scopedRights += "WriteProperty ($scopeName)"
+                                        }
                                     }
                                     $containerRights = $scopedRights -join ', '
+                                } elseif ($container.IssuancePolicy) {
+                                    # CreateChild on a leaf creates nothing.
+                                    $containerRights = (@($containerRights -split ',') | Where-Object { $_ -and $_ -ne 'CreateChild' }) -join ','
                                 }
 
                                 $containerACL += [PSCustomObject]@{
@@ -1018,6 +1175,7 @@ function Get-ADCSVulnerabilities {
                                     # container permissions are properly restricted" -
                                     # ESC5, green, on a domain compromise path.
                                     ExpandedRights = $containerRights
+                                    IsInherited = [bool]$ace.IsInherited
                                 }
                             }
                         }
@@ -1045,6 +1203,17 @@ function Get-ADCSVulnerabilities {
                                     $aceSID = $ace.IdentityReference.Value
                                     $aceRights = $ace.ExpandedRights
 
+                                    # An ACE a policy inherited from a container that it also
+                                    # applies to is already on that container's row, with the
+                                    # same right - repeated once per policy it would only
+                                    # lengthen the row. An inherit-only ACE of the container
+                                    # is not there, which is why the policies are read at all.
+                                    if ($container.IssuancePolicy -and $ace.IsInherited -and
+                                        @($allFindings | Where-Object { $_.SID -eq $aceSID -and $_.Rights -eq $aceRights -and -not $_.IssuancePolicy }).Count -gt 0) {
+                                        Write-Log "[Get-ADCSVulnerabilities] ESC5: $aceSID holds $aceRights on $($container.Name) by inheritance, already reported on a container"
+                                        continue
+                                    }
+
                                     # Determine severity
                                     $severity = 'Finding'
 
@@ -1070,6 +1239,11 @@ function Get-ADCSVulnerabilities {
                                         Write-Log "[Get-ADCSVulnerabilities] IncludePrivileged: Including $aceSID with severity $severity"
                                     }
 
+                                    # A policy no template that logs on carries: half a path.
+                                    if ($container.IssuancePolicy -and -not $container.Reachable -and $severity -eq 'Finding') {
+                                        $severity = 'Hint'
+                                    }
+
                                     # Add to findings
                                     $allFindings += [PSCustomObject]@{
                                         SID = $aceSID
@@ -1077,6 +1251,9 @@ function Get-ADCSVulnerabilities {
                                         Severity = $severity
                                         ContainerName = $container.Name
                                         ContainerDescription = $container.Description
+                                        IssuancePolicy = [bool]$container.IssuancePolicy
+                                        PolicyOID = $container.PolicyOID
+                                        Reach = $container.Reach
                                     }
                                 }
                             }
@@ -1101,12 +1278,19 @@ function Get-ADCSVulnerabilities {
                                 $ownerExpected = ($ownerScope.Severity -eq 'Expected' -or $ownerScope.Severity -eq 'Attention')
 
                                 if ($IncludePrivileged -or -not $ownerExpected) {
+                                    $ownerSeverity = $ownerScope.Severity
+                                    if ($container.IssuancePolicy -and -not $container.Reachable -and $ownerSeverity -eq 'Finding') {
+                                        $ownerSeverity = 'Hint'
+                                    }
                                     $allFindings += [PSCustomObject]@{
                                         SID = $containerOwnerSID
                                         Rights = 'Owner (may rewrite the DACL)'
-                                        Severity = $ownerScope.Severity
+                                        Severity = $ownerSeverity
                                         ContainerName = $container.Name
                                         ContainerDescription = $container.Description
+                                        IssuancePolicy = [bool]$container.IssuancePolicy
+                                        PolicyOID = $container.PolicyOID
+                                        Reach = $container.Reach
                                     }
                                 } else {
                                     Write-Log "[Get-ADCSVulnerabilities] ESC5: $($container.Name) is owned by $containerOwnerSID, which the PKIContainer scope expects"
@@ -1122,7 +1306,25 @@ function Get-ADCSVulnerabilities {
                 # ===== Output findings with full AD objects =====
                 if (@($allFindings).Count -gt 0) {
                     $countText = if ($IncludePrivileged) { "$(@($allFindings).Count) finding(s)" } else { "$(@($allFindings).Count) non-privileged finding(s)" }
-                    Show-Line "Found $countText with dangerous PKI container permissions" -Class Finding
+                    # Red as before, unless every entry is a hint - which only a policy no
+                    # template that logs on carries produces.
+                    $headlineClass = 'Finding'
+                    if (@($allFindings | Where-Object { $_.Severity -eq 'Finding' }).Count -eq 0 -and
+                        @($allFindings | Where-Object { $_.Severity -eq 'Hint' }).Count -gt 0) {
+                        $headlineClass = 'Hint'
+                    }
+                    Show-Line "Found $countText with dangerous PKI container permissions" -Class $headlineClass
+
+                    # Who may write which issuance policy, for the template rows. Only the
+                    # unprivileged writers: a privileged one listed with -IncludePrivileged
+                    # gains nothing it did not have.
+                    foreach ($policyFinding in @($allFindings | Where-Object { $_.IssuancePolicy -and $_.PolicyOID -and $_.Severity -in @('Finding', 'Hint') })) {
+                        $writerName = ConvertFrom-SID -SID $policyFinding.SID
+                        if (-not $writerName) { $writerName = $policyFinding.SID }
+                        $writerKey = [string]$policyFinding.PolicyOID
+                        if (-not $policyWritersByOID.ContainsKey($writerKey)) { $policyWritersByOID[$writerKey] = @() }
+                        $policyWritersByOID[$writerKey] += "$($policyFinding.ContainerName): $writerName ($($policyFinding.Rights))"
+                    }
 
                     # Group by SID to consolidate multiple containers per principal
                     $groupedFindings = $allFindings | Group-Object -Property SID
@@ -1135,11 +1337,18 @@ function Get-ADCSVulnerabilities {
 
                         foreach ($finding in $findings) {
                             $allRights += $finding.Rights
-                            $allContainers += "$($finding.ContainerName) ($($finding.Rights))"
+                            $containerLine = "$($finding.ContainerName) ($($finding.Rights))"
+                            if ($finding.IssuancePolicy -and $finding.Reach) { $containerLine += " $($finding.Reach)" }
+                            $allContainers += $containerLine
                         }
 
                         $allRights = $allRights | Select-Object -Unique
+
+                        # The most severe of the principal's findings, not the first one listed:
+                        # a hint for a policy nobody logs on with must not hide a finding on a
+                        # container beside it.
                         $severity = ($findings | Select-Object -First 1).Severity
+                        if (@($findings | Where-Object { $_.Severity -eq 'Finding' }).Count -gt 0) { $severity = 'Finding' }
 
                         # Try to resolve the SID to a full AD object
                         $sidHex = ConvertTo-LDAPSIDHex -SID $sid
@@ -1180,19 +1389,15 @@ function Get-ADCSVulnerabilities {
             }
 
             # Step 2: Enumerate Certificate Templates (only enabled/published ones)
+            # Read before ESC5; reported here, where the section has always reported it.
             Show-SubHeader "Searching for certificate templates..." -ObjectType "CertificateTemplate"
-            $templateResults = @(Get-ADCSTemplate @CredParams)
 
             # Check if query failed (auth error, network issue, etc.)
-            $templateQueryError = $templateResults | Where-Object { $_._QueryError -eq $true }
             if ($templateQueryError) {
                 Write-Log "[Get-ADCSVulnerabilities] Template query failed: $($templateQueryError.ErrorMessage)"
                 Show-Line "Failed to query certificate templates - LDAP query failed (authentication/network issue)" -Class Finding
                 return
             }
-
-            # Filter out any error markers (should be none at this point)
-            $templates = @($templateResults | Where-Object { $_._QueryError -ne $true })
 
             if (@($templates).Count -eq 0) {
                 Show-Line "No enabled certificate templates found" -Class Note
@@ -1247,33 +1452,7 @@ function Get-ADCSVulnerabilities {
                 Show-Line "Which templates are published to a CA could not be determined - disabled templates may appear below" -Class "Note"
             }
 
-            # Pre-pass: resolve enrollment privilege for every template once, and record which
-            # templates hand out enrollment agent certificates to non-privileged principals.
-            # ESC3 needs both halves of the chain and they can appear in any order in the result
-            # set, so the answer must be known before the first template is judged.
-            # The cache is keyed by DistinguishedName and reused in the main loop, so
-            # Get-EnrollmentPrivilegeState still runs exactly once per template.
-            $enrollStateCache = @{}
-            $agentTemplateNames = @()
-            foreach ($preTemplate in $templates) {
-                $preKey = [string]$preTemplate.DistinguishedName
-                $preRightsRead = $true
-                if ($null -ne $preTemplate.PSObject.Properties['EnrollmentRightsRead']) {
-                    $preRightsRead = [bool]$preTemplate.EnrollmentRightsRead
-                }
-                $preState = Get-EnrollmentPrivilegeState -EnrollmentPrincipalSIDs $preTemplate.EnrollmentPrincipalSIDs -EnrollmentPrincipals $preTemplate.EnrollmentPrincipals -EnrollmentRightsRead $preRightsRead -CredParams $CredParams
-                $enrollStateCache[$preKey] = $preState
-
-                # The ESC3 chain needs a template that really does hand enrollment agent
-                # certificates to someone unprivileged. 'Unknown' is not that, and
-                # 'NotEnrollable' is the opposite of it.
-                if ($preTemplate.EnrollmentAgent -and $preState -eq 'NonPrivileged') {
-                    $agentTemplateNames += $preTemplate.Name
-                }
-            }
-            if (@($agentTemplateNames).Count -gt 0) {
-                Write-Log "[Get-ADCSVulnerabilities] ESC3 chain: $(@($agentTemplateNames).Count) enrollment agent template(s) enrollable by non-privileged principals: $($agentTemplateNames -join ', ')"
-            }
+            # The enrollment pre-pass ran before ESC5, which needs its answers as well.
 
             # Every template's security descriptor in one query. The ESC4 analysis below
             # needs the raw bytes, which Get-ADCSTemplate does not hand on - it returns the
@@ -1657,10 +1836,20 @@ function Get-ADCSVulnerabilities {
                 }
 
                 # ===== ESC13: Issuance Policy Linked to Group =====
-                # Only flag if non-privileged users can enroll
-                if (-not $allEnrollmentPrivileged -and $oidToGroupLink.Count -gt 0 -and @($template.CertificatePolicies).Count -gt 0) {
+                # Only flag if non-privileged users can enroll, and only on a template whose
+                # certificate can log on. The group SID reaches a ticket through a PKINIT
+                # logon with the certificate, and the KDC takes a certificate for that only
+                # with one of the authentication EKUs ClientAuthentication stands for. A
+                # template for server or code signing certificates that carries a linked
+                # policy was reported as ESC13 although no logon could ever use it.
+                # Measured in a lab forest (2026-11-22), one template per case, both carrying
+                # the same linked policy: the Client Authentication certificate logged on by
+                # PKINIT with the SID of the empty linked group in its token, the Server
+                # Authentication one was refused with KDC_ERR_INCONSISTENT_KEY_PURPOSE (77).
+                if (-not $allEnrollmentPrivileged -and $template.ClientAuthentication -and $oidToGroupLink.Count -gt 0 -and @($template.CertificatePolicies).Count -gt 0) {
                     $linkedPolicies = @()
                     $anyPrivilegedGroupLink = $false
+                    $anyUnassessedGroupLink = $false
 
                     foreach ($policyOID in @($template.CertificatePolicies)) {
                         if ($oidToGroupLink.ContainsKey($policyOID)) {
@@ -1680,9 +1869,32 @@ function Get-ADCSVulnerabilities {
                             $groupName = $linkInfo.GroupLinkDN
                             $groupPrivileged = $null
                             $groupReason = ''
+                            $groupUnreadReason = 'the group could not be read'
                             try {
                                 $escapedDN = Escape-LDAPFilterDN -DistinguishedName $linkInfo.GroupLinkDN
                                 $groupObj = @(Get-DomainObject -LDAPFilter "(distinguishedName=$escapedDN)" @CredParams)[0]
+
+                                # A link may only name a universal group, and a universal
+                                # group can live in any domain of the forest - the policies
+                                # sit in the Configuration partition, which every domain
+                                # shares. The scanned domain does not hold such a group, so
+                                # it is asked of the Global Catalog, which holds every
+                                # universal group with its SID. Unresolved, a child domain
+                                # scan read a link to the forest root's Schema Admins as
+                                # "not assessed" and coloured it like a harmless one.
+                                if (-not $groupObj) {
+                                    $scannedDomainDN = [string]$Script:LDAPContext.DomainDN
+                                    $linkDN = [string]$linkInfo.GroupLinkDN
+                                    if ($scannedDomainDN -and -not $linkDN.EndsWith(",$scannedDomainDN", [System.StringComparison]::OrdinalIgnoreCase)) {
+                                        $groupUnreadReason = 'the group is in another domain and the Global Catalog did not return it'
+                                        $gcConnection = Get-GCConnection
+                                        if ($gcConnection) {
+                                            $groupObj = @(Invoke-LDAPSearch -LdapConnection $gcConnection -SearchBase $linkDN -Scope Base `
+                                                -Filter '(objectClass=group)' -Properties 'sAMAccountName', 'name', 'objectSid', 'distinguishedName')[0]
+                                        }
+                                    }
+                                }
+
                                 if ($groupObj) {
                                     $groupName = if ($groupObj.sAMAccountName) { $groupObj.sAMAccountName } else { $groupObj.name }
 
@@ -1702,12 +1914,14 @@ function Get-ADCSVulnerabilities {
                                 Write-Log "[Get-ADCSVulnerabilities] ESC13: Error resolving group '$($linkInfo.GroupLinkDN)': $_" -Level Debug
                             }
 
-                            $verdictText = 'privilege not assessed - the group could not be resolved'
+                            $verdictText = "privilege not assessed - $groupUnreadReason"
                             if ($groupPrivileged -eq $true) {
                                 $verdictText = if ($groupReason) { "privileged: $groupReason" } else { 'privileged' }
                                 $anyPrivilegedGroupLink = $true
                             } elseif ($groupPrivileged -eq $false) {
                                 $verdictText = 'not a privileged group'
+                            } else {
+                                $anyUnassessedGroupLink = $true
                             }
 
                             $linkedPolicies += "$($linkInfo.PolicyName) (OID: $policyOID) -> $groupName [$verdictText]"
@@ -1720,9 +1934,9 @@ function Get-ADCSVulnerabilities {
                             ESC = "ESC13"
                             Title = "Issuance Policy Linked to Group"
                             Severity = "High"
-                            Description = "Template uses issuance policy OID(s) linked to AD groups via msDS-OIDToGroupLink. Enrollment grants automatic group membership."
+                            Description = "Template carries issuance policy OID(s) linked to AD groups via msDS-OIDToGroupLink. A PKINIT logon with its certificate puts the linked group's SID in the ticket."
                             Remediation = "Remove msDS-OIDToGroupLink from the issuance policy OID, OR remove the policy from the template's msPKI-Certificate-Policy, OR restrict enrollment to privileged users."
-                            Reference = "https://posts.specterops.io/adcs-esc13-abuse-technique-fda4272fbd53"
+                            Reference = "https://specterops.io/blog/2024/02/14/adcs-esc13-abuse-technique/"
                         }
 
                         # Add linked policies info to template for display
@@ -1732,7 +1946,47 @@ function Get-ADCSVulnerabilities {
                         # damps the colour when enrollment buys membership in a group that
                         # is worth nothing. The finding and its remediation stay either way:
                         # the link is still a membership nobody applied for.
-                        $template | Add-Member -NotePropertyName 'issuancePolicyGroupPrivileged' -NotePropertyValue $anyPrivilegedGroupLink -Force
+                        #
+                        # Three values: $true for a link to a privileged group, $false when
+                        # every linked group was judged and none is, $null when a group could
+                        # not be judged. Only $false damps - a link nobody could assess is not
+                        # a link known to be harmless.
+                        $linkWorth = $false
+                        if ($anyPrivilegedGroupLink) {
+                            $linkWorth = $true
+                        } elseif ($anyUnassessedGroupLink) {
+                            $linkWorth = $null
+                        }
+                        $template | Add-Member -NotePropertyName 'issuancePolicyGroupPrivileged' -NotePropertyValue $linkWorth -Force
+                    }
+                }
+
+                # ===== ESC13, one step earlier: the policy is writable =====
+                # A policy of this template that an unprivileged account may write is a link
+                # waiting to be set: the writer points it at an empty universal group - Schema
+                # Admins and Enterprise Key Admins are empty in many forests - and every logon
+                # with a certificate of this template carries that group's SID from then on.
+                # ESC5 found the writers on the policy objects; the template names them, so
+                # the path is visible from both ends. Same gate as the linked case above.
+                if (-not $allEnrollmentPrivileged -and $template.ClientAuthentication -and $policyWritersByOID.Count -gt 0) {
+                    $writerRows = @()
+                    foreach ($policyOID in @($template.CertificatePolicies)) {
+                        if ($policyWritersByOID.ContainsKey([string]$policyOID)) {
+                            $writerRows += @($policyWritersByOID[[string]$policyOID])
+                        }
+                    }
+
+                    if ($writerRows.Count -gt 0) {
+                        $template | Add-Member -NotePropertyName 'IssuancePolicyWriters' -NotePropertyValue $writerRows -Force
+                        $templateVulns += [PSCustomObject]@{
+                            ESC = "ESC13"
+                            Title = "Issuance Policy Writable by Non-Privileged Principals"
+                            Severity = "High"
+                            Description = "An unprivileged principal may write an issuance policy this template carries, and so link it to a group via msDS-OIDToGroupLink. A PKINIT logon with a certificate of this template then puts that group's SID in the ticket."
+                            Remediation = "Remove the write access from the issuance policy object, OR remove the policy from the template's msPKI-Certificate-Policy, OR restrict enrollment to privileged users."
+                            Reference = "https://specterops.io/blog/2024/02/14/adcs-esc13-abuse-technique/"
+                        }
+                        Write-Log "[Get-ADCSVulnerabilities] ESC13: Template '$($template.Name)' carries an issuance policy unprivileged principals may write"
                     }
                 }
 
@@ -1820,7 +2074,14 @@ function Get-ADCSVulnerabilities {
             if ($interestingCount -gt 0) {
                 # Show informative message about what we found
                 if ($totalVulnerabilities -gt 0) {
-                    Show-Line "Found $interestingCount of $($templates.Count) templates with findings" -Class Finding
+                    # Counted apart: a template listed for its non-privileged enrollment
+                    # alone is no finding, and the line used to count it as one.
+                    $enrollmentOnlyCount = $interestingCount - $totalVulnerabilities
+                    $templateHeadline = "Found $totalVulnerabilities of $($templates.Count) templates with findings"
+                    if ($enrollmentOnlyCount -gt 0) {
+                        $templateHeadline += ", $enrollmentOnlyCount more with non-privileged enrollment"
+                    }
+                    Show-Line $templateHeadline -Class Finding
                 } else {
                     Show-Line "Found $interestingCount of $($templates.Count) templates with non-privileged enrollment" -Class Hint
                 }

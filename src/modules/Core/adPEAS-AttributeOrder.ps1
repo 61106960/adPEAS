@@ -150,8 +150,8 @@ $Script:PrimaryAttributes = @{
         'EnrollmentPrincipals',
         # 6. Security findings
         'DangerousACEs',
-        # 7. ESC13 - Issuance policy group links
-        'IssuancePolicyGroupLinks'
+        # 7. ESC13 - Issuance policy group links, and who may write such a link
+        'IssuancePolicyGroupLinks', 'IssuancePolicyWriters'
     )
 
     # GPO objects (generic fallback for GPOs without specific _adPEASObjectType)

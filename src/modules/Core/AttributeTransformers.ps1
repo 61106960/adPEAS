@@ -1080,8 +1080,13 @@ function Convert-EnrollPrincipalsToRenderValues {
     # language of the domain, and the same name can belong to two principals across a
     # trust.
     $principalSIDs = @()
+    # A broad group is red only on a template whose ESC row is red; elsewhere it is the
+    # hint its card describes (Get-TemplateESCRowSeverity). It was red on every template,
+    # the default User and Machine templates included.
+    $escRowSeverity = $null
     if ($Context -and $Context.SourceObject) {
         $principalSIDs = @($Context.SourceObject.EnrollmentPrincipalSIDs)
+        $escRowSeverity = Get-TemplateESCRowSeverity -Template $Context.SourceObject
     }
 
     $renderValues = @()
@@ -1095,7 +1100,7 @@ function Convert-EnrollPrincipalsToRenderValues {
         $privCheck = Test-IsPrivileged -Identity $pIdentity
         $severity = switch ($privCheck.Category) {
             'Privileged'  { 'Standard' }   # Admins expected to enroll
-            'BroadGroup'  { 'Finding' }    # Everyone, Auth Users, Domain Users
+            'BroadGroup'  { if ($escRowSeverity -eq 'Finding') { 'Finding' } else { 'Hint' } }   # Everyone, Auth Users, Domain Users
             default       { 'Hint' }
         }
         $findingId = switch ($severity) {

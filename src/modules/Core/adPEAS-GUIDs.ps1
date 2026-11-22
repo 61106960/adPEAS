@@ -179,6 +179,13 @@ $Script:PropertyGUIDs = @{
     'msPKI-RA-Signature'                   = [GUID]'fe17e04b-937d-4f7e-8e0e-9292c8d5683e'  # 1.2.840.113556.1.4.1429
     'nTSecurityDescriptor'                 = [GUID]'bf9679e3-0de6-11d0-a285-00aa003049e2'  # 1.2.840.113556.1.2.281
 
+    # Issuance policy attributes: the group a certificate carrying the policy logs on with,
+    # and the OID that group is looked up by. A WriteProperty ACE naming either one is an
+    # ESC13 path. Both are base schema attributes, read from a forest's schema (2026-11-22)
+    # rather than from memory.
+    'msDS-OIDToGroupLink'                  = [GUID]'f9c9a57c-3941-438d-bebf-0edaf2aca187'  # 1.2.840.113556.1.4.2051
+    'msPKI-Cert-Template-OID'              = [GUID]'3164c36a-ba26-468c-8bda-c1e5cc256728'  # 1.2.840.113556.1.4.1436
+
     # Group-Policy-Container attributes. A WriteProperty ACE on a GPO always names one
     # attribute GUID; without these entries Resolve-ObjectTypeGUID answered $null for all
     # of them, so Get-GPOPermissions could not tell the ones that hand over the policy

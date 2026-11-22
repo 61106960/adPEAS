@@ -278,7 +278,7 @@ function Get-ADCSTemplate {
             #
             # These four OIDs are the authentication EKUs the ESC1 precondition names, and
             # every enrollment-driven ESC in this check keys off this flag: ESC1, ESC2,
-            # ESC3-TARGET and ESC9. PKINIT Client Authentication was missing, so a template
+            # ESC3-TARGET, ESC9 and ESC13. PKINIT Client Authentication was missing, so a template
             # carrying only that OID authenticated in the domain while adPEAS reported
             # nothing about it - it is the OID used for smart-card and certificate logon in
             # environments that do not also set the Microsoft-specific one.

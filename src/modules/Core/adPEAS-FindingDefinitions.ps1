@@ -1721,6 +1721,7 @@ $dangerousTemplates | Export-Csv "DangerousTemplateACLs.csv" -NoTypeInformation
             "Attackers can modify existing secure templates to make them vulnerable"
             "Attackers can grant themselves enrollment permissions on any template"
             "Attackers can manipulate the NTAuth store to trust rogue CAs"
+            "Attackers with write access to an issuance policy can link it to an empty universal group - every certificate carrying the policy then logs on with that group's SID (ESC13)"
             "Complete PKI infrastructure takeover possible"
         )
         Attack = @(
@@ -1740,6 +1741,7 @@ $dangerousTemplates | Export-Csv "DangerousTemplateACLs.csv" -NoTypeInformation
             "  - CN=Enrollment Services,CN=Public Key Services,..."
             "  - CN=NTAuthCertificates,CN=Public Key Services,..."
             "  - CN=OID,CN=Public Key Services,..."
+            "  - each issuance policy object in CN=OID (msDS-OIDToGroupLink, msPKI-Cert-Template-OID, owner)"
             "Audit existing templates for unauthorized modifications"
         )
         RemediationCommands = @(
@@ -1855,6 +1857,10 @@ Set-Acl -Path "AD:\$containerDN" -AclObject $acl
             # on an object where this text explains that they can build an ESC1 template
             # from scratch and poison the NTAuth store.
             @{ Attribute = 'pkiContainersAffected'; Severity = 'Finding' }
+
+            # Write access to an issuance policy that no template able to log on carries:
+            # the writer would also need write access to a template, reported as ESC4.
+            @{ Attribute = 'pkiContainersAffected'; Pattern = '\[on no template an unprivileged account can log on with\]'; Severity = 'Hint'; SeverityOnly = $true }
         )
     }
 
@@ -2025,8 +2031,14 @@ Uninstall-WindowsFeature -Name ADCS-Web-Enrollment
         )
         MITRE = "T1649"
         Triggers = @(
-            # SID-based classification: Broad groups (Everyone, Domain Users) enrolling = Finding
-            @{ Attribute = 'EnrollmentPrincipals'; Custom = 'is_broad_group_sid'; Severity = 'Finding' }
+            # A broad group (Everyone, Authenticated Users, Domain Users, Domain Computers)
+            # is red only on a template whose ESC row is red: the User and Machine templates
+            # are open to these groups in every deployment. Severity-only and listed before
+            # the Hint below, because the first matching severity-only trigger wins.
+            @{ Attribute = 'EnrollmentPrincipals'; Custom = 'broad_enrollment_on_vulnerable_template'; Severity = 'Finding'; SeverityOnly = $true }
+            # Every broad group gets this card; its colour comes from the triggers above
+            # and below.
+            @{ Attribute = 'EnrollmentPrincipals'; Custom = 'is_broad_group_sid'; Severity = 'Hint' }
             # Non-privileged enrollment = Hint (operator or unknown)
             @{ Attribute = 'EnrollmentPrincipals'; Severity = 'Hint'; SeverityOnly = $true }
         )
@@ -11875,12 +11887,13 @@ $altSecGuid = [GUID]'00fbf30c-91fe-11d1-aebc-0000f80367c1'
         Title = "ESC13 - Issuance Policy Linked to AD Group"
         Risk = "Finding"
         BaseScore = 70
-        Description = "A certificate template references an issuance policy OID that is linked to an AD group via the msDS-OIDToGroupLink attribute. When a user enrolls in this template, the resulting certificate grants automatic membership in the linked group. This can be abused for privilege escalation if non-privileged users can enroll."
+        Description = "A certificate template that authenticates carries an issuance policy whose OID object is linked to an AD group through msDS-OIDToGroupLink. Whoever logs on with a certificate from this template by Kerberos PKINIT receives the SID of that group in the ticket, as if they were a member. The group itself stays empty - Active Directory accepts a link only to an empty universal group - so the membership appears in no member list, only in the ticket."
         Impact = @(
-            "Attacker enrolls in the template and gains membership in the linked AD group"
-            "If the linked group is privileged, this directly escalates privileges"
-            "Certificate-based group membership bypasses traditional group management controls"
-            "The group membership is granted automatically upon certificate issuance"
+            "An account that may enroll requests a certificate, logs on with it by PKINIT and holds the linked group's SID in its Kerberos ticket"
+            "If the linked group is privileged, or holds rights of its own, this is a direct escalation"
+            "An audit of the group's members finds nobody: the group stays empty, the membership exists only in the ticket"
+            "It holds for every logon with the certificate until the certificate expires or is revoked, whatever happens to the account's group memberships"
+            "Where an unprivileged account may write the issuance policy (IssuancePolicyWriters), it sets the link itself, to any empty universal group - Schema Admins and Enterprise Key Admins are empty in many forests"
         )
         Remediation = @(
             "Remove the msDS-OIDToGroupLink attribute from the issuance policy OID object"
@@ -11941,7 +11954,7 @@ foreach ($oid in $linkedOIDs) {
             }
         )
         References = @(
-            @{ Title = "ESC13 - ADCS Abuse Technique"; Url = "https://posts.specterops.io/adcs-esc13-abuse-technique-fda4272fbd53" }
+            @{ Title = "ESC13 - ADCS Abuse Technique"; Url = "https://specterops.io/blog/2024/02/14/adcs-esc13-abuse-technique/" }
             @{ Title = "Certified Pre-Owned - SpecterOps"; Url = "https://posts.specterops.io/certified-pre-owned-d95910965cd2" }
             @{ Title = "Issuance Policies and OID Group Links - Microsoft"; Url = "https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/certificate-template-concepts" }
         )
@@ -11954,9 +11967,15 @@ foreach ($oid in $linkedOIDs) {
             # grants membership in a privileged group, yellow where it grants membership in
             # something that is not. Both are reported - a group nobody applied for is
             # still a membership - but a distribution group and Domain Admins used to be
-            # the same finding at the same score.
-            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[privileged'; Severity = 'Finding' }
-            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '.'; Severity = 'Hint' }
+            # the same finding at the same score. A group that could not be judged stays
+            # red: the fallback to yellow for every other row coloured it like a harmless
+            # one. The two patterns do not overlap, so neither depends on list order.
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[privilege(d|\snot assessed)'; Severity = 'Finding' }
+            @{ Attribute = 'IssuancePolicyGroupLinks'; Pattern = '\[not a privileged group\]'; Severity = 'Hint' }
+
+            # The accounts that may write a policy of the template: they set the link
+            # themselves, to whichever empty universal group they choose.
+            @{ Attribute = 'IssuancePolicyWriters'; Severity = 'Finding' }
 
             # And the same damping on the ESC13 row of the Vulnerabilities line, so the
             # card keeps its text and its remediation while the colour says what the link
@@ -17812,6 +17831,48 @@ function Get-EncryptionTypeList {
     return [string[]]$names
 }
 
+<#
+.SYNOPSIS
+    The severity a certificate template's Vulnerabilities row is shown with.
+
+.DESCRIPTION
+    A broad group that may enroll - Domain Users, Domain Computers, Authenticated Users,
+    Everyone - is what makes an ESC on the template exploitable by anybody, and nothing
+    on its own: the User and Machine templates are enrollable by exactly these groups in
+    every AD CS deployment. The enrollment row therefore takes its red from the ESC row
+    of the same template. Both used to be decided apart, and the enrollment row was red on
+    every template a broad group could enroll in, which turned the HTML section red in a
+    forest without a single vulnerable template.
+
+    Asked the same way the renderer asks for the row itself, so a damped ESC - manager
+    approval, a required co-signature, a linked group that is not privileged - damps the
+    enrollment row with it.
+
+.PARAMETER Template
+    The template object the row belongs to.
+
+.OUTPUTS
+    [string] the row's severity, or $null for an object without ESC findings.
+
+.NOTES
+    Internal helper for Test-CustomTrigger and Convert-EnrollPrincipalsToRenderValues.
+#>
+function Get-TemplateESCRowSeverity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $Template
+    )
+
+    if (-not $Template) { return $null }
+    $vulnProperty = $Template.PSObject.Properties['Vulnerabilities']
+    if (-not $vulnProperty -or [string]::IsNullOrWhiteSpace([string]$vulnProperty.Value)) { return $null }
+
+    $rowMatch = Get-TriggerMatch -Name 'Vulnerabilities' -Value $vulnProperty.Value -SourceObject $Template
+    return [string]$rowMatch.Severity
+}
+
 function Test-CustomTrigger {
     param(
         [string]$CustomType,
@@ -17931,12 +17992,19 @@ function Test-CustomTrigger {
             # the undamped reading: a template that cannot say what its link is worth must
             # not be treated as if the link were harmless. It also only answers for a
             # template that has such a link at all.
+            #
+            # Only an explicit $false damps. $null means a linked group could not be judged -
+            # a universal group of another domain the Global Catalog did not return, or one
+            # the account cannot read - and "-not $null" used to damp exactly that case.
             if (-not $SourceObject) { return $false }
+            # A policy of the template that an unprivileged account may write is an ESC13 of
+            # its own, worth whatever group the writer picks - nothing to damp.
+            if ($SourceObject.PSObject.Properties['IssuancePolicyWriters']) { return $false }
             $linkFlag = $SourceObject.PSObject.Properties['issuancePolicyGroupPrivileged']
             if (-not $linkFlag) { return $false }
             if ([string]::IsNullOrWhiteSpace([string]$SourceObject.Vulnerabilities)) { return $false }
             if ([string]$SourceObject.Vulnerabilities -notmatch 'ESC13') { return $false }
-            return (-not $linkFlag.Value)
+            return ($linkFlag.Value -is [bool] -and -not $linkFlag.Value)
         }
 
         'adcs_http_relayable' {
@@ -18134,6 +18202,15 @@ function Test-CustomTrigger {
             # Fallback: check common broad group SID patterns
             $privResult = Test-IsPrivileged -Identity $sid
             return ($privResult.Category -eq 'BroadGroup')
+        }
+
+        'broad_enrollment_on_vulnerable_template' {
+            # Certificate template only: true when a broad group may enroll AND the
+            # template's ESC row is red (Get-TemplateESCRowSeverity). False without a source
+            # object: a broad group on a template nobody found an ESC on is the hint the
+            # enrollment card describes.
+            if (-not (Test-CustomTrigger -CustomType 'is_broad_group_sid' -Value $Value -IsComputer $IsComputer -SourceObject $SourceObject)) { return $false }
+            return ((Get-TemplateESCRowSeverity -Template $SourceObject) -eq 'Finding')
         }
 
         'is_deleted_object' {

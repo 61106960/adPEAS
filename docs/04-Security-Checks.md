@@ -814,7 +814,7 @@ Get-ADCSTemplate
 | ESC5  | Vulnerable PKI container permissions                     |
 | ESC8  | Web enrollment detection (HTTP/HTTPS + NTLM/EPA config)  |
 | ESC9  | No security extension + client auth                      |
-| ESC13 | Issuance policy linked to AD group                       |
+| ESC13 | Issuance policy linked to AD group, on a template whose certificate can log on |
 | ESC15 | Schema v1 + enrollee-supplied subject (CVE-2024-49019)   |
 
 Two more are covered by other checks, because the misconfiguration does not live on a
@@ -848,8 +848,27 @@ any directory scan can see.
 - `CN=AIA` - Controls the CA certificates published for chain building
 - `CN=CDP` - Controls where revocation lists are looked up
 - `CN=OID` - Controls issuance policies (ESC13-related)
+- `CN=KRA` - Controls the key recovery agents
+- each issuance policy object in `CN=OID` - write access to `msDS-OIDToGroupLink` links the
+  policy to a group, and every certificate that carries the policy then logs on with that
+  group's SID (ESC13). Active Directory accepts any empty universal group there, and Schema
+  Admins and Enterprise Key Admins are empty in many forests. The row names the templates
+  the policy is on (`[on template: ...]`). A policy that no published template able to log
+  on and open to an unprivileged enrollee carries is a *Hint*: the writer would also need
+  write access to a template, which is reported as ESC4
 
-Dangerous rights: GenericAll, WriteDacl, WriteOwner, GenericWrite. If unprivileged users have these permissions, they can manipulate the entire PKI infrastructure.
+Dangerous rights: GenericAll, WriteDacl, WriteOwner, GenericWrite, CreateChild, WriteProperty, and ownership of the object. If unprivileged users have these permissions, they can manipulate the entire PKI infrastructure.
+
+**ESC13 Details**: A template is reported when a non-privileged principal may enroll, its
+certificate can log on (Client Authentication, Smart Card Logon, PKINIT Client
+Authentication, Any Purpose or no EKU), and it carries an issuance policy that is linked to a
+group. The KDC puts the group's SID into the ticket of a PKINIT logon with such a
+certificate. The row names each linked group and whether it is privileged; a link to a
+group that is not privileged is a *Hint*. A group that could not be judged - one the account
+cannot read, or a universal group of another domain that the Global Catalog does not
+return - stays a *Finding*. A template whose issuance policy an unprivileged account may
+write is ESC13 as well, with an `IssuancePolicyWriters` row naming the writers: they set
+the link themselves.
 
 **NTAuth Store**: Every certificate in `CN=NTAuthCertificates` names an issuer trusted to issue a certificate that logs on as any account. An Enterprise CA publishes its own certificate there, so each entry gets an `EnterpriseCA` row: the Enterprise CA of this forest that holds it, an earlier certificate of one (renewed since), or none - a third-party, standalone or removed CA, which is a *Hint* to verify. Expired and SHA1/MD5-signed entries are hints as well, and the section says when more than one CA is trusted. An issuer added on a single machine with `certutil -enterprise -addstore NTAuth` is not in the directory and cannot be seen.
 
