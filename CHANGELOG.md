@@ -6,6 +6,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2.12.0] - 2026-11-22
+
+### Added
+
+- **`Invoke-adPEAS -UTC` shows a scan in UTC.** The console, the text report and the HTML
+  report write every time as `2026-07-15 12:00:00 UTC`, to set a report beside tools that log
+  in UTC. The switch applies to that one scan; `Get-DomainUser` and the other queries
+  afterwards show local time again. `Convert-adPEASReport -UTC` rebuilds the reports of an
+  earlier scan in UTC from its JSON export.
+- **The HTML report switches between UTC and the scan host's local time.** A button beside
+  "Times" in the header. "Local" is the zone of the host that ran the scan, with the offset of
+  each value, on whichever machine the report is opened.
+- **The JSON export records the scan's start and the scan host's time zone.** New fields
+  `ScanStart`, `TimeZone` (the zone with its daylight saving rules) and `TimeDisplay`. The
+  export is UTC throughout, texts included, whatever the scan showed.
+- **Without `-Domain`, a credential connects to the computer's domain.** `-Domain` is now
+  optional for `-Credential`, `-Username`/`-Password`, `-NTHash`, `-AES256Key`, `-AES128Key`
+  and `-Certificate`: left out, the domain this computer is joined to is used, read locally
+  rather than through the DC locator, so a computer in no domain is told exactly that.
+  Windows authentication keeps the domain of the logged-on user; `-Kirbi` and `-Ccache` still
+  require it.
+- **The text report starts with `Scan started: <time>`**, which also separates one
+  `-OutputAppend` run from the next.
+
+### Changed
+
+- **Every time names its zone beside the value:** `2026-07-15 14:00:00 UTC+02:00`, with the
+  offset of that value. 2.11.0 named one offset in the report header, taken when the report
+  was written, and every value from the other half of the year was an hour off against it; a
+  screenshot of a single card named no zone at all. The "Time Zone" row of
+  `Get-adPEASSession` is gone - the times say it themselves.
+- **Times that showed as a bare date keep their minutes and zone** - certificate validity,
+  the krbtgt password change, LAPS and gMSA expiry and the like - because the date itself can
+  differ between zones. End-of-support dates stay calendar dates and are never converted.
+- **A scheduled task time without a zone reads `(client local time)`**, as in
+  `Daily at 03:00 (client local time)`: it is the clock of each client the task runs on, not
+  a moment that can be converted.
+- **`Convert-adPEASReport` names the original scan.** The console, the text report, the HTML
+  header ("Scan Date", "Report Built") and the JSON it writes again carry the time of the
+  scan instead of the time of the conversion, and the reports show the scan host's local time
+  on whichever machine they are rebuilt.
+- JSON exports from before 2.12.0 hold texts without a zone. Those texts do not switch in the
+  HTML report, and comparing such an export with a new one reports those lines as changed
+  once.
+
+### Fixed
+
+- **A second `Invoke-adPEAS` with connection parameters keeps its report.** Given connection
+  parameters while the session of an earlier run was still open, the new connection cleared
+  the run's setup along with the old session: the text report ended at the connection, the
+  JSON held no findings and no HTML report was written. The first scan of a session was never
+  affected.
+- **`Invoke-adPEAS -Credential` without `-Domain` names its reason.** It ended in
+  "CONNECTION FAILED - see error messages above" with nothing above it; a refusal at
+  parameter binding now says why.
+- **A report rebuilt from JSON rates ages as at the scan.** Ages were measured from the time
+  a report was drawn: a January export rebuilt in June moved a password from hint to finding
+  or called an account inactive that was active at the scan.
+- **`Compare-adPEASReport` compares scans from different time zones.** It compares the UTC
+  texts of both exports, so a scan in one zone and a scan in another no longer differ in every
+  line that holds a time.
+- **`Get-DomainUser -AccountExpired` and `Get-DomainObject -AccountExpired` return the expired
+  accounts.** They returned none: the converted expiry was compared with a raw FILETIME read as
+  ticks since year 1.
+- **Durations keep their days.** Session duration, TGT time left and the clock skew of a
+  `KRB_AP_ERR_SKEW` message counted hours of the day only; the skew read "-00:00:00".
+- **An imported ticket no longer reports a clock skew.** Its age was taken for the skew, and
+  every ticket older than five minutes was flagged.
+- **kirbi ticket times are read as UTC.** They were read as local time: east of UTC an
+  expired ticket counted as valid, west of UTC a valid one as expired.
+- **KRB-CRED exports carry the KDC's times.** They wrote the moment of the export as authtime
+  and "renewable for seven days" for a ticket issued without renew-till. Missing times are now
+  derived from the known ones and written only when present.
+- **Password policy ages are no longer rounded half to even.** A maximum age of 12 hours read
+  "Disabled (Never expires)" and was rated as that weakness; 1.5 and 2.5 days both read
+  "2 days".
+- **Exchange is still supported on its last day of support**, as Windows already was.
+- **`Set-DomainGPO` writes the start of an immediate task as GPMC does** (`%LocalTimeXmlEx%`),
+  not as the operator's wall clock without an offset.
+- **KeyCredentialLink entries from Entra ID keep their creation time.** They store it as
+  `DateTime.ToBinary`, not as FILETIME.
+- **`Invoke-ShadowCredentialOperation` names the zone of the creation time.** It printed the
+  local time with " UTC" behind it.
+- **A finding imported without a readable timestamp no longer stops the next export**, and
+  PowerShell 7 keeps the zone of an imported timestamp.
+
 ## [2.11.0] - 2026-11-17
 
 ### Added
