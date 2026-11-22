@@ -177,10 +177,10 @@ function Resolve-CredentialAccount {
         # ConvertFrom-LDAPAttribute passes 0 through unconverted.
         $pwdLastSet = $account.pwdLastSet
         if ($pwdLastSet -is [datetime]) {
-            $setText = Format-adPEASDate $pwdLastSet 'yyyy-MM-dd'
+            $setText = Format-adPEASTime $pwdLastSet -Precision Minutes
             if ($FileTime -is [datetime]) {
-                $fileText = Format-adPEASDate $FileTime 'yyyy-MM-dd'
-                if ($pwdLastSet -gt $FileTime) {
+                $fileText = Format-adPEASTime $FileTime -Precision Minutes
+                if ($pwdLastSet.ToUniversalTime() -gt $FileTime.ToUniversalTime()) {
                     $text += "; password changed $setText, after the file was last written ($fileText) - the password found is probably outdated"
                 } else {
                     $text += "; password unchanged since $setText, before the file was last written ($fileText) - the password found may still be valid"

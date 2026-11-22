@@ -1314,11 +1314,11 @@ public class LSATicketImport
                     $endUtc = $returnObj.EndTime.ToUniversalTime()
                     if ($endUtc -lt $now) {
                         $expiredAgo = $now - $endUtc
-                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $($endUtc.ToString('u')))"
-                        $returnObj.Message = "Ticket imported but is EXPIRED since $($endUtc.ToString('u'))"
+                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $(Format-adPEASTime $endUtc))"
+                        $returnObj.Message = "Ticket imported but is EXPIRED since $(Format-adPEASTime $endUtc)"
                     }
                     elseif (($endUtc - $now).TotalMinutes -lt 5) {
-                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $($endUtc.ToString('u')))"
+                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $(Format-adPEASTime $endUtc))"
                     }
                 }
 

@@ -518,7 +518,7 @@ function Invoke-ShadowCredentialOperation {
                             Show-KeyValue "DeviceID:" $cred.DeviceID
                             Show-KeyValue "KeyID:" $cred.KeyID
                             if ($cred.CreationTime) {
-                                Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
+                                Show-KeyValue "Created:" (Format-adPEASTime $cred.CreationTime)
                             }
                             Show-EmptyLine
                         }
@@ -640,7 +640,7 @@ function Invoke-ShadowCredentialOperation {
                         Show-KeyValue "[$index] DeviceID:" $cred.DeviceID
                         Show-KeyValue "    KeyID:" $cred.KeyID
                         if ($cred.CreationTime) {
-                            Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
+                            Show-KeyValue "    Created:" (Format-adPEASTime $cred.CreationTime)
                         }
                         Show-EmptyLine
                         $index++

@@ -309,9 +309,9 @@ function Convert-DefaultToRenderValues {
         if ($Value.Count -eq 0) { return $null }
         $renderValues = @()
         foreach ($item in $Value) {
-            # A DateTime through Format-adPEASDate, as for a single value below.
+            # A DateTime through Format-adPEASTime, as for a single value below.
             $itemIsDate = $item -is [datetime]
-            $itemStr = if ($itemIsDate) { Format-adPEASDate -Date $item } else { [string]$item }
+            $itemStr = if ($itemIsDate) { Format-adPEASTime -Date $item } else { [string]$item }
             if ([string]::IsNullOrEmpty($itemStr)) { continue }
             $itemMatch = Get-TriggerMatch -Name $Name -Value $(if ($itemIsDate) { $item } else { $itemStr }) -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
             $renderValues += New-RenderValue -Display $itemStr -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
@@ -326,11 +326,12 @@ function Convert-DefaultToRenderValues {
         }
     }
 
-    # Simple scalar value. A DateTime goes through Format-adPEASDate: cast to [string] it
+    # Simple scalar value. A DateTime goes through Format-adPEASTime: cast to [string] it
     # takes the invariant culture's MM/dd/yyyy, and "07/04/2025" reads as the 7th of April
     # to most readers of a report that means the 4th of July - pwdLastSet and
-    # lastLogonTimestamp of every object came out that way.
-    $displayValue = if ($Value -is [datetime]) { Format-adPEASDate -Date $Value } else { [string]$Value }
+    # lastLogonTimestamp of every object came out that way. Format-adPEASTime also names
+    # the zone beside the value.
+    $displayValue = if ($Value -is [datetime]) { Format-adPEASTime -Date $Value } else { [string]$Value }
     # Skip empty scalar values that slipped through the filter
     if ([string]::IsNullOrEmpty($displayValue)) { return $null }
     # Pass original $Value (not $displayValue) so typed objects (DateTime, Int64) are preserved
@@ -558,12 +559,15 @@ function Add-ActivityStatus {
         90  # Fallback if global not set
     }
 
-    $cutoffDate = (Get-Date).AddDays(-$effectiveInactiveDays)
+    # Measured from the time the object was collected (Get-adPEASReferenceTime), not from
+    # the time it is drawn: a report rebuilt months later from an export must not call an
+    # account inactive that was active at the scan. Compared in UTC on both sides.
+    $cutoffDate = (Get-adPEASReferenceTime).ToUniversalTime().AddDays(-$effectiveInactiveDays)
     $lastLogonDate = ConvertTo-ActivityDate -Value $Object.lastLogonTimestamp
 
     if ($lastLogonDate) {
         # Primary signal: a replicated logon timestamp exists
-        if ($lastLogonDate -lt $cutoffDate) {
+        if ($lastLogonDate.ToUniversalTime() -lt $cutoffDate) {
             $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no login for >$effectiveInactiveDays days)" -Force
         }
         return
@@ -574,7 +578,7 @@ function Add-ActivityStatus {
     $pwdLastSetDate = ConvertTo-ActivityDate -Value $Object.pwdLastSet
 
     if ($pwdLastSetDate) {
-        if ($pwdLastSetDate -lt $cutoffDate) {
+        if ($pwdLastSetDate.ToUniversalTime() -lt $cutoffDate) {
             $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no logon recorded, password not changed for >$effectiveInactiveDays days)" -Force
         }
         # Recent password change -> live host whose lastLogonTimestamp simply
@@ -586,7 +590,7 @@ function Add-ActivityStatus {
     # whenCreated proves the account is older than the threshold; otherwise it
     # may be a brand-new / not-yet-replicated account.
     $createdDate = ConvertTo-ActivityDate -Value $Object.whenCreated
-    if ($createdDate -and $createdDate -lt $cutoffDate) {
+    if ($createdDate -and $createdDate.ToUniversalTime() -lt $cutoffDate) {
         $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (never logged on, account created >$effectiveInactiveDays days ago)" -Force
     }
 }

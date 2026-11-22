@@ -185,7 +185,7 @@ function Get-ADCSVulnerabilities {
                             Issuer                 = if ($rootCert.IssuerFull) { $rootCert.IssuerFull } elseif ($rootCert.Issuer) { $rootCert.Issuer } else { $null }
                             SerialNumber           = if ($rootCert.SerialNumber) { $rootCert.SerialNumber } else { $null }
                             Thumbprint             = if ($rootCert.Thumbprint) { $rootCert.Thumbprint } else { "Unknown" }
-                            Validity               = if ($rootCert.NotAfter) { "$(Format-adPEASDate $rootCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $rootCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+                            Validity               = if ($rootCert.NotAfter) { "$(Format-adPEASTime $rootCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $rootCert.NotAfter -Precision Minutes)" } else { "Unknown" }
                             Status                 = if ($rootCert.Status) { $rootCert.Status } else { "Unknown" }
                             SignatureAlgorithm     = if ($rootCert.SignatureAlgorithm) { $rootCert.SignatureAlgorithm } else { "Unknown" }
                             KeySize                = if ($rootCert.PublicKeyLength -and $rootCert.PublicKeyLength -gt 0) { "$($rootCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -252,7 +252,7 @@ function Get-ADCSVulnerabilities {
                                     Issuer                 = if ($ntCert.IssuerFull) { $ntCert.IssuerFull } elseif ($ntCert.Issuer) { $ntCert.Issuer } else { "Unknown" }
                                     SerialNumber           = if ($ntCert.SerialNumber) { $ntCert.SerialNumber } else { $null }
                                     Thumbprint             = if ($ntCert.Thumbprint) { $ntCert.Thumbprint } else { "Unknown" }
-                                    Validity               = if ($ntCert.NotAfter) { "$(Format-adPEASDate $ntCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $ntCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+                                    Validity               = if ($ntCert.NotAfter) { "$(Format-adPEASTime $ntCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $ntCert.NotAfter -Precision Minutes)" } else { "Unknown" }
                                     Status                 = if ($ntCert.Status) { $ntCert.Status } else { "Unknown" }
                                     SignatureAlgorithm     = if ($ntCert.SignatureAlgorithm) { $ntCert.SignatureAlgorithm } else { "Unknown" }
                                     KeySize                = if ($ntCert.PublicKeyLength -and $ntCert.PublicKeyLength -gt 0) { "$($ntCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -328,7 +328,7 @@ function Get-ADCSVulnerabilities {
                             Issuer                 = if ($aiaCert -and $aiaCert.IssuerFull) { $aiaCert.IssuerFull } elseif ($aiaCert -and $aiaCert.Issuer) { $aiaCert.Issuer } else { "Unknown" }
                             SerialNumber           = if ($aiaCert -and $aiaCert.SerialNumber) { $aiaCert.SerialNumber } else { $null }
                             Thumbprint             = if ($aiaCert.Thumbprint) { $aiaCert.Thumbprint } else { "Unknown" }
-                            Validity               = if ($aiaCert.NotAfter) { "$(Format-adPEASDate $aiaCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $aiaCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+                            Validity               = if ($aiaCert.NotAfter) { "$(Format-adPEASTime $aiaCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $aiaCert.NotAfter -Precision Minutes)" } else { "Unknown" }
                             Status                 = if ($aiaCert.Status) { $aiaCert.Status } else { "Unknown" }
                             SignatureAlgorithm     = if ($aiaCert.SignatureAlgorithm) { $aiaCert.SignatureAlgorithm } else { "Unknown" }
                             KeySize                = if ($aiaCert.PublicKeyLength -and $aiaCert.PublicKeyLength -gt 0) { "$($aiaCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -709,7 +709,7 @@ function Get-ADCSVulnerabilities {
                                 $caComputer | Add-Member -NotePropertyName 'CACertThumbprint' -NotePropertyValue $caCert.Thumbprint -Force
                             }
                             if ($caCert.NotBefore -and $caCert.NotAfter) {
-                                $caComputer | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASDate $caCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd') ($($caCert.Status))" -Force
+                                $caComputer | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASTime $caCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $caCert.NotAfter -Precision Minutes) ($($caCert.Status))" -Force
                             }
                             if ($caCert.SignatureAlgorithm) {
                                 $caComputer | Add-Member -NotePropertyName 'CACertSignatureAlgorithm' -NotePropertyValue $caCert.SignatureAlgorithm -Force
@@ -734,7 +734,7 @@ function Get-ADCSVulnerabilities {
 
                             # Flag expired certificates
                             if ($caCert.Status -eq 'EXPIRED') {
-                                $caComputer | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd')" -Force
+                                $caComputer | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASTime $caCert.NotAfter -Precision Minutes)" -Force
                                 $caVulnerabilityCount++
                                 Write-Log "[Get-ADCSVulnerabilities] CA '$($ca.Name)' certificate is EXPIRED"
                             }
@@ -753,7 +753,7 @@ function Get-ADCSVulnerabilities {
                             $caComputer | Add-Member -NotePropertyName 'certificateTemplates' -NotePropertyValue @($ca.CertificateTemplates) -Force
                         }
                         if ($ca.Modified) {
-                            $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') -Force
+                            $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASTime $ca.Modified) -Force
                         }
 
                         # Add type marker for HTML report
@@ -777,7 +777,7 @@ function Get-ADCSVulnerabilities {
                             caName               = $ca.Name
                             caNote               = "CA server is not in the current domain partition - showing data from Configuration Partition only"
                             certificateTemplates = $syntheticTemplates
-                            CALastModified       = if ($ca.Modified) { (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') } else { $null }
+                            CALastModified       = if ($ca.Modified) { (Format-adPEASTime $ca.Modified) } else { $null }
                         }
 
                         # Add dangerous AD object permissions
@@ -847,7 +847,7 @@ function Get-ADCSVulnerabilities {
                                 $syntheticCA | Add-Member -NotePropertyName 'CACertThumbprint' -NotePropertyValue $caCert.Thumbprint -Force
                             }
                             if ($caCert.NotBefore -and $caCert.NotAfter) {
-                                $syntheticCA | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASDate $caCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd') ($($caCert.Status))" -Force
+                                $syntheticCA | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASTime $caCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $caCert.NotAfter -Precision Minutes) ($($caCert.Status))" -Force
                             }
                             if ($caCert.SignatureAlgorithm) {
                                 $syntheticCA | Add-Member -NotePropertyName 'CACertSignatureAlgorithm' -NotePropertyValue $caCert.SignatureAlgorithm -Force
@@ -864,7 +864,7 @@ function Get-ADCSVulnerabilities {
                                 $caVulnerabilityCount++
                             }
                             if ($caCert.Status -eq 'EXPIRED') {
-                                $syntheticCA | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd')" -Force
+                                $syntheticCA | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASTime $caCert.NotAfter -Precision Minutes)" -Force
                                 $caVulnerabilityCount++
                             }
                         }

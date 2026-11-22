@@ -104,7 +104,8 @@ function Render-HtmlRow {
     switch ($Row.RowType) {
         'SingleValue' {
             $val = $Row.Values[0]
-            $displayHtml = ConvertTo-HtmlEncode $val.Display
+            # Labelled times become the elements the report's time switch turns
+            $displayHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display)
             $valueHtml = Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
             $classAttr = Get-HtmlValueClassAttr -Severity $Row.OverallSeverity
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
@@ -114,7 +115,7 @@ function Render-HtmlRow {
         'MultiValue' {
             $valuesHtml = @()
             foreach ($val in $Row.Values) {
-                $displayHtml = ConvertTo-HtmlEncode $val.Display
+                $displayHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display)
                 $valuesHtml += Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
             }
             $displayValue = $valuesHtml -join '<br>'
@@ -173,7 +174,7 @@ function Render-HtmlRow {
         default {
             # Fallback
             $val = if ($Row.Values.Count -gt 0) { $Row.Values[0] } else { $null }
-            $displayHtml = if ($val) { ConvertTo-HtmlEncode $val.Display } else { '' }
+            $displayHtml = if ($val) { ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display) } else { '' }
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
             return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
         }

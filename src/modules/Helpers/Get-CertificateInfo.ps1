@@ -347,8 +347,8 @@ function Get-CertificateInfo {
 
             # --- Validity ---
             Show-Line "Validity:" -Class Hint
-            Show-KeyValue "Not Before:" (Format-adPEASDate $cert.NotBefore 'yyyy-MM-dd HH:mm:ss')
-            Show-KeyValue "Not After:" (Format-adPEASDate $cert.NotAfter 'yyyy-MM-dd HH:mm:ss')
+            Show-KeyValue "Not Before:" (Format-adPEASTime $cert.NotBefore)
+            Show-KeyValue "Not After:" (Format-adPEASTime $cert.NotAfter)
             Show-KeyValue "Status:" $validityStatus -Class $validityClass
             Show-EmptyLine
 

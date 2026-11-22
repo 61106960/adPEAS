@@ -294,7 +294,7 @@ function Get-DomainTrusts {
                             $pwdLastSet = $trustAccounts[$accountName].pwdLastSet
                             if ($pwdLastSet -is [DateTime]) {
                                 $ageDays = [int][Math]::Floor(((Get-Date) - $pwdLastSet).TotalDays)
-                                $lastSetText = "$(Format-adPEASDate $pwdLastSet 'yyyy-MM-dd') ($ageDays days ago, on $accountName)"
+                                $lastSetText = "$(Format-adPEASTime $pwdLastSet -Precision Minutes) ($ageDays days ago, on $accountName)"
                                 if ($ageDays -ge $staleTrustPasswordDays) { $passwordStale = $true }
                             } else {
                                 $lastSetText = "Never - $accountName has no password change recorded"

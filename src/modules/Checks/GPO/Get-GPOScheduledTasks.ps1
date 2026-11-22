@@ -1051,7 +1051,10 @@ function Split-GPOTaskBoundary {
 
     $result = [PSCustomObject]@{ Date = ''; Time = ''; Text = $Value; IsVariable = ($Value -match '^%[^%]+%$') }
     if ($Value -match '^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$') {
-        $zone = ''
+        # A bound with a zone is an instant, written the way adPEAS labels one, so the
+        # report shows it in its own zone. One without is the wall clock of each client
+        # that runs the task - no instant, and said so rather than read as the scan host's.
+        $zone = ' (client local time)'
         if ($Matches[5] -eq 'Z') { $zone = ' UTC' } elseif ($Matches[5]) { $zone = " UTC$($Matches[5])" }
         $result.Date = $Matches[1]
         $result.Time = "$($Matches[2])$zone"

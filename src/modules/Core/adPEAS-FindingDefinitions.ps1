@@ -18463,7 +18463,7 @@ function Test-CustomTrigger {
             # Password age > 5 years (1825 days)
             $pwdDate = Get-DateFromValue -Value $Value
             if ($pwdDate) {
-                $pwdAge = ((Get-Date) - $pwdDate).Days
+                $pwdAge = ((Get-adPEASReferenceTime).ToUniversalTime() - $pwdDate.ToUniversalTime()).Days
                 return ($pwdAge -gt 1825)
             }
             return $false
@@ -18472,7 +18472,7 @@ function Test-CustomTrigger {
             # Password age between 1-5 years
             $pwdDate = Get-DateFromValue -Value $Value
             if ($pwdDate) {
-                $pwdAge = ((Get-Date) - $pwdDate).Days
+                $pwdAge = ((Get-adPEASReferenceTime).ToUniversalTime() - $pwdDate.ToUniversalTime()).Days
                 return ($pwdAge -gt 365 -and $pwdAge -le 1825)
             }
             return $false

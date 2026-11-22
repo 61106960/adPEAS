@@ -211,7 +211,7 @@ function Convert-CertificateToInfo {
             # The line a report shows for this certificate. Without it the HTML card printed
             # the whole object - "@{Subject=...; CRLDistributionPoints=System.Object[]; ...}"
             # - under userCertificate; the fields above stay for whoever needs them.
-            DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASDate $Cert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $Cert.NotAfter 'yyyy-MM-dd') ($Status)"
+            DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASTime $Cert.NotBefore -Precision Minutes) to $(Format-adPEASTime $Cert.NotAfter -Precision Minutes) ($Status)"
         }
 
         $Cert.Dispose()
@@ -504,7 +504,7 @@ function ConvertFrom-LDAPAttribute {
                         $historyInfo = ConvertFrom-LAPSEncryptedPassword -Blob $historyBlob
                         $historyDecryptor = Get-LAPSDecryptorName -Info $historyInfo
                         if ($historyInfo -and $historyInfo.UpdateTimestamp) {
-                            $historyEntry = "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
+                            $historyEntry = "[$entryIndex] $(Format-adPEASTime $historyInfo.UpdateTimestamp)"
                             if ($historyDecryptor) { $historyEntry += " (for $historyDecryptor)" }
                             $historyEntries += $historyEntry
                         } else {
@@ -705,7 +705,7 @@ function ConvertFrom-LDAPAttribute {
                         $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$bytes)
                         $subject = $cert.Subject
                         $thumbprint = $cert.Thumbprint
-                        $notAfter = (Format-adPEASDate $cert.NotAfter 'yyyy-MM-dd')
+                        $notAfter = (Format-adPEASTime $cert.NotAfter -Precision Minutes)
                         $certValues += "$subject (Thumbprint: $thumbprint, Expires: $notAfter)"
                         $cert.Dispose()
                     } catch {

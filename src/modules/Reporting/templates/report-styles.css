@@ -814,6 +814,17 @@
             border-color: var(--accent);
         }
 
+        /* The switch between scan-host time and UTC, beside the "Times" value */
+        .time-toggle-btn {
+            margin-left: 8px;
+            padding: 2px 8px;
+            vertical-align: middle;
+        }
+
+        .adp-time {
+            white-space: nowrap;
+        }
+
         /* Copy Button for Remediation */
         .copy-btn {
             display: inline-flex;
@@ -1895,6 +1906,7 @@
             .header,
             .sidebar,
             .theme-toggle,
+            .time-toggle-btn,
             .progress-bar-container,
             .finding-checkbox,
             .toolbar,

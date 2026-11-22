@@ -343,6 +343,15 @@ function Clear-SessionState {
         $Script:adPEAS_VerboseLogging = $false
         $Script:ModuleCategoryHeaders = $null
 
+        # Time display of a run (Format-adPEASDate.ps1): Invoke-adPEAS -UTC, the scan's
+        # start, and what Convert-adPEASReport sets for a rebuilt report. Both lower them in
+        # their own finally; cleared here too, so no zone outlives a session.
+        $Script:adPEASTimeUtc = $false
+        $Script:adPEASTimeZone = $null
+        $Script:adPEASReferenceTime = $null
+        $Script:adPEASScanStart = $null
+        $Script:adPEASReportConverted = $false
+
         # Output file (set by Invoke-adPEAS -Outputfile)
         $Script:adPEAS_Outputfile = $null
         $Script:HTMLOutputPath = $null

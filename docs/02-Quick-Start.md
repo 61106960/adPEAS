@@ -168,6 +168,29 @@ Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -NoColor
 | `JSON` | Machine-readable JSON export for offline conversion and report comparison |
 **Note:** The file extension is added automatically based on the format. Just provide the base filename without extension.
 
+### Scenario 6b: Times in UTC
+
+Every time adPEAS shows names its zone beside the value, so a screenshot of a single card still says which zone it is in:
+
+```
+pwdLastSet:            2026-07-15 14:00:00 UTC+02:00     (local time of the scan host - the default)
+pwdLastSet:            2026-07-15 12:00:00 UTC           (with -UTC)
+```
+
+```powershell
+# The whole scan in UTC - console, text report and HTML report
+Invoke-adPEAS -Domain "contoso.com" -UseWindowsAuth -Outputfile .\audit -UTC
+
+# An earlier scan rebuilt in UTC (or, without -UTC, in the local time of the host that ran it)
+Convert-adPEASReport -InputJson ".\audit.json" -OutputPath ".\audit_utc" -UTC
+```
+
+- The offset is the one of each value: a July value says `+02:00` in a report written in January.
+- The HTML report opens in the zone of the scan and switches between the scan host's local time and UTC (button beside **Times** in the header). Its header names the scan date, not the time the file was written.
+- The JSON export is always UTC, whatever the scan showed. It records the scan's start (`ScanStart`) and the scan host's zone, so `Convert-adPEASReport` can show that host's local time on any other machine.
+- `-UTC` applies to that one scan. `Get-DomainUser` and the other queries afterwards show local time again.
+- A date that is no point in time - the end of support of an operating system - and a scheduled task time without a zone (the clock of each client, marked `client local time`) are never converted.
+
 ### Scenario 7: Verbose Logging to File (Troubleshooting)
 
 ```powershell

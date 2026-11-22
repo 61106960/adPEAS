@@ -21,7 +21,7 @@
         })();
     </script>
 </head>
-<body>
+<body data-time-mode="{{TIME_MODE}}">
     <!-- Skip Links for Accessibility -->
     <a href="#topActionsContainer" class="skip-link">Skip to Top Priority Actions</a>
     <a href="#cardViewContainer" class="skip-link">Skip to Findings</a>
@@ -137,11 +137,11 @@
                     <div class="value">{{USER}}</div>
                 </div>
                 <div class="info-item">
-                    <div class="label">Generated</div>
+                    <div class="label">Scan Date</div>
                     <div class="value">{{GENERATED}}</div>
-                </div>
+                </div>{{CONVERTED_ITEM}}
                 <div class="info-item">
-                    <div class="label">Time Zone</div>
+                    <div class="label">Times</div>
                     <div class="value">{{TIMEZONE}}</div>
                 </div>
                 <div class="info-item">

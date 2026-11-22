@@ -30,10 +30,14 @@
     Author: Alexander Sturz (@_61106960_)
 #>
 
-# Helper function for HTML encoding (works in PowerShell Core without System.Web)
+# Helper function for HTML encoding (works in PowerShell Core without System.Web).
+# Labelled times are put into the display mode on the way (ConvertTo-adPEASTimeText): the
+# texts of an export are UTC, and a report shows them in the zone it is written in - every
+# text a report shows passes through here, tooltips and the diff report included.
 function ConvertTo-HtmlEncode {
     param([string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return "" }
+    $Text = ConvertTo-adPEASTimeText $Text
     return $Text.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;').Replace("'", '&#39;')
 }
 
@@ -96,11 +100,28 @@ function Export-HTMLReport {
         $domain = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { "Unknown" }
         $server = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { "Unknown" }
         $user = if ($Script:LDAPContext -and $Script:LDAPContext.Username) { $Script:LDAPContext.Username } else { "$env:USERDOMAIN\$env:USERNAME" }
+        # The date of the scan, not of this export. Convert-adPEASReport rebuilds a report
+        # long after the scan and hands the original start in $Script:adPEASScanStart; the
+        # header then names both. Every time carries its own zone (Format-adPEASTime): one
+        # offset in the header was wrong for every value from the other half of the year.
         $generatedAt = Get-Date
-        $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
-        # Every time in the report is a local time of this host (ConvertFrom-adPEASGeneralizedTime);
-        # the header names the offset once.
-        $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
+        $scanAt = if ($Script:adPEASScanStart -is [datetime]) { $Script:adPEASScanStart } else { $generatedAt }
+        $generatedDate = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode (Format-adPEASTime $scanAt))
+        $convertedItem = ''
+        if ($Script:adPEASReportConverted) {
+            $builtHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode (Format-adPEASTime $generatedAt))
+            $convertedItem = "`r`n                <div class=`"info-item`">`r`n                    <div class=`"label`">Report Built</div>`r`n                    <div class=`"value`">$builtHtml</div>`r`n                </div>"
+        }
+
+        # Which zone the times are in, and the switch to the other one. "Local" is the zone
+        # of the host that ran the scan; each time carries both spellings (ConvertTo-HtmlTimeSpans).
+        $timeModeUtc = [bool]$Script:adPEASTimeUtc
+        $localDescription = Get-adPEASTimeZoneDescription
+        $shownDescription = if ($timeModeUtc) { 'UTC' } else { $localDescription }
+        $toggleText = if ($timeModeUtc) { 'Show scan host time' } else { 'Show UTC' }
+        $timeZoneHtml = "<span id=`"timeModeLabel`" data-local=`"$(ConvertTo-HtmlEncode $localDescription)`" data-utc=`"UTC`">$(ConvertTo-HtmlEncode $shownDescription)</span>" +
+            "<button type=`"button`" class=`"card-control-btn time-toggle-btn`" id=`"timeToggle`" onclick=`"toggleTimeDisplay()`" data-local-label=`"Show UTC`" data-utc-label=`"Show scan host time`" title=`"Switch every time in this report between the local time of the scan host and UTC`">$toggleText</button>"
+        $timeMode = if ($timeModeUtc) { 'utc' } else { 'local' }
         $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
 
         # Use disclaimer from main script (decoded at startup)
@@ -165,7 +186,9 @@ function Export-HTMLReport {
         $html = $html.Replace('{{SERVER}}', [string](ConvertTo-HtmlEncode $server))
         $html = $html.Replace('{{USER}}', [string](ConvertTo-HtmlEncode $user))
         $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
-        $html = $html.Replace('{{TIMEZONE}}', [string](ConvertTo-HtmlEncode $timeZoneLabel))
+        $html = $html.Replace('{{CONVERTED_ITEM}}', [string]$convertedItem)
+        $html = $html.Replace('{{TIMEZONE}}', [string]$timeZoneHtml)
+        $html = $html.Replace('{{TIME_MODE}}', [string]$timeMode)
         $html = $html.Replace('{{VERSION}}', [string]$version)
         $html = $html.Replace('{{DEFAULT_THEME}}', [string]$DefaultTheme.ToLower())
         $html = $html.Replace('{{FINDING_COUNT}}', [string]$findingCount)
@@ -576,18 +599,21 @@ function Build-ScoringContext {
         }
 
         # Extract pwdLastSet and calculate age
+        # From the time the finding was collected, not from now (Get-adPEASReferenceTime): a
+        # report rebuilt later must score the password age the scan saw.
+        $scoringNow = if ($finding.Timestamp -is [datetime]) { $finding.Timestamp.ToUniversalTime() } else { (Get-adPEASReferenceTime).ToUniversalTime() }
         if ($obj.pwdLastSet -and -not $acctInfo.pwdLastSet) {
             $acctInfo.pwdLastSet = $obj.pwdLastSet
             # Calculate password age in days
             try {
                 if ($obj.pwdLastSet -is [datetime]) {
-                    $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $obj.pwdLastSet).TotalDays)
+                    $acctInfo.pwdAgeDays = [math]::Floor(($scoringNow - $obj.pwdLastSet.ToUniversalTime()).TotalDays)
                 } elseif ($obj.pwdLastSet -is [string] -and $obj.pwdLastSet -match '\d{4}') {
                     # InvariantCulture: the string was written by adPEAS, not typed by the
                     # reader, and the local calendar would read its Gregorian year as a
                     # Buddhist or Hijri one - a password age off by centuries, or a throw.
                     $pwdDate = [datetime]::Parse($obj.pwdLastSet, [System.Globalization.CultureInfo]::InvariantCulture)
-                    $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $pwdDate).TotalDays)
+                    $acctInfo.pwdAgeDays = [math]::Floor(($scoringNow - $pwdDate.ToUniversalTime()).TotalDays)
                 }
             } catch {
                 # Ignore parsing errors
@@ -1195,15 +1221,23 @@ function Build-FindingCardHtml {
         if ($finding.Type -eq 'Object' -and $finding.Object) {
             # AD Object - full detail card using RenderModel
             # Use cached RenderModel from finding (built during console output) or create new
+            # A rebuilt model (an imported finding) measures ages from the time the finding
+            # was collected, not from now - see Get-adPEASReferenceTime.
             $renderModel = if ($finding.RenderModel) { $finding.RenderModel }
-                           else { Get-RenderModel -Object $finding.Object }
+                           else {
+                               $previousReference = $Script:adPEASReferenceTime
+                               if ($finding.Timestamp -is [datetime]) { $Script:adPEASReferenceTime = $finding.Timestamp }
+                               try { Get-RenderModel -Object $finding.Object }
+                               finally { $Script:adPEASReferenceTime = $previousReference }
+                           }
             $objectHtml = Build-ObjectDetailHtml -Object $finding.Object -Severity $finding.Severity -RenderModel $renderModel
             [void]$card.AppendLine($objectHtml)
         }
         elseif ($finding.Type -eq 'KeyValue' -and $finding.Key) {
             # Key-Value pair with optional tooltip for findings
+            # Labelled times become the elements the report's time switch turns
             $keyHtml = ConvertTo-HtmlEncode $finding.Key
-            $valueHtml = ConvertTo-HtmlEncode $finding.Value
+            $valueHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $finding.Value)
 
             # Check for finding tooltip if this is a Finding or Hint severity
             $findingId = if ($severityClass -eq 'finding' -or $severityClass -eq 'hint') {
@@ -1224,7 +1258,7 @@ function Build-FindingCardHtml {
         }
         elseif ($finding.Type -eq 'Line' -and $finding.Text) {
             # Single line text with optional tooltip via FindingId
-            $textHtml = ConvertTo-HtmlEncode $finding.Text
+            $textHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $finding.Text)
             $dataAttr = if ($finding.FindingId) { " data-finding-id=`"$($finding.FindingId)`"" } else { "" }
             [void]$card.AppendLine("                <div class=`"finding-item finding-line $severityClass`"$dataAttr>$textHtml</div>")
         }

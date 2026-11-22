@@ -578,10 +578,10 @@ function Get-DomainInformation {
                 $rootDSEResp = $Script:LdapConnection.SendRequest($rootDSEReq)
                 if ($rootDSEResp -and $rootDSEResp.Entries.Count -gt 0 -and $rootDSEResp.Entries[0].Attributes.Contains("currenttime")) {
                     $dcTimeStr = $rootDSEResp.Entries[0].Attributes["currenttime"].GetValues([string])[0]
-                    # currentTime format: yyyyMMddHHmmss.0Z (Generalized Time)
-                    $dcTimeUTC = [DateTime]::ParseExact($dcTimeStr.Substring(0, 14), "yyyyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture)
-                    $localTimeUTC = [DateTime]::UtcNow
-                    $clockSkew = $dcTimeUTC - $localTimeUTC
+                    # currentTime is a Generalized Time (yyyyMMddHHmmss.0Z), read by the one
+                    # parser adPEAS has for it; the skew is taken in UTC on both sides.
+                    $dcTime = ConvertFrom-adPEASGeneralizedTime $dcTimeStr
+                    $clockSkew = $dcTime.ToUniversalTime() - [DateTime]::UtcNow
                     $skewSeconds = [Math]::Round($clockSkew.TotalSeconds)
                     $skewAbs = [Math]::Abs($skewSeconds)
                     $skewSign = if ($skewSeconds -ge 0) { "+" } else { "-" }
@@ -592,7 +592,7 @@ function Get-DomainInformation {
                     } else {
                         $skewDisplay = "${skewSign}${skewAbs}s"
                     }
-                    $dcTimeText = "$(Format-adPEASDate $dcTimeUTC 'yyyy-MM-dd HH:mm:ss') UTC (skew: $skewDisplay)"
+                    $dcTimeText = "$(Format-adPEASTime $dcTime) (skew: $skewDisplay)"
                 }
             }
             catch {
@@ -626,7 +626,7 @@ function Get-DomainInformation {
             $kerberosSeverity = "Note"
 
             if ($KrbtgtInfo) {
-                $LastChanged = (Format-adPEASDate $KrbtgtInfo.PasswordLastSet 'yyyy-MM-dd')
+                $LastChanged = (Format-adPEASTime $KrbtgtInfo.PasswordLastSet -Precision Minutes)
                 $AgeText = "$KrbtgtPasswordAge days (last changed: $LastChanged)"
                 $kerberosObj | Add-Member -NotePropertyName 'krbtgtPasswordAge' -NotePropertyValue $AgeText -Force
 

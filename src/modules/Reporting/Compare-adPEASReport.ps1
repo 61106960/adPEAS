@@ -71,6 +71,8 @@ function Compare-adPEASReport {
         # Save and configure output state
         $previousOutputfile = $Script:adPEAS_Outputfile
         $previousOutputColor = $Script:adPEAS_OutputColor
+        $previousTimeUtc = $Script:adPEASTimeUtc
+        $previousTimeZone = $Script:adPEASTimeZone
 
         try {
             # Configure file output if requested
@@ -105,22 +107,40 @@ function Compare-adPEASReport {
                 }
             }
 
-            # Extract metadata. Both sides of the date go through the invariant culture, for
-            # the two reasons Import-FindingsFromCache already spells out for the same field:
-            # Export-FindingsCache writes the round-trip format, which must not be read
-            # through the reader's local culture, and a custom format string renders through
-            # the local calendar - a host with a Thai or Saudi regional format put the
-            # Buddhist or Hijri year in the report header while the file it came from said
-            # something else.
+            # The times of the comparison are shown the way the current scan showed them: in
+            # UTC after Invoke-adPEAS -UTC, otherwise in the local time of the host it ran on.
+            # Both exports hold their texts in UTC (Export-FindingsCache), so a scan in one
+            # zone compares with a scan in another by instant, not by spelling.
+            $Script:adPEASTimeUtc = ([string]$currentCache.TimeDisplay -eq 'UTC')
+            $Script:adPEASTimeZone = ConvertFrom-adPEASSerializedTimeZone $currentCache.TimeZone
+
+            # Extract metadata. The date is the scan's start, or for an export from before
+            # that field the time it was written. Read through the invariant culture, for
+            # the reason Import-FindingsFromCache spells out for the same field: the
+            # round-trip format must not be read through the reader's local culture.
+            $scanDateText = {
+                param($cache)
+                foreach ($candidate in @($cache.ScanStart, $cache.ExportDate)) {
+                    if ($candidate -is [datetime]) { return (Format-adPEASTime $candidate -Precision Minutes) }
+                    if ($candidate) {
+                        try {
+                            return (Format-adPEASTime ([datetime]::Parse([string]$candidate, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)) -Precision Minutes)
+                        } catch {
+                            return [string]$candidate
+                        }
+                    }
+                }
+                return 'Unknown'
+            }
             $baselineMeta = @{
                 Domain  = if ($baselineCache.Domain) { $baselineCache.Domain } else { 'Unknown' }
-                Date    = if ($baselineCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($baselineCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $baselineCache.ExportDate } } else { 'Unknown' }
+                Date    = (& $scanDateText $baselineCache)
                 Version = if ($baselineCache.adPEASVersion) { $baselineCache.adPEASVersion } else { 'Unknown' }
                 Count   = if ($baselineCache.FindingCount) { $baselineCache.FindingCount } else { 0 }
             }
             $currentMeta = @{
                 Domain  = if ($currentCache.Domain) { $currentCache.Domain } else { 'Unknown' }
-                Date    = if ($currentCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($currentCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $currentCache.ExportDate } } else { 'Unknown' }
+                Date    = (& $scanDateText $currentCache)
                 Version = if ($currentCache.adPEASVersion) { $currentCache.adPEASVersion } else { 'Unknown' }
                 Count   = if ($currentCache.FindingCount) { $currentCache.FindingCount } else { 0 }
             }
@@ -300,6 +320,8 @@ function Compare-adPEASReport {
         } finally {
             $Script:adPEAS_Outputfile = $previousOutputfile
             $Script:adPEAS_OutputColor = $previousOutputColor
+            $Script:adPEASTimeUtc = $previousTimeUtc
+            $Script:adPEASTimeZone = $previousTimeZone
         }
     }
 
@@ -667,9 +689,10 @@ function Export-DiffHtmlReport {
     $comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
     $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
     $generatedAt = Get-Date
-    $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
-    # Both exports are read back as local times of this host (ConvertFrom-FindingsCacheValue).
-    $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
+    $generatedDate = ConvertTo-HtmlEncode (Format-adPEASTime $generatedAt)
+    # Every time names its own zone; this says which one they are in - the zone the current
+    # scan was shown in (Compare-adPEASReport sets it from that export).
+    $timeZoneLabel = Get-adPEASTimeZoneDescription -Utc:([bool]$Script:adPEASTimeUtc)
     $domain = $BaselineMeta.Domain
 
     # Replace placeholders

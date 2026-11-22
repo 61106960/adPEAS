@@ -272,7 +272,7 @@ function ConvertFrom-KeyCredentialLink {
             }
 
             if ($Result.KeyCreationTime) {
-                $Parts += "created $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
+                $Parts += "created $(Format-adPEASTime $Result.KeyCreationTime -Precision Minutes)"
             }
 
             # Nothing identifying and no creation time - the blob is too sparse to name a

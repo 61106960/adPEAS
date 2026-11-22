@@ -1080,7 +1080,7 @@ function Get-LAPSConfiguration {
                     Name              = ($computer.sAMAccountName -replace '\$$', '')
                     distinguishedName = $computer.distinguishedName
                     lapsGeneration    = $generation
-                    passwordExpiredOn = (Format-adPEASDate $expiry 'yyyy-MM-dd')
+                    passwordExpiredOn = (Format-adPEASTime $expiry -Precision Minutes)
                     daysOverdue       = $daysOverdue
                     lapsPasswordStale = "The LAPS password was due for rotation $daysOverdue days ago and has not been changed since. The local administrator password on this machine is at least that old."
                 }

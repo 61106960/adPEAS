@@ -118,6 +118,10 @@ function Write-adPEASOutput {
     }
 
     process {
+        # Every labelled time in the display mode of the run - a line written in another
+        # mode (replayed by Convert-adPEASReport from a UTC export) follows it.
+        $Text = ConvertTo-adPEASTimeText $Text
+
         # Build prefix
         $prefix = if (-not $NoPrefix) { Get-ClassPrefix -Class $Class } else { "" }
 
@@ -208,6 +212,9 @@ function Write-adPEASAttribute {
 
     $ANSI = $Script:ANSI
     $ANSI_esc = $Script:ANSI_esc
+
+    # Labelled times in the display mode of the run (see Write-adPEASOutput)
+    $Value = ConvertTo-adPEASTimeText $Value
 
     # Determine if this is a continuation line (no name)
     $IsContinuationLine = [string]::IsNullOrEmpty($Name)
@@ -400,6 +407,8 @@ function Write-adPEASHeader {
 
     $ANSI = $Script:ANSI
     $ANSI_esc = $Script:ANSI_esc
+
+    $Value = ConvertTo-adPEASTimeText $Value
 
     $SeparatorLine = "=" * 70
     $HeaderLine = "+++++ $Value +++++"

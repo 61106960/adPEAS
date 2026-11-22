@@ -63,9 +63,9 @@ function ConvertFrom-TSClientLicense {
 
     $lines = @()
     $lines += ("Version = 0x{0:X8}" -f $version)
-    # Format-adPEASDate rather than -f: a custom pattern through -f renders in the host
-    # culture's calendar, the Buddhist year on a Thai host.
-    $lines += ("Issued = " + (Format-adPEASDate $issued 'yyyy-MM-dd HH:mm:ss'))
+    # Format-adPEASTime rather than -f: a custom pattern through -f renders in the host
+    # culture's calendar, the Buddhist year on a Thai host - and it names the zone.
+    $lines += ("Issued = " + (Format-adPEASTime $issued))
     if ($productId) { $lines += "ProductID = '$productId'" }
 
     # Comma on purpose - see the note in ConvertFrom-TSProperties. This function always

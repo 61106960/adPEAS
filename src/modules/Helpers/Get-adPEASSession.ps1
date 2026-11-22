@@ -315,10 +315,10 @@ function Get-adPEASSession {
 
                     if ($timeRemaining.TotalSeconds -gt 0) {
                         $remainingDisplay = Format-adPEASDuration $timeRemaining
-                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss') (in $remainingDisplay)"
+                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASTime $endTimeLocal) (in $remainingDisplay)"
                     }
                     else {
-                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss')" -Class Finding
+                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASTime $endTimeLocal)" -Class Finding
                         Write-Warning "[!] TGT EXPIRED - Re-authentication required!"
                     }
 
@@ -334,7 +334,7 @@ function Get-adPEASSession {
                 elseif ($LiveTicketStatus.Expired) {
                     # TGT exists but is expired
                     $expiredTime = if ($LiveTicketStatus.EndTime) {
-                        (Format-adPEASDate $LiveTicketStatus.EndTime.ToLocalTime() 'yyyy-MM-dd HH:mm:ss')
+                        (Format-adPEASTime $LiveTicketStatus.EndTime.ToLocalTime())
                     } else { "unknown" }
                     Show-KeyValue "TGT Status:" "EXPIRED at $expiredTime - Re-authenticate with Connect-adPEAS" -Class Finding
                 }
@@ -355,14 +355,13 @@ function Get-adPEASSession {
             Show-Line "Session:" -Class Hint
             if ($Script:LDAPContext.SessionStartTime) {
                 $sessionDuration = [DateTime]::UtcNow - $Script:LDAPContext.SessionStartTime.ToUniversalTime()
-                # Through Format-adPEASDate like every other date: handed over as a DateTime,
+                # Through Format-adPEASTime like every other time: handed over as a DateTime,
                 # the start read "10/18/2026 14:55:10" - the invariant culture's month first.
+                # It names its zone, as every time does; a "Time Zone" row naming one offset
+                # for all of them was wrong for any value from the other half of the year.
                 # And the hours in full (Format-adPEASDuration): 'hh' is the hour of the
                 # day, so a session of 26 hours read "02:00:00".
-                Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
-                # Every directory time adPEAS prints is local time of this host
-                # (ConvertFrom-adPEASGeneralizedTime); this names the offset once.
-                Show-KeyValue "Time Zone:" (Get-adPEASTimeZoneLabel $Script:LDAPContext.SessionStartTime)
+                Show-KeyValue "Session Started:" (Format-adPEASTime $Script:LDAPContext.SessionStartTime)
                 Show-KeyValue "Session Duration:" (Format-adPEASDuration $sessionDuration)
             }
 

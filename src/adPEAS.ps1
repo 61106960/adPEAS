@@ -428,6 +428,14 @@ function Invoke-adPEAS {
       Invoke-adPEAS -Module Domain -Outputfile report -OutputAppend
       Invoke-adPEAS -Module Accounts -Outputfile report -OutputAppend
 
+.PARAMETER UTC
+    Shows every time of this scan in UTC instead of the local time of this host: on the
+    console, in the text report and in the HTML report, which opens in UTC. Every time names
+    its zone either way ("2026-07-15 14:00:00 UTC+02:00", "2026-07-15 12:00:00 UTC"), and the
+    HTML report switches between the two. The JSON export is always UTC.
+    For this scan only: Get-DomainUser and the other queries afterwards show local time.
+    Convert-adPEASReport -UTC rebuilds an earlier scan's report in UTC.
+
 .EXAMPLE
     # v1 Style: Direct execution with connection parameters
     Import-Module .\adPEAS.ps1
@@ -553,7 +561,11 @@ function Invoke-adPEAS {
 
         # ===== Statistics Parameter =====
         [Parameter(Mandatory=$false)]
-        [switch]$Statistics
+        [switch]$Statistics,
+
+        # ===== Time Display =====
+        [Parameter(Mandatory=$false)]
+        [switch]$UTC
     )
 
     # Reset script variables for each invocation
@@ -686,6 +698,14 @@ function Invoke-adPEAS {
     }
 
 # ===== Main Logic =====
+# The time display of this scan (Format-adPEASDate.ps1): -UTC, the scan's start - the date
+# the reports name - and the zone of this host. Raised here, after the early returns above,
+# and lowered in the finally below, so the queries after the scan show local time again.
+$Script:adPEASTimeUtc = [bool]$UTC
+$Script:adPEASTimeZone = $null
+$Script:adPEASReferenceTime = $null
+$Script:adPEASScanStart = $StartTime
+$Script:adPEASReportConverted = $false
 try {
     # ===== License Validation and Banner =====
     # Priority: runtime -License param > Connect-adPEAS stored license > embedded license
@@ -700,7 +720,11 @@ try {
     # what it last showed; the text report always starts with them.
     Show-ScanLogo -Version $Script:adPEASVersion -Disclaimer $_disclaimer
 
-    Write-Log "[adPEAS] Script started: $StartTime"
+    # When the scan ran, with its zone - in the text report the mark that tells one run of
+    # -OutputAppend from the next. The HTML and JSON carry it in their header.
+    Show-Line "Scan started: $(Format-adPEASTime $StartTime)" -NoCollect
+
+    Write-Log "[adPEAS] Script started: $(Format-adPEASDate $StartTime 'o')"
     Write-Log "[adPEAS] Version: $Script:adPEASVersion"
 
     if ($OPSEC) {
@@ -1439,6 +1463,10 @@ try {
 finally {
     # Clean up findings collection (even on early returns, to prevent stale state)
     Clear-FindingsCollection
+
+    # -UTC is for this scan only; what follows shows local time again
+    $Script:adPEASTimeUtc = $false
+    $Script:adPEASScanStart = $null
 
     # Session is always kept alive after Invoke-adPEAS completes.
     # This allows users to run Get-adPEASSession, Get-Domain* queries, or additional scans.

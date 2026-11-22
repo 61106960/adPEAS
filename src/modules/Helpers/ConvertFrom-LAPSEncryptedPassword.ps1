@@ -419,7 +419,7 @@ function Format-LAPSEncryptedValue {
     $decryptor = Get-LAPSDecryptorName -Info $Info
     $for = if ($decryptor) { " for $decryptor" } else { '' }
     if ($Info -and $Info.UpdateTimestamp) {
-        return "[Encrypted$for - Updated: $(Format-adPEASDate $Info.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
+        return "[Encrypted$for - Updated: $(Format-adPEASTime $Info.UpdateTimestamp)]"
     }
     return "[Encrypted$for - $Length bytes]"
 }

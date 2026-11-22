@@ -88,6 +88,26 @@
             announceToScreenReader('Theme changed to ' + newTheme + ' mode');
         }
 
+        // Every time in the report is a .adp-time element that carries both spellings - the
+        // local time of the host that ran the scan and UTC - worked out when the report was
+        // written. The switch only swaps the text: "local" is the scan host's zone, which the
+        // browser does not know, so it computes nothing. Not stored: a report always opens
+        // in the zone it was written in, as its screenshots show it.
+        function toggleTimeDisplay() {
+            const body = document.body;
+            const mode = body.getAttribute('data-time-mode') === 'utc' ? 'local' : 'utc';
+            document.querySelectorAll('.adp-time').forEach(function(el) {
+                const text = el.getAttribute('data-' + mode);
+                if (text) el.textContent = text;
+            });
+            body.setAttribute('data-time-mode', mode);
+            const label = document.getElementById('timeModeLabel');
+            if (label && label.getAttribute('data-' + mode)) label.textContent = label.getAttribute('data-' + mode);
+            const button = document.getElementById('timeToggle');
+            if (button && button.getAttribute('data-' + mode + '-label')) button.textContent = button.getAttribute('data-' + mode + '-label');
+            announceToScreenReader(mode === 'utc' ? 'Times shown in UTC' : 'Times shown in the local time of the scan host');
+        }
+
         function updateThemeUI(theme) {
             document.getElementById('themeIcon').innerHTML = theme === 'dark' ? '&#9788;' : '&#9790;';
             document.getElementById('themeLabel').textContent = theme === 'dark' ? 'Light' : 'Dark';
@@ -1206,7 +1226,13 @@
                 const label = item.querySelector('.label')?.textContent?.trim();
                 const value = item.querySelector('.value')?.textContent?.trim();
                 if (label === 'Domain') domain = value || 'unknown';
-                if (label === 'Generated') generated = value || '';
+                // The scan date in UTC: the time switch changes the text, not the attribute,
+                // so the stored completed-state survives it. 'Generated' is the label of
+                // reports written before the switch existed.
+                if (label === 'Scan Date' || label === 'Generated') {
+                    const time = item.querySelector('.value .adp-time');
+                    generated = (time && time.getAttribute('data-utc')) || value || '';
+                }
             });
 
             // Include first 3 finding titles for additional uniqueness

@@ -32,6 +32,11 @@ function Convert-adPEASReport {
     .PARAMETER NoColor
     Write plain text output without ANSI color codes.
 
+    .PARAMETER UTC
+    Show every time in UTC. Without it the report shows the local time of the host that ran
+    the scan - its zone is recorded in the export - whatever zone this host is in. Every
+    time names its zone either way, and the HTML report switches between the two.
+
     .EXAMPLE
     Convert-adPEASReport -InputJson ".\report.json" -OutputPath ".\new_report"
 
@@ -61,7 +66,10 @@ function Convert-adPEASReport {
         [string]$License,
 
         [Parameter(Mandatory=$false)]
-        [switch]$NoColor
+        [switch]$NoColor,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$UTC
     )
 
     begin {
@@ -81,6 +89,10 @@ function Convert-adPEASReport {
         $previousOutputColor = $Script:adPEAS_OutputColor
         $previousFindingsEnabled = $Script:adPEAS_FindingsCollectionEnabled
         $previousDisclaimer = $Script:adPEASDisclaimer
+        $previousTimeUtc = $Script:adPEASTimeUtc
+        $previousTimeZone = $Script:adPEASTimeZone
+        $previousScanStart = $Script:adPEASScanStart
+        $previousConverted = $Script:adPEASReportConverted
 
         try {
             # 1. Read and validate JSON (single read, reused for metadata and import)
@@ -99,8 +111,27 @@ function Convert-adPEASReport {
             $sourceDomain = if ($cache.Domain -and $cache.Domain -ne 'Unknown') { $cache.Domain } else { 'Unknown' }
             $sourceServer = if ($cache.Server) { $cache.Server } else { 'Unknown' }
             $sourceVersion = if ($cache.adPEASVersion) { $cache.adPEASVersion } else { 'Unknown' }
-            $sourceDate = if ($cache.ExportDate) { $cache.ExportDate } else { 'Unknown' }
             $findingCount = if ($cache.FindingCount) { $cache.FindingCount } else { 0 }
+
+            # The times of the report: the zone of the host that ran the scan, recorded in
+            # the export (this host's for an export from before that), UTC with -UTC. The
+            # scan date is the scan's start, or for an older export the time it was written -
+            # never the time of this conversion, which the report names separately, and the
+            # JSON written below keeps it.
+            $Script:adPEASTimeUtc = [bool]$UTC
+            $Script:adPEASTimeZone = ConvertFrom-adPEASSerializedTimeZone $cache.TimeZone
+            $Script:adPEASReportConverted = $true
+            $Script:adPEASScanStart = $null
+            foreach ($candidate in @($cache.ScanStart, $cache.ExportDate)) {
+                if ($candidate -is [datetime]) { $Script:adPEASScanStart = $candidate; break }
+                if ($candidate) {
+                    try {
+                        $Script:adPEASScanStart = [datetime]::Parse([string]$candidate, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                        break
+                    } catch { }
+                }
+            }
+            $sourceDate = if ($Script:adPEASScanStart) { Format-adPEASTime $Script:adPEASScanStart } else { 'Unknown' }
 
             # Display source info
             Show-Line "Source: $InputJson" -Class Note -NoCollect
@@ -230,6 +261,11 @@ function Convert-adPEASReport {
                 $utf8Encoding = [System.Text.Encoding]::UTF8
                 [System.IO.File]::WriteAllText($textPath, "", $utf8Encoding)
 
+                # The scan the text report shows, and that it was rebuilt - the lines above
+                # went to the console before the file was open.
+                Show-Line "Scan started: $sourceDate (adPEAS $sourceVersion)" -NoCollect
+                Show-Line "Rebuilt from the JSON export: $(Format-adPEASTime (Get-Date))" -NoCollect
+
                 # Replay findings through Show-* functions (writes to console + file)
                 Invoke-FindingsReplay -Findings $findings
 
@@ -253,6 +289,11 @@ function Convert-adPEASReport {
             $Script:adPEAS_OutputColor = $previousOutputColor
             $Script:adPEAS_FindingsCollectionEnabled = $previousFindingsEnabled
             $Script:adPEASDisclaimer = $previousDisclaimer
+            $Script:adPEASTimeUtc = $previousTimeUtc
+            $Script:adPEASTimeZone = $previousTimeZone
+            $Script:adPEASScanStart = $previousScanStart
+            $Script:adPEASReportConverted = $previousConverted
+            $Script:adPEASReferenceTime = $null
             Clear-FindingsCollection
         }
     }
@@ -278,6 +319,8 @@ function Invoke-FindingsReplay {
     )
 
     foreach ($finding in $Findings) {
+        # Ages of an object measured from when it was collected (Get-adPEASReferenceTime)
+        $Script:adPEASReferenceTime = if ($finding.Timestamp -is [datetime]) { $finding.Timestamp } else { $null }
         switch ($finding.Type) {
             'Header' {
                 # Show-Header delegates to Show-Output -Class Info which calls Write-adPEASHeader
@@ -312,4 +355,5 @@ function Invoke-FindingsReplay {
             }
         }
     }
+    $Script:adPEASReferenceTime = $null
 }

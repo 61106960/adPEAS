@@ -345,8 +345,13 @@ function ConvertTo-FindingsCacheValue {
     )
 
     if ($null -eq $Value) { return $null }
-    if ($Value -is [datetime]) { return $Value.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
-    if ($Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    # Every time in the export is UTC: a DateTime as its round-trip string with Z, a time in
+    # a text (a certificate's display text, a check's own line) in its UTC spelling. The
+    # export records the scan host's zone beside them, so a report rebuilt from it can show
+    # that host's local time again (Convert-adPEASReport).
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [string]) { return (ConvertTo-adPEASTimeText $Value -Mode Utc) }
+    if ($Value -is [ValueType]) { return $Value }
     if ($Depth -ge 6) { return [string]$Value }
 
     if ($Value -is [System.Collections.IDictionary]) {
@@ -547,17 +552,23 @@ function Export-FindingsCache {
             }
         }
 
+        # A finding imported without a readable timestamp keeps none (Import-FindingsFromCache);
+        # $null.ToString() here used to fail every later checkpoint of an -OutputAppend run.
+        $timestampText = if ($f.Timestamp -is [datetime]) {
+            $f.Timestamp.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        } else { $null }
+
         @{
-            Timestamp           = $f.Timestamp.ToString('o')
+            Timestamp           = $timestampText
             Category            = $f.Category
             CheckName           = $f.CheckName
             CheckTitle          = $f.CheckTitle
             Severity            = $f.Severity
             Class               = $f.Class
             Type                = $f.Type
-            Text                = $f.Text
-            Key                 = $f.Key
-            Value               = $f.Value
+            Text                = (ConvertTo-adPEASTimeText $f.Text -Mode Utc)
+            Key                 = (ConvertTo-adPEASTimeText $f.Key -Mode Utc)
+            Value               = (ConvertTo-adPEASTimeText $f.Value -Mode Utc)
             FindingId           = $f.FindingId
             ObjectType          = $f.ObjectType
             AttributeSeverities = $f.AttributeSeverities
@@ -565,9 +576,22 @@ function Export-FindingsCache {
         }
     }
 
+    # ExportDate is when this file was written - every checkpoint, an -OutputAppend run and
+    # Convert-adPEASReport write it anew. ScanStart is when the scan began and survives all
+    # of them: Convert hands it on through $Script:adPEASScanStart. TimeZone is the zone of
+    # the host the scan ran on, with its daylight saving rules, so "local time of the scan
+    # host" can be shown again from an export whose times are all UTC; TimeDisplay is the
+    # zone the scan showed (UTC with Invoke-adPEAS -UTC).
+    $scanStartText = if ($Script:adPEASScanStart -is [datetime]) {
+        $Script:adPEASScanStart.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+    } else { $null }
+
     $cache = @{
         CacheVersion  = 1
-        ExportDate    = (Get-Date).ToString('o')
+        ExportDate    = (Get-Date).ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        ScanStart     = $scanStartText
+        TimeZone      = (Get-adPEASSerializedTimeZone)
+        TimeDisplay   = $(if ($Script:adPEASTimeUtc) { 'UTC' } else { 'Local' })
         Domain        = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { 'Unknown' }
         Server        = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { 'Unknown' }
         adPEASVersion = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { 'Unknown' }
@@ -697,14 +721,19 @@ function Import-FindingsFromCache {
         # same reason: this file was written by some other run of adPEAS, possibly an
         # older version, possibly edited by hand. [datetime]::Parse throws on a missing
         # value, and an unguarded throw here ends the whole import - one finding without a
-        # timestamp would cost the reader the entire report. The timestamp is
-        # informational; the scan date the report shows comes from the cache metadata, not
-        # from here. InvariantCulture because Export-FindingsCache writes the round-trip
-        # format, which must not be read through the reader's local culture.
+        # timestamp would cost the reader the entire report. The scan date the report shows
+        # comes from the cache metadata (ScanStart); this one is the moment the finding was
+        # collected, from which a rebuilt report measures ages (Get-adPEASReferenceTime).
+        # InvariantCulture because Export-FindingsCache writes the round-trip format, which
+        # must not be read through the reader's local culture. pwsh 7's ConvertFrom-Json
+        # hands it over as a DateTime already; parsing that again went through a string
+        # without zone or fraction.
         $timestamp = $null
-        if ($f.Timestamp) {
+        if ($f.Timestamp -is [datetime]) {
+            $timestamp = $f.Timestamp
+        } elseif ($f.Timestamp) {
             try {
-                $timestamp = [datetime]::Parse($f.Timestamp, [System.Globalization.CultureInfo]::InvariantCulture)
+                $timestamp = [datetime]::Parse($f.Timestamp, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
             } catch {
                 Write-Log "[Import-FindingsFromCache] Unreadable timestamp, finding kept without one: $($f.Timestamp)"
             }

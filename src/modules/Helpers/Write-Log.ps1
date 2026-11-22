@@ -75,7 +75,8 @@ function Write-Log {
     $fileWorthy = $Script:adPEAS_VerboseLogging -or ($Level -eq 'Warning') -or ($Level -eq 'Error')
     if ($Script:adPEAS_Outputfile -and $fileWorthy) {
         try {
-            $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
+            # With its zone, as every time in the text report (Format-adPEASTime)
+            $timestamp = (Format-adPEASTime (Get-Date))
             "$timestamp [$Level] $Message" | Add-Content -Path $Script:adPEAS_Outputfile -ErrorAction SilentlyContinue
         }
         catch {

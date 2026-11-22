@@ -1306,27 +1306,34 @@ function Convert-KeyCredentialLinkToRenderValues {
     # whenCreated of the host object, if the render context carries it. The delta is built
     # here, not in ConvertFrom-KeyCredentialLink, because only the context knows the sibling
     # whenCreated - the converter sees one attribute at a time. The helper's display string
-    # carries "created <yyyy-MM-dd HH:mm>"; we read that back, diff it against whenCreated,
-    # and splice the gap in right after it. Member access is case-insensitive and a JSON
-    # round-trip hands whenCreated back as a string, so [datetime] coerces either form.
+    # carries "created <time>" - a labelled time, "2026-07-15 14:00 UTC+02:00", in whatever
+    # zone it was written in; an export from before the labels has "created 2026-07-15 14:00"
+    # in local time. We read that back, diff it against whenCreated in UTC, and splice the
+    # gap in right after it. Member access is case-insensitive and a JSON round-trip hands
+    # whenCreated back as a string, so [datetime] coerces either form.
     $acctCreated = $null
     if ($Context -and $Context.SourceObject -and $Context.SourceObject.whenCreated) {
-        try { $acctCreated = [datetime]$Context.SourceObject.whenCreated } catch { $acctCreated = $null }
+        try { $acctCreated = ([datetime]$Context.SourceObject.whenCreated).ToUniversalTime() } catch { $acctCreated = $null }
     }
 
     $entries = @($Value)
     $renderValues = @()
     foreach ($entry in $entries) {
         $display = [string]$entry
-        if ($acctCreated -and $display -match 'created (\d{4}-\d{2}-\d{2} \d{2}:\d{2})') {
+        $createdMatch = [regex]::Match($display, 'created (?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?<zone> UTC(?:[+-]\d{2}:\d{2})?)?')
+        if ($acctCreated -and $createdMatch.Success) {
             $keyCreated = $null
-            try {
-                $keyCreated = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm',
-                    [System.Globalization.CultureInfo]::InvariantCulture)
-            } catch { $keyCreated = $null }
+            if ($createdMatch.Groups['zone'].Success) {
+                $keyCreated = ConvertFrom-adPEASTimeText ($createdMatch.Groups['time'].Value + $createdMatch.Groups['zone'].Value)
+            } else {
+                try {
+                    $keyCreated = [datetime]::ParseExact($createdMatch.Groups['time'].Value, 'yyyy-MM-dd HH:mm',
+                        [System.Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
+                } catch { $keyCreated = $null }
+            }
             if ($keyCreated) {
                 $gap = Get-KeyCredentialAgeText -KeyCreated $keyCreated -AccountCreated $acctCreated
-                $display = $display -replace '(created \d{4}-\d{2}-\d{2} \d{2}:\d{2})', "`$1 ($gap after computer)"
+                $display = $display.Insert($createdMatch.Index + $createdMatch.Length, " ($gap after computer)")
             }
         }
         # Note: a key credential is information - Windows Hello for Business, FIDO2 and

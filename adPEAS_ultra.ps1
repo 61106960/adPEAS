@@ -3425,6 +3425,7 @@ function Write-adPEASOutput {
 	    $ANSI_esc = $Script:ANSI_esc
 	}
 	process {
+	    $Text = ConvertTo-adPEASTimeText $Text
 	    $prefix = if (-not $NoPrefix) { Get-ClassPrefix -Class $Class } else { "" }
 	    $plainText = $prefix + $Text
 	    if ($LeadingNewline) {
@@ -3472,6 +3473,7 @@ function Write-adPEASAttribute {
 	)
 	$ANSI = $Script:ANSI
 	$ANSI_esc = $Script:ANSI_esc
+	$Value = ConvertTo-adPEASTimeText $Value
 	$IsContinuationLine = [string]::IsNullOrEmpty($Name)
 	$prefix = if (-not $IsContinuationLine) { Get-ClassPrefix -Class $Class } else { "" }
 	$hasPrefix = ($prefix.Length -gt 0)
@@ -3593,6 +3595,7 @@ function Write-adPEASHeader {
 	)
 	$ANSI = $Script:ANSI
 	$ANSI_esc = $Script:ANSI_esc
+	$Value = ConvertTo-adPEASTimeText $Value
 	$SeparatorLine = "=" * 70
 	$HeaderLine = "+++++ $Value +++++"
 	if ($Script:adPEAS_OutputColor -ne $false) {
@@ -4463,7 +4466,7 @@ function Convert-DefaultToRenderValues {
 	    $renderValues = @()
 	    foreach ($item in $Value) {
 	        $itemIsDate = $item -is [datetime]
-	        $itemStr = if ($itemIsDate) { Format-adPEASDate -Date $item } else { [string]$item }
+	        $itemStr = if ($itemIsDate) { Format-adPEASTime -Date $item } else { [string]$item }
 	        if ([string]::IsNullOrEmpty($itemStr)) { continue }
 	        $itemMatch = Get-TriggerMatch -Name $Name -Value $(if ($itemIsDate) { $item } else { $itemStr }) -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
 	        $renderValues += New-RenderValue -Display $itemStr -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
@@ -4477,7 +4480,7 @@ function Convert-DefaultToRenderValues {
 	        Values          = $renderValues
 	    }
 	}
-	$displayValue = if ($Value -is [datetime]) { Format-adPEASDate -Date $Value } else { [string]$Value }
+	$displayValue = if ($Value -is [datetime]) { Format-adPEASTime -Date $Value } else { [string]$Value }
 	if ([string]::IsNullOrEmpty($displayValue)) { return $null }
 	$scalarMatch = Get-TriggerMatch -Name $Name -Value $Value -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
 	return @{
@@ -4592,23 +4595,23 @@ function Add-ActivityStatus {
 	} else {
 	    90
 	}
-	$cutoffDate = (Get-Date).AddDays(-$effectiveInactiveDays)
+	$cutoffDate = (Get-adPEASReferenceTime).ToUniversalTime().AddDays(-$effectiveInactiveDays)
 	$lastLogonDate = ConvertTo-ActivityDate -Value $Object.lastLogonTimestamp
 	if ($lastLogonDate) {
-	    if ($lastLogonDate -lt $cutoffDate) {
+	    if ($lastLogonDate.ToUniversalTime() -lt $cutoffDate) {
 	        $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no login for >$effectiveInactiveDays days)" -Force
 	    }
 	    return
 	}
 	$pwdLastSetDate = ConvertTo-ActivityDate -Value $Object.pwdLastSet
 	if ($pwdLastSetDate) {
-	    if ($pwdLastSetDate -lt $cutoffDate) {
+	    if ($pwdLastSetDate.ToUniversalTime() -lt $cutoffDate) {
 	        $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no logon recorded, password not changed for >$effectiveInactiveDays days)" -Force
 	    }
 	    return
 	}
 	$createdDate = ConvertTo-ActivityDate -Value $Object.whenCreated
-	if ($createdDate -and $createdDate -lt $cutoffDate) {
+	if ($createdDate -and $createdDate.ToUniversalTime() -lt $cutoffDate) {
 	    $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (never logged on, account created >$effectiveInactiveDays days ago)" -Force
 	}
 }
@@ -20920,7 +20923,7 @@ function Test-CustomTrigger {
 	    'pwdAge_gt_1825' {
 	        $pwdDate = Get-DateFromValue -Value $Value
 	        if ($pwdDate) {
-	            $pwdAge = ((Get-Date) - $pwdDate).Days
+	            $pwdAge = ((Get-adPEASReferenceTime).ToUniversalTime() - $pwdDate.ToUniversalTime()).Days
 	            return ($pwdAge -gt 1825)
 	        }
 	        return $false
@@ -20928,7 +20931,7 @@ function Test-CustomTrigger {
 	    'pwdAge_365_1825' {
 	        $pwdDate = Get-DateFromValue -Value $Value
 	        if ($pwdDate) {
-	            $pwdAge = ((Get-Date) - $pwdDate).Days
+	            $pwdAge = ((Get-adPEASReferenceTime).ToUniversalTime() - $pwdDate.ToUniversalTime()).Days
 	            return ($pwdAge -gt 365 -and $pwdAge -le 1825)
 	        }
 	        return $false
@@ -21915,21 +21918,26 @@ function Convert-KeyCredentialLinkToRenderValues {
 	param([string]$Name, $Value, $Context)
 	$acctCreated = $null
 	if ($Context -and $Context.SourceObject -and $Context.SourceObject.whenCreated) {
-	    try { $acctCreated = [datetime]$Context.SourceObject.whenCreated } catch { $acctCreated = $null }
+	    try { $acctCreated = ([datetime]$Context.SourceObject.whenCreated).ToUniversalTime() } catch { $acctCreated = $null }
 	}
 	$entries = @($Value)
 	$renderValues = @()
 	foreach ($entry in $entries) {
 	    $display = [string]$entry
-	    if ($acctCreated -and $display -match 'created (\d{4}-\d{2}-\d{2} \d{2}:\d{2})') {
+	    $createdMatch = [regex]::Match($display, 'created (?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?<zone> UTC(?:[+-]\d{2}:\d{2})?)?')
+	    if ($acctCreated -and $createdMatch.Success) {
 	        $keyCreated = $null
-	        try {
-	            $keyCreated = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm',
-	                [System.Globalization.CultureInfo]::InvariantCulture)
-	        } catch { $keyCreated = $null }
+	        if ($createdMatch.Groups['zone'].Success) {
+	            $keyCreated = ConvertFrom-adPEASTimeText ($createdMatch.Groups['time'].Value + $createdMatch.Groups['zone'].Value)
+	        } else {
+	            try {
+	                $keyCreated = [datetime]::ParseExact($createdMatch.Groups['time'].Value, 'yyyy-MM-dd HH:mm',
+	                    [System.Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
+	            } catch { $keyCreated = $null }
+	        }
 	        if ($keyCreated) {
 	            $gap = Get-KeyCredentialAgeText -KeyCreated $keyCreated -AccountCreated $acctCreated
-	            $display = $display -replace '(created \d{4}-\d{2}-\d{2} \d{2}:\d{2})', "`$1 ($gap after computer)"
+	            $display = $display.Insert($createdMatch.Index + $createdMatch.Length, " ($gap after computer)")
 	        }
 	    }
 	    $renderValues += New-RenderValue -Display $display `
@@ -22169,7 +22177,7 @@ function Render-ConsoleRow {
 	    'MultiValue' {
 	        $classifiedValues = @()
 	        foreach ($val in $Row.Values) {
-	            $classifiedValues += [PSCustomObject]@{ Value = $val.Display; Class = $val.Severity }
+	            $classifiedValues += [PSCustomObject]@{ Value = (ConvertTo-adPEASTimeText $val.Display); Class = $val.Severity }
 	        }
 	        if ($classifiedValues.Count -eq 0) { return }
 	        $attrClass = if ($Row.ForceAttributeClass -or $Row.OverallSeverity -ne 'Standard') {
@@ -22306,7 +22314,7 @@ function Render-HtmlRow {
 	switch ($Row.RowType) {
 	    'SingleValue' {
 	        $val = $Row.Values[0]
-	        $displayHtml = ConvertTo-HtmlEncode $val.Display
+	        $displayHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display)
 	        $valueHtml = Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
 	        $classAttr = Get-HtmlValueClassAttr -Severity $Row.OverallSeverity
 	        $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
@@ -22315,7 +22323,7 @@ function Render-HtmlRow {
 	    'MultiValue' {
 	        $valuesHtml = @()
 	        foreach ($val in $Row.Values) {
-	            $displayHtml = ConvertTo-HtmlEncode $val.Display
+	            $displayHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display)
 	            $valuesHtml += Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
 	        }
 	        $displayValue = $valuesHtml -join '<br>'
@@ -22360,7 +22368,7 @@ function Render-HtmlRow {
 	    }
 	    default {
 	        $val = if ($Row.Values.Count -gt 0) { $Row.Values[0] } else { $null }
-	        $displayHtml = if ($val) { ConvertTo-HtmlEncode $val.Display } else { '' }
+	        $displayHtml = if ($val) { ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display) } else { '' }
 	        $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
 	        return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
 	    }
@@ -25137,8 +25145,9 @@ function ConvertTo-FindingsCacheValue {
 	    [int]$Depth = 0
 	)
 	if ($null -eq $Value) { return $null }
-	if ($Value -is [datetime]) { return $Value.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
-	if ($Value -is [string] -or $Value -is [ValueType]) { return $Value }
+	if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
+	if ($Value -is [string]) { return (ConvertTo-adPEASTimeText $Value -Mode Utc) }
+	if ($Value -is [ValueType]) { return $Value }
 	if ($Depth -ge 6) { return [string]$Value }
 	if ($Value -is [System.Collections.IDictionary]) {
 	    $copy = if ($Value -is [System.Collections.Specialized.OrderedDictionary]) { [ordered]@{} } else { @{} }
@@ -25248,26 +25257,35 @@ function Export-FindingsCache {
 	            }
 	        }
 	    }
+	    $timestampText = if ($f.Timestamp -is [datetime]) {
+	        $f.Timestamp.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+	    } else { $null }
 	    @{
-	        Timestamp           = $f.Timestamp.ToString('o')
+	        Timestamp           = $timestampText
 	        Category            = $f.Category
 	        CheckName           = $f.CheckName
 	        CheckTitle          = $f.CheckTitle
 	        Severity            = $f.Severity
 	        Class               = $f.Class
 	        Type                = $f.Type
-	        Text                = $f.Text
-	        Key                 = $f.Key
-	        Value               = $f.Value
+	        Text                = (ConvertTo-adPEASTimeText $f.Text -Mode Utc)
+	        Key                 = (ConvertTo-adPEASTimeText $f.Key -Mode Utc)
+	        Value               = (ConvertTo-adPEASTimeText $f.Value -Mode Utc)
 	        FindingId           = $f.FindingId
 	        ObjectType          = $f.ObjectType
 	        AttributeSeverities = $f.AttributeSeverities
 	        ObjectProperties    = $objectProps
 	    }
 	}
+	$scanStartText = if ($Script:adPEASScanStart -is [datetime]) {
+	    $Script:adPEASScanStart.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+	} else { $null }
 	$cache = @{
 	    CacheVersion  = 1
-	    ExportDate    = (Get-Date).ToString('o')
+	    ExportDate    = (Get-Date).ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+	    ScanStart     = $scanStartText
+	    TimeZone      = (Get-adPEASSerializedTimeZone)
+	    TimeDisplay   = $(if ($Script:adPEASTimeUtc) { 'UTC' } else { 'Local' })
 	    Domain        = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { 'Unknown' }
 	    Server        = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { 'Unknown' }
 	    adPEASVersion = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { 'Unknown' }
@@ -25337,9 +25355,11 @@ function Import-FindingsFromCache {
 	        }
 	    }
 	    $timestamp = $null
-	    if ($f.Timestamp) {
+	    if ($f.Timestamp -is [datetime]) {
+	        $timestamp = $f.Timestamp
+	    } elseif ($f.Timestamp) {
 	        try {
-	            $timestamp = [datetime]::Parse($f.Timestamp, [System.Globalization.CultureInfo]::InvariantCulture)
+	            $timestamp = [datetime]::Parse($f.Timestamp, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
 	        } catch {
 	        }
 	    }
@@ -26540,7 +26560,7 @@ function ConvertFrom-KeyCredentialLink {
 	            $Parts += "KeyID $($Result.KeyID)"
 	        }
 	        if ($Result.KeyCreationTime) {
-	            $Parts += "created $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
+	            $Parts += "created $(Format-adPEASTime $Result.KeyCreationTime -Precision Minutes)"
 	        }
 	        if ($Parts.Count -eq 0) {
 	            return "KeyCredential ($($KeyCredentialBytes.Length) bytes)"
@@ -28904,6 +28924,11 @@ function Clear-SessionState {
 	    $Script:adPEAS_OutputColor = $true
 	    $Script:adPEAS_VerboseLogging = $false
 	    $Script:ModuleCategoryHeaders = $null
+	    $Script:adPEASTimeUtc = $false
+	    $Script:adPEASTimeZone = $null
+	    $Script:adPEASReferenceTime = $null
+	    $Script:adPEASScanStart = $null
+	    $Script:adPEASReportConverted = $false
 	    $Script:adPEAS_Outputfile = $null
 	    $Script:HTMLOutputPath = $null
 	    $Script:JSONOutputPath = $null
@@ -29067,7 +29092,7 @@ function Convert-CertificateToInfo {
 	        CRLDistributionPoints   = $CRLDistributionPoints
 	        OCSPURLs                = $OCSPURLs
 	        AIAURLs                 = $AIAURLs
-	        DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASDate $Cert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $Cert.NotAfter 'yyyy-MM-dd') ($Status)"
+	        DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASTime $Cert.NotBefore -Precision Minutes) to $(Format-adPEASTime $Cert.NotAfter -Precision Minutes) ($Status)"
 	    }
 	    $Cert.Dispose()
 	    return $CertInfo
@@ -29247,7 +29272,7 @@ function ConvertFrom-LDAPAttribute {
 	                    $historyInfo = ConvertFrom-LAPSEncryptedPassword -Blob $historyBlob
 	                    $historyDecryptor = Get-LAPSDecryptorName -Info $historyInfo
 	                    if ($historyInfo -and $historyInfo.UpdateTimestamp) {
-	                        $historyEntry = "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
+	                        $historyEntry = "[$entryIndex] $(Format-adPEASTime $historyInfo.UpdateTimestamp)"
 	                        if ($historyDecryptor) { $historyEntry += " (for $historyDecryptor)" }
 	                        $historyEntries += $historyEntry
 	                    } else {
@@ -29403,7 +29428,7 @@ function ConvertFrom-LDAPAttribute {
 	                    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$bytes)
 	                    $subject = $cert.Subject
 	                    $thumbprint = $cert.Thumbprint
-	                    $notAfter = (Format-adPEASDate $cert.NotAfter 'yyyy-MM-dd')
+	                    $notAfter = (Format-adPEASTime $cert.NotAfter -Precision Minutes)
 	                    $certValues += "$subject (Thumbprint: $thumbprint, Expires: $notAfter)"
 	                    $cert.Dispose()
 	                } catch {
@@ -40730,17 +40755,186 @@ function ConvertFrom-adPEASGeneralizedTime {
 	}
 	return $parsed.ToLocalTime()
 }
-function Get-adPEASTimeZoneLabel {
+function Format-adPEASUtcOffset {
 	[CmdletBinding()]
 	[OutputType([string])]
 	param(
-	    [Parameter(Mandatory = $false, Position = 0)]
-	    [datetime]$At = (Get-Date)
+	    [Parameter(Mandatory = $true, Position = 0)]
+	    [TimeSpan]$Offset
 	)
-	$offset = [TimeZoneInfo]::Local.GetUtcOffset($At)
-	$sign = if ($offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
-	$abs = $offset.Duration()
-	return ('UTC' + $sign + $abs.Hours.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture) + ':' + $abs.Minutes.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture))
+	$sign = if ($Offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
+	$abs = $Offset.Duration()
+	$inv = [System.Globalization.CultureInfo]::InvariantCulture
+	return ('UTC' + $sign + $abs.Hours.ToString('00', $inv) + ':' + $abs.Minutes.ToString('00', $inv))
+}
+$Script:adPEASTimeUtc = $false
+$Script:adPEASTimeZone = $null
+$Script:adPEASReferenceTime = $null
+$Script:adPEASScanStart = $null
+$Script:adPEASReportConverted = $false
+$Script:adPEASTimeTextRegex = [regex]::new(
+	'(?<![\d:.-])(?<y>\d{4})-(?<mo>\d{2})-(?<d>\d{2}) (?<h>\d{2}):(?<mi>\d{2})(?::(?<s>\d{2}))? UTC(?:(?<sign>[+-])(?<oh>\d{2}):(?<om>\d{2}))?(?![\w:+-])')
+function Get-adPEASTimeText {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true, Position = 0)]
+	    [datetime]$UtcTime,
+	    [Parameter(Mandatory = $false)]
+	    [bool]$Minutes = $false,
+	    [Parameter(Mandatory = $false)]
+	    [bool]$AsUtc = $false
+	)
+	$pattern = if ($Minutes) { 'yyyy-MM-dd HH:mm' } else { 'yyyy-MM-dd HH:mm:ss' }
+	$inv = [System.Globalization.CultureInfo]::InvariantCulture
+	if ($AsUtc) {
+	    return ($UtcTime.ToString($pattern, $inv) + ' UTC')
+	}
+	$zone = if ($Script:adPEASTimeZone) { $Script:adPEASTimeZone } else { [TimeZoneInfo]::Local }
+	$wallClock = [TimeZoneInfo]::ConvertTimeFromUtc($UtcTime, $zone)
+	return ($wallClock.ToString($pattern, $inv) + ' ' + (Format-adPEASUtcOffset $zone.GetUtcOffset($UtcTime)))
+}
+function Format-adPEASTime {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true, Position = 0)]
+	    [datetime]$Date,
+	    [Parameter(Mandatory = $false, Position = 1)]
+	    [ValidateSet('Seconds', 'Minutes')]
+	    [string]$Precision = 'Seconds'
+	)
+	try {
+	    return (Get-adPEASTimeText -UtcTime $Date.ToUniversalTime() -Minutes ($Precision -eq 'Minutes') -AsUtc ([bool]$Script:adPEASTimeUtc))
+	} catch {
+	    return (Format-adPEASDate $Date $(if ($Precision -eq 'Minutes') { 'yyyy-MM-dd HH:mm' } else { 'yyyy-MM-dd HH:mm:ss' }))
+	}
+}
+function ConvertFrom-adPEASTimeText {
+	[CmdletBinding()]
+	[OutputType([datetime])]
+	param(
+	    [Parameter(Mandatory = $true, Position = 0)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Text
+	)
+	if ([string]::IsNullOrEmpty($Text)) { return $null }
+	$match = $Script:adPEASTimeTextRegex.Match($Text)
+	if (-not $match.Success) { return $null }
+	return (ConvertFrom-adPEASTimeMatch $match)
+}
+function ConvertFrom-adPEASTimeMatch {
+	param([System.Text.RegularExpressions.Match]$Match)
+	$g = $Match.Groups
+	try {
+	    $offset = [TimeSpan]::Zero
+	    if ($g['sign'].Success) {
+	        $offset = New-Object TimeSpan ([int]$g['oh'].Value), ([int]$g['om'].Value), 0
+	        if ($g['sign'].Value -eq '-') { $offset = $offset.Negate() }
+	    }
+	    $seconds = if ($g['s'].Success) { [int]$g['s'].Value } else { 0 }
+	    $instant = New-Object DateTimeOffset ([int]$g['y'].Value), ([int]$g['mo'].Value), ([int]$g['d'].Value), ([int]$g['h'].Value), ([int]$g['mi'].Value), $seconds, $offset
+	    return $instant.UtcDateTime
+	} catch {
+	    return $null
+	}
+}
+function ConvertTo-adPEASTimeText {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true, Position = 0)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    $Text,
+	    [Parameter(Mandatory = $false)]
+	    [ValidateSet('Current', 'Utc', 'Local')]
+	    [string]$Mode = 'Current'
+	)
+	if ($null -eq $Text) { return $null }
+	$Text = [string]$Text
+	if ($Text.Length -eq 0 -or $Text.IndexOf(' UTC', [System.StringComparison]::Ordinal) -lt 0) {
+	    return $Text
+	}
+	$toUtc = switch ($Mode) {
+	    'Utc'   { $true }
+	    'Local' { $false }
+	    default { [bool]$Script:adPEASTimeUtc }
+	}
+	return $Script:adPEASTimeTextRegex.Replace($Text, {
+	    param($match)
+	    $instant = ConvertFrom-adPEASTimeMatch $match
+	    if ($null -eq $instant) { return $match.Value }
+	    try {
+	        return (Get-adPEASTimeText -UtcTime $instant -Minutes (-not $match.Groups['s'].Success) -AsUtc $toUtc)
+	    } catch {
+	        return $match.Value
+	    }
+	})
+}
+function ConvertTo-HtmlTimeSpans {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $true, Position = 0)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Html
+	)
+	if ([string]::IsNullOrEmpty($Html) -or $Html.IndexOf(' UTC', [System.StringComparison]::Ordinal) -lt 0) {
+	    return $Html
+	}
+	return $Script:adPEASTimeTextRegex.Replace($Html, {
+	    param($match)
+	    $instant = ConvertFrom-adPEASTimeMatch $match
+	    if ($null -eq $instant) { return $match.Value }
+	    try {
+	        $minutes = -not $match.Groups['s'].Success
+	        $localText = Get-adPEASTimeText -UtcTime $instant -Minutes $minutes -AsUtc $false
+	        $utcText = Get-adPEASTimeText -UtcTime $instant -Minutes $minutes -AsUtc $true
+	        $shown = if ($Script:adPEASTimeUtc) { $utcText } else { $localText }
+	        return ('<span class="adp-time" data-local="' + $localText + '" data-utc="' + $utcText + '">' + $shown + '</span>')
+	    } catch {
+	        return $match.Value
+	    }
+	})
+}
+function Get-adPEASReferenceTime {
+	[CmdletBinding()]
+	[OutputType([datetime])]
+	param()
+	if ($Script:adPEASReferenceTime -is [datetime]) { return $Script:adPEASReferenceTime }
+	return (Get-Date)
+}
+function Get-adPEASTimeZoneDescription {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param(
+	    [Parameter(Mandatory = $false)]
+	    [switch]$Utc
+	)
+	if ($Utc) { return 'UTC' }
+	$zone = if ($Script:adPEASTimeZone) { $Script:adPEASTimeZone } else { [TimeZoneInfo]::Local }
+	return "Local time of the scan host ($($zone.Id))"
+}
+function Get-adPEASSerializedTimeZone {
+	[CmdletBinding()]
+	[OutputType([string])]
+	param()
+	$zone = if ($Script:adPEASTimeZone) { $Script:adPEASTimeZone } else { [TimeZoneInfo]::Local }
+	try { return $zone.ToSerializedString() } catch { return $null }
+}
+function ConvertFrom-adPEASSerializedTimeZone {
+	[CmdletBinding()]
+	param(
+	    [Parameter(Mandatory = $false, Position = 0)]
+	    [AllowNull()]
+	    [AllowEmptyString()]
+	    [string]$Serialized
+	)
+	if ([string]::IsNullOrWhiteSpace($Serialized)) { return $null }
+	try { return [TimeZoneInfo]::FromSerializedString($Serialized) } catch { return $null }
 }
 function Format-adPEASDuration {
 	[CmdletBinding()]
@@ -40830,7 +41024,7 @@ function Write-Log {
 	$fileWorthy = $Script:adPEAS_VerboseLogging -or ($Level -eq 'Warning') -or ($Level -eq 'Error')
 	if ($Script:adPEAS_Outputfile -and $fileWorthy) {
 	    try {
-	        $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
+	        $timestamp = (Format-adPEASTime (Get-Date))
 	        "$timestamp [$Level] $Message" | Add-Content -Path $Script:adPEAS_Outputfile -ErrorAction SilentlyContinue
 	    }
 	    catch {
@@ -43461,10 +43655,10 @@ function Resolve-CredentialAccount {
 	    }
 	    $pwdLastSet = $account.pwdLastSet
 	    if ($pwdLastSet -is [datetime]) {
-	        $setText = Format-adPEASDate $pwdLastSet 'yyyy-MM-dd'
+	        $setText = Format-adPEASTime $pwdLastSet -Precision Minutes
 	        if ($FileTime -is [datetime]) {
-	            $fileText = Format-adPEASDate $FileTime 'yyyy-MM-dd'
-	            if ($pwdLastSet -gt $FileTime) {
+	            $fileText = Format-adPEASTime $FileTime -Precision Minutes
+	            if ($pwdLastSet.ToUniversalTime() -gt $FileTime.ToUniversalTime()) {
 	                $text += "; password changed $setText, after the file was last written ($fileText) - the password found is probably outdated"
 	            } else {
 	                $text += "; password unchanged since $setText, before the file was last written ($fileText) - the password found may still be valid"
@@ -44061,7 +44255,7 @@ function Format-LAPSEncryptedValue {
 	$decryptor = Get-LAPSDecryptorName -Info $Info
 	$for = if ($decryptor) { " for $decryptor" } else { '' }
 	if ($Info -and $Info.UpdateTimestamp) {
-	    return "[Encrypted$for - Updated: $(Format-adPEASDate $Info.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
+	    return "[Encrypted$for - Updated: $(Format-adPEASTime $Info.UpdateTimestamp)]"
 	}
 	return "[Encrypted$for - $Length bytes]"
 }
@@ -44661,7 +44855,7 @@ function ConvertFrom-TSClientLicense {
 	$productId = [System.Text.Encoding]::Unicode.GetString($strBytes).TrimEnd([char]0)
 	$lines = @()
 	$lines += ("Version = 0x{0:X8}" -f $version)
-	$lines += ("Issued = " + (Format-adPEASDate $issued 'yyyy-MM-dd HH:mm:ss'))
+	$lines += ("Issued = " + (Format-adPEASTime $issued))
 	if ($productId) { $lines += "ProductID = '$productId'" }
 	return ,$lines
 }
@@ -44974,10 +45168,10 @@ function Get-adPEASSession {
 	                $timeRemaining = $LiveTicketStatus.EndTime.ToUniversalTime() - [DateTime]::UtcNow
 	                if ($timeRemaining.TotalSeconds -gt 0) {
 	                    $remainingDisplay = Format-adPEASDuration $timeRemaining
-	                    Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss') (in $remainingDisplay)"
+	                    Show-KeyValue "TGT Valid Until:" "$(Format-adPEASTime $endTimeLocal) (in $remainingDisplay)"
 	                }
 	                else {
-	                    Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss')" -Class Finding
+	                    Show-KeyValue "TGT Valid Until:" "$(Format-adPEASTime $endTimeLocal)" -Class Finding
 	                    Write-Warning "[!] TGT EXPIRED - Re-authentication required!"
 	                }
 	            }
@@ -44989,7 +45183,7 @@ function Get-adPEASSession {
 	            }
 	            elseif ($LiveTicketStatus.Expired) {
 	                $expiredTime = if ($LiveTicketStatus.EndTime) {
-	                    (Format-adPEASDate $LiveTicketStatus.EndTime.ToLocalTime() 'yyyy-MM-dd HH:mm:ss')
+	                    (Format-adPEASTime $LiveTicketStatus.EndTime.ToLocalTime())
 	                } else { "unknown" }
 	                Show-KeyValue "TGT Status:" "EXPIRED at $expiredTime - Re-authenticate with Connect-adPEAS" -Class Finding
 	            }
@@ -45006,8 +45200,7 @@ function Get-adPEASSession {
 	        Show-Line "Session:" -Class Hint
 	        if ($Script:LDAPContext.SessionStartTime) {
 	            $sessionDuration = [DateTime]::UtcNow - $Script:LDAPContext.SessionStartTime.ToUniversalTime()
-	            Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
-	            Show-KeyValue "Time Zone:" (Get-adPEASTimeZoneLabel $Script:LDAPContext.SessionStartTime)
+	            Show-KeyValue "Session Started:" (Format-adPEASTime $Script:LDAPContext.SessionStartTime)
 	            Show-KeyValue "Session Duration:" (Format-adPEASDuration $sessionDuration)
 	        }
 	        if ($Script:LDAPContext.KerberosUsed) {
@@ -45498,7 +45691,7 @@ function Ensure-LDAPConnection {
 	            if ($ticketCheck.TicketCount -eq 0) {
 	                $errorDetails = "No Kerberos tickets in cache (purged or never obtained)"
 	            } elseif ($ticketCheck.Expired) {
-	                $expiredTime = if ($ticketCheck.EndTime) { (Format-adPEASDate $ticketCheck.EndTime 'yyyy-MM-dd HH:mm:ss') } else { "unknown" }
+	                $expiredTime = if ($ticketCheck.EndTime) { (Format-adPEASTime $ticketCheck.EndTime) } else { "unknown" }
 	                $errorDetails = "Kerberos TGT expired at $expiredTime"
 	            } elseif ($ticketCheck.ClientMatch -eq $false) {
 	                $errorDetails = "Kerberos TGT client mismatch (TGT=$($ticketCheck.ClientName), Expected=$($Script:LDAPContext.TGTInfo.UserName))"
@@ -54606,11 +54799,11 @@ public class LSATicketImport
 	                $endUtc = $returnObj.EndTime.ToUniversalTime()
 	                if ($endUtc -lt $now) {
 	                    $expiredAgo = $now - $endUtc
-	                    Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $($endUtc.ToString('u')))"
-	                    $returnObj.Message = "Ticket imported but is EXPIRED since $($endUtc.ToString('u'))"
+	                    Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $(Format-adPEASTime $endUtc))"
+	                    $returnObj.Message = "Ticket imported but is EXPIRED since $(Format-adPEASTime $endUtc)"
 	                }
 	                elseif (($endUtc - $now).TotalMinutes -lt 5) {
-	                    Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $($endUtc.ToString('u')))"
+	                    Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $(Format-adPEASTime $endUtc))"
 	                }
 	            }
 	            return $returnObj
@@ -65032,7 +65225,7 @@ function Invoke-ShadowCredentialOperation {
 	                        Show-KeyValue "DeviceID:" $cred.DeviceID
 	                        Show-KeyValue "KeyID:" $cred.KeyID
 	                        if ($cred.CreationTime) {
-	                            Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
+	                            Show-KeyValue "Created:" (Format-adPEASTime $cred.CreationTime)
 	                        }
 	                        Show-EmptyLine
 	                    }
@@ -65133,7 +65326,7 @@ function Invoke-ShadowCredentialOperation {
 	                    Show-KeyValue "[$index] DeviceID:" $cred.DeviceID
 	                    Show-KeyValue "    KeyID:" $cred.KeyID
 	                    if ($cred.CreationTime) {
-	                        Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
+	                        Show-KeyValue "    Created:" (Format-adPEASTime $cred.CreationTime)
 	                    }
 	                    Show-EmptyLine
 	                    $index++
@@ -69367,7 +69560,7 @@ function Invoke-PasswordSpray {
 	            if ($result.Success -or $hashValidRC4Refused) {
 	                if ($result.Success) { $successCount++ } else { $rc4RefusedValidCount++ }
 	                $finishedAccounts[$username] = $true
-	                $timestamp = Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss'
+	                $timestamp = Format-adPEASTime (Get-Date)
 	                $credInfo = if ($secretKind -eq 'NTHash') {
 	                    [PSCustomObject]@{
 	                        Username   = $cleanUsername
@@ -69667,8 +69860,8 @@ function Get-CertificateInfo {
 	        Show-KeyValue "Thumbprint:" $cert.Thumbprint
 	        Show-EmptyLine
 	        Show-Line "Validity:" -Class Hint
-	        Show-KeyValue "Not Before:" (Format-adPEASDate $cert.NotBefore 'yyyy-MM-dd HH:mm:ss')
-	        Show-KeyValue "Not After:" (Format-adPEASDate $cert.NotAfter 'yyyy-MM-dd HH:mm:ss')
+	        Show-KeyValue "Not Before:" (Format-adPEASTime $cert.NotBefore)
+	        Show-KeyValue "Not After:" (Format-adPEASTime $cert.NotAfter)
 	        Show-KeyValue "Status:" $validityStatus -Class $validityClass
 	        Show-EmptyLine
 	        Show-Line "Key Information:" -Class Hint
@@ -70695,7 +70888,7 @@ function Save-IssuedCertificatePFX {
 	Show-KeyValue "Thumbprint:" $IssuedCert.Thumbprint
 	Show-KeyValue "Subject:" $IssuedCert.Subject
 	Show-KeyValue "Issuer:" $IssuedCert.Issuer
-	Show-KeyValue "Valid Until:" (Format-adPEASDate $IssuedCert.NotAfter 'yyyy-MM-dd')
+	Show-KeyValue "Valid Until:" (Format-adPEASTime $IssuedCert.NotAfter -Precision Minutes)
 	if ($TemplateName) {
 	    Show-KeyValue "Template:" $TemplateName
 	}
@@ -71916,9 +72109,8 @@ function Get-DomainInformation {
 	            $rootDSEResp = $Script:LdapConnection.SendRequest($rootDSEReq)
 	            if ($rootDSEResp -and $rootDSEResp.Entries.Count -gt 0 -and $rootDSEResp.Entries[0].Attributes.Contains("currenttime")) {
 	                $dcTimeStr = $rootDSEResp.Entries[0].Attributes["currenttime"].GetValues([string])[0]
-	                $dcTimeUTC = [DateTime]::ParseExact($dcTimeStr.Substring(0, 14), "yyyyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture)
-	                $localTimeUTC = [DateTime]::UtcNow
-	                $clockSkew = $dcTimeUTC - $localTimeUTC
+	                $dcTime = ConvertFrom-adPEASGeneralizedTime $dcTimeStr
+	                $clockSkew = $dcTime.ToUniversalTime() - [DateTime]::UtcNow
 	                $skewSeconds = [Math]::Round($clockSkew.TotalSeconds)
 	                $skewAbs = [Math]::Abs($skewSeconds)
 	                $skewSign = if ($skewSeconds -ge 0) { "+" } else { "-" }
@@ -71929,7 +72121,7 @@ function Get-DomainInformation {
 	                } else {
 	                    $skewDisplay = "${skewSign}${skewAbs}s"
 	                }
-	                $dcTimeText = "$(Format-adPEASDate $dcTimeUTC 'yyyy-MM-dd HH:mm:ss') UTC (skew: $skewDisplay)"
+	                $dcTimeText = "$(Format-adPEASTime $dcTime) (skew: $skewDisplay)"
 	            }
 	        }
 	        catch {
@@ -71948,7 +72140,7 @@ function Get-DomainInformation {
 	        }
 	        $kerberosSeverity = "Note"
 	        if ($KrbtgtInfo) {
-	            $LastChanged = (Format-adPEASDate $KrbtgtInfo.PasswordLastSet 'yyyy-MM-dd')
+	            $LastChanged = (Format-adPEASTime $KrbtgtInfo.PasswordLastSet -Precision Minutes)
 	            $AgeText = "$KrbtgtPasswordAge days (last changed: $LastChanged)"
 	            $kerberosObj | Add-Member -NotePropertyName 'krbtgtPasswordAge' -NotePropertyValue $AgeText -Force
 	            if ($KrbtgtPasswordAge -gt 365) {
@@ -72810,7 +73002,7 @@ function Get-DomainTrusts {
 	                        $pwdLastSet = $trustAccounts[$accountName].pwdLastSet
 	                        if ($pwdLastSet -is [DateTime]) {
 	                            $ageDays = [int][Math]::Floor(((Get-Date) - $pwdLastSet).TotalDays)
-	                            $lastSetText = "$(Format-adPEASDate $pwdLastSet 'yyyy-MM-dd') ($ageDays days ago, on $accountName)"
+	                            $lastSetText = "$(Format-adPEASTime $pwdLastSet -Precision Minutes) ($ageDays days ago, on $accountName)"
 	                            if ($ageDays -ge $staleTrustPasswordDays) { $passwordStale = $true }
 	                        } else {
 	                            $lastSetText = "Never - $accountName has no password change recorded"
@@ -76622,13 +76814,13 @@ function Get-ManagedServiceAccountSecurity {
 	                $expiresRaw = @($gmsa.accountExpires)[0]
 	                $expiryText = $null
 	                if ($expiresRaw -is [DateTime]) {
-	                    $expiryText = Format-adPEASDate $expiresRaw 'yyyy-MM-dd'
+	                    $expiryText = Format-adPEASTime $expiresRaw -Precision Minutes
 	                } else {
 	                    $expiresValue = [long]0
 	                    if ([long]::TryParse([string]$expiresRaw, [ref]$expiresValue) -and
 	                        $expiresValue -gt 0 -and $expiresValue -ne 9223372036854775807) {
 	                        $expiryText = 'unreadable'
-	                        try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTime($expiresValue)) 'yyyy-MM-dd' } catch {
+	                        try { $expiryText = Format-adPEASTime ([DateTime]::FromFileTime($expiresValue)) -Precision Minutes } catch {
 	                        }
 	                    }
 	                }
@@ -81025,7 +81217,7 @@ function Get-LAPSConfiguration {
 	                Name              = ($computer.sAMAccountName -replace '\$$', '')
 	                distinguishedName = $computer.distinguishedName
 	                lapsGeneration    = $generation
-	                passwordExpiredOn = (Format-adPEASDate $expiry 'yyyy-MM-dd')
+	                passwordExpiredOn = (Format-adPEASTime $expiry -Precision Minutes)
 	                daysOverdue       = $daysOverdue
 	                lapsPasswordStale = "The LAPS password was due for rotation $daysOverdue days ago and has not been changed since. The local administrator password on this machine is at least that old."
 	            }
@@ -84408,7 +84600,7 @@ function Split-GPOTaskBoundary {
 	)
 	$result = [PSCustomObject]@{ Date = ''; Time = ''; Text = $Value; IsVariable = ($Value -match '^%[^%]+%$') }
 	if ($Value -match '^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$') {
-	    $zone = ''
+	    $zone = ' (client local time)'
 	    if ($Matches[5] -eq 'Z') { $zone = ' UTC' } elseif ($Matches[5]) { $zone = " UTC$($Matches[5])" }
 	    $result.Date = $Matches[1]
 	    $result.Time = "$($Matches[2])$zone"
@@ -86188,7 +86380,7 @@ function Get-ADCSVulnerabilities {
 	                        Issuer                 = if ($rootCert.IssuerFull) { $rootCert.IssuerFull } elseif ($rootCert.Issuer) { $rootCert.Issuer } else { $null }
 	                        SerialNumber           = if ($rootCert.SerialNumber) { $rootCert.SerialNumber } else { $null }
 	                        Thumbprint             = if ($rootCert.Thumbprint) { $rootCert.Thumbprint } else { "Unknown" }
-	                        Validity               = if ($rootCert.NotAfter) { "$(Format-adPEASDate $rootCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $rootCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+	                        Validity               = if ($rootCert.NotAfter) { "$(Format-adPEASTime $rootCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $rootCert.NotAfter -Precision Minutes)" } else { "Unknown" }
 	                        Status                 = if ($rootCert.Status) { $rootCert.Status } else { "Unknown" }
 	                        SignatureAlgorithm     = if ($rootCert.SignatureAlgorithm) { $rootCert.SignatureAlgorithm } else { "Unknown" }
 	                        KeySize                = if ($rootCert.PublicKeyLength -and $rootCert.PublicKeyLength -gt 0) { "$($rootCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -86237,7 +86429,7 @@ function Get-ADCSVulnerabilities {
 	                                Issuer                 = if ($ntCert.IssuerFull) { $ntCert.IssuerFull } elseif ($ntCert.Issuer) { $ntCert.Issuer } else { "Unknown" }
 	                                SerialNumber           = if ($ntCert.SerialNumber) { $ntCert.SerialNumber } else { $null }
 	                                Thumbprint             = if ($ntCert.Thumbprint) { $ntCert.Thumbprint } else { "Unknown" }
-	                                Validity               = if ($ntCert.NotAfter) { "$(Format-adPEASDate $ntCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $ntCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+	                                Validity               = if ($ntCert.NotAfter) { "$(Format-adPEASTime $ntCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $ntCert.NotAfter -Precision Minutes)" } else { "Unknown" }
 	                                Status                 = if ($ntCert.Status) { $ntCert.Status } else { "Unknown" }
 	                                SignatureAlgorithm     = if ($ntCert.SignatureAlgorithm) { $ntCert.SignatureAlgorithm } else { "Unknown" }
 	                                KeySize                = if ($ntCert.PublicKeyLength -and $ntCert.PublicKeyLength -gt 0) { "$($ntCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -86300,7 +86492,7 @@ function Get-ADCSVulnerabilities {
 	                        Issuer                 = if ($aiaCert -and $aiaCert.IssuerFull) { $aiaCert.IssuerFull } elseif ($aiaCert -and $aiaCert.Issuer) { $aiaCert.Issuer } else { "Unknown" }
 	                        SerialNumber           = if ($aiaCert -and $aiaCert.SerialNumber) { $aiaCert.SerialNumber } else { $null }
 	                        Thumbprint             = if ($aiaCert.Thumbprint) { $aiaCert.Thumbprint } else { "Unknown" }
-	                        Validity               = if ($aiaCert.NotAfter) { "$(Format-adPEASDate $aiaCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $aiaCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+	                        Validity               = if ($aiaCert.NotAfter) { "$(Format-adPEASTime $aiaCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $aiaCert.NotAfter -Precision Minutes)" } else { "Unknown" }
 	                        Status                 = if ($aiaCert.Status) { $aiaCert.Status } else { "Unknown" }
 	                        SignatureAlgorithm     = if ($aiaCert.SignatureAlgorithm) { $aiaCert.SignatureAlgorithm } else { "Unknown" }
 	                        KeySize                = if ($aiaCert.PublicKeyLength -and $aiaCert.PublicKeyLength -gt 0) { "$($aiaCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -86512,7 +86704,7 @@ function Get-ADCSVulnerabilities {
 	                            $caComputer | Add-Member -NotePropertyName 'CACertThumbprint' -NotePropertyValue $caCert.Thumbprint -Force
 	                        }
 	                        if ($caCert.NotBefore -and $caCert.NotAfter) {
-	                            $caComputer | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASDate $caCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd') ($($caCert.Status))" -Force
+	                            $caComputer | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASTime $caCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $caCert.NotAfter -Precision Minutes) ($($caCert.Status))" -Force
 	                        }
 	                        if ($caCert.SignatureAlgorithm) {
 	                            $caComputer | Add-Member -NotePropertyName 'CACertSignatureAlgorithm' -NotePropertyValue $caCert.SignatureAlgorithm -Force
@@ -86529,7 +86721,7 @@ function Get-ADCSVulnerabilities {
 	                            $caVulnerabilityCount++
 	                        }
 	                        if ($caCert.Status -eq 'EXPIRED') {
-	                            $caComputer | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd')" -Force
+	                            $caComputer | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASTime $caCert.NotAfter -Precision Minutes)" -Force
 	                            $caVulnerabilityCount++
 	                        }
 	                    }
@@ -86537,7 +86729,7 @@ function Get-ADCSVulnerabilities {
 	                        $caComputer | Add-Member -NotePropertyName 'certificateTemplates' -NotePropertyValue @($ca.CertificateTemplates) -Force
 	                    }
 	                    if ($ca.Modified) {
-	                        $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') -Force
+	                        $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASTime $ca.Modified) -Force
 	                    }
 	                    $caComputer | Add-Member -NotePropertyName '_adPEASObjectType' -NotePropertyValue 'CertificateAuthority' -Force
 	                    Show-Object $caComputer -Class Hint
@@ -86549,7 +86741,7 @@ function Get-ADCSVulnerabilities {
 	                        caName               = $ca.Name
 	                        caNote               = "CA server is not in the current domain partition - showing data from Configuration Partition only"
 	                        certificateTemplates = $syntheticTemplates
-	                        CALastModified       = if ($ca.Modified) { (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') } else { $null }
+	                        CALastModified       = if ($ca.Modified) { (Format-adPEASTime $ca.Modified) } else { $null }
 	                    }
 	                    if ($hasDangerousADPermissions) {
 	                        $permissionStrings = $dangerousACEs | ForEach-Object { "$($_.Identity): $($_.DangerousRight)" }
@@ -86607,7 +86799,7 @@ function Get-ADCSVulnerabilities {
 	                            $syntheticCA | Add-Member -NotePropertyName 'CACertThumbprint' -NotePropertyValue $caCert.Thumbprint -Force
 	                        }
 	                        if ($caCert.NotBefore -and $caCert.NotAfter) {
-	                            $syntheticCA | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASDate $caCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd') ($($caCert.Status))" -Force
+	                            $syntheticCA | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASTime $caCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $caCert.NotAfter -Precision Minutes) ($($caCert.Status))" -Force
 	                        }
 	                        if ($caCert.SignatureAlgorithm) {
 	                            $syntheticCA | Add-Member -NotePropertyName 'CACertSignatureAlgorithm' -NotePropertyValue $caCert.SignatureAlgorithm -Force
@@ -86624,7 +86816,7 @@ function Get-ADCSVulnerabilities {
 	                            $caVulnerabilityCount++
 	                        }
 	                        if ($caCert.Status -eq 'EXPIRED') {
-	                            $syntheticCA | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd')" -Force
+	                            $syntheticCA | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASTime $caCert.NotAfter -Precision Minutes)" -Force
 	                            $caVulnerabilityCount++
 	                        }
 	                    }
@@ -91734,6 +91926,7 @@ function Show-DeletedObjectsReaders {
 function ConvertTo-HtmlEncode {
 	param([string]$Text)
 	if ([string]::IsNullOrEmpty($Text)) { return "" }
+	$Text = ConvertTo-adPEASTimeText $Text
 	return $Text.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;').Replace("'", '&#39;')
 }
 function Protect-JsonForScriptBlock {
@@ -91760,8 +91953,20 @@ function Export-HTMLReport {
 	    $server = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { "Unknown" }
 	    $user = if ($Script:LDAPContext -and $Script:LDAPContext.Username) { $Script:LDAPContext.Username } else { "$env:USERDOMAIN\$env:USERNAME" }
 	    $generatedAt = Get-Date
-	    $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
-	    $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
+	    $scanAt = if ($Script:adPEASScanStart -is [datetime]) { $Script:adPEASScanStart } else { $generatedAt }
+	    $generatedDate = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode (Format-adPEASTime $scanAt))
+	    $convertedItem = ''
+	    if ($Script:adPEASReportConverted) {
+	        $builtHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode (Format-adPEASTime $generatedAt))
+	        $convertedItem = "`r`n                <div class=`"info-item`">`r`n                    <div class=`"label`">Report Built</div>`r`n                    <div class=`"value`">$builtHtml</div>`r`n                </div>"
+	    }
+	    $timeModeUtc = [bool]$Script:adPEASTimeUtc
+	    $localDescription = Get-adPEASTimeZoneDescription
+	    $shownDescription = if ($timeModeUtc) { 'UTC' } else { $localDescription }
+	    $toggleText = if ($timeModeUtc) { 'Show scan host time' } else { 'Show UTC' }
+	    $timeZoneHtml = "<span id=`"timeModeLabel`" data-local=`"$(ConvertTo-HtmlEncode $localDescription)`" data-utc=`"UTC`">$(ConvertTo-HtmlEncode $shownDescription)</span>" +
+	        "<button type=`"button`" class=`"card-control-btn time-toggle-btn`" id=`"timeToggle`" onclick=`"toggleTimeDisplay()`" data-local-label=`"Show UTC`" data-utc-label=`"Show scan host time`" title=`"Switch every time in this report between the local time of the scan host and UTC`">$toggleText</button>"
+	    $timeMode = if ($timeModeUtc) { 'utc' } else { 'local' }
 	    $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
 	    $disclaimer = if ($Script:adPEASDisclaimer) { $Script:adPEASDisclaimer } else { "" }
 	}
@@ -91787,7 +91992,9 @@ function Export-HTMLReport {
 	    $html = $html.Replace('{{SERVER}}', [string](ConvertTo-HtmlEncode $server))
 	    $html = $html.Replace('{{USER}}', [string](ConvertTo-HtmlEncode $user))
 	    $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
-	    $html = $html.Replace('{{TIMEZONE}}', [string](ConvertTo-HtmlEncode $timeZoneLabel))
+	    $html = $html.Replace('{{CONVERTED_ITEM}}', [string]$convertedItem)
+	    $html = $html.Replace('{{TIMEZONE}}', [string]$timeZoneHtml)
+	    $html = $html.Replace('{{TIME_MODE}}', [string]$timeMode)
 	    $html = $html.Replace('{{VERSION}}', [string]$version)
 	    $html = $html.Replace('{{DEFAULT_THEME}}', [string]$DefaultTheme.ToLower())
 	    $html = $html.Replace('{{FINDING_COUNT}}', [string]$findingCount)
@@ -92032,14 +92239,15 @@ function Build-ScoringContext {
 	            }
 	        }
 	    }
+	    $scoringNow = if ($finding.Timestamp -is [datetime]) { $finding.Timestamp.ToUniversalTime() } else { (Get-adPEASReferenceTime).ToUniversalTime() }
 	    if ($obj.pwdLastSet -and -not $acctInfo.pwdLastSet) {
 	        $acctInfo.pwdLastSet = $obj.pwdLastSet
 	        try {
 	            if ($obj.pwdLastSet -is [datetime]) {
-	                $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $obj.pwdLastSet).TotalDays)
+	                $acctInfo.pwdAgeDays = [math]::Floor(($scoringNow - $obj.pwdLastSet.ToUniversalTime()).TotalDays)
 	            } elseif ($obj.pwdLastSet -is [string] -and $obj.pwdLastSet -match '\d{4}') {
 	                $pwdDate = [datetime]::Parse($obj.pwdLastSet, [System.Globalization.CultureInfo]::InvariantCulture)
-	                $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $pwdDate).TotalDays)
+	                $acctInfo.pwdAgeDays = [math]::Floor(($scoringNow - $pwdDate.ToUniversalTime()).TotalDays)
 	            }
 	        } catch {
 	        }
@@ -92390,13 +92598,18 @@ function Build-FindingCardHtml {
 	    }
 	    if ($finding.Type -eq 'Object' -and $finding.Object) {
 	        $renderModel = if ($finding.RenderModel) { $finding.RenderModel }
-	                       else { Get-RenderModel -Object $finding.Object }
+	                       else {
+	                           $previousReference = $Script:adPEASReferenceTime
+	                           if ($finding.Timestamp -is [datetime]) { $Script:adPEASReferenceTime = $finding.Timestamp }
+	                           try { Get-RenderModel -Object $finding.Object }
+	                           finally { $Script:adPEASReferenceTime = $previousReference }
+	                       }
 	        $objectHtml = Build-ObjectDetailHtml -Object $finding.Object -Severity $finding.Severity -RenderModel $renderModel
 	        [void]$card.AppendLine($objectHtml)
 	    }
 	    elseif ($finding.Type -eq 'KeyValue' -and $finding.Key) {
 	        $keyHtml = ConvertTo-HtmlEncode $finding.Key
-	        $valueHtml = ConvertTo-HtmlEncode $finding.Value
+	        $valueHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $finding.Value)
 	        $findingId = if ($severityClass -eq 'finding' -or $severityClass -eq 'hint') {
 	            Get-FindingIdForAttribute -Name $finding.Key -Value $finding.Value
 	        } else { $null }
@@ -92411,7 +92624,7 @@ function Build-FindingCardHtml {
 	        [void]$card.AppendLine("                </div>")
 	    }
 	    elseif ($finding.Type -eq 'Line' -and $finding.Text) {
-	        $textHtml = ConvertTo-HtmlEncode $finding.Text
+	        $textHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $finding.Text)
 	        $dataAttr = if ($finding.FindingId) { " data-finding-id=`"$($finding.FindingId)`"" } else { "" }
 	        [void]$card.AppendLine("                <div class=`"finding-item finding-line $severityClass`"$dataAttr>$textHtml</div>")
 	    }
@@ -93362,6 +93575,17 @@ function Get-HTMLTemplate {
             background: var(--bg-hover);
             color: var(--text);
             border-color: var(--accent);
+        }
+
+        /* The switch between scan-host time and UTC, beside the "Times" value */
+        .time-toggle-btn {
+            margin-left: 8px;
+            padding: 2px 8px;
+            vertical-align: middle;
+        }
+
+        .adp-time {
+            white-space: nowrap;
         }
 
         /* Copy Button for Remediation */
@@ -94445,6 +94669,7 @@ function Get-HTMLTemplate {
             .header,
             .sidebar,
             .theme-toggle,
+            .time-toggle-btn,
             .progress-bar-container,
             .finding-checkbox,
             .toolbar,
@@ -95414,7 +95639,7 @@ function Get-HTMLTemplate {
         })();
     </script>
 </head>
-<body>
+<body data-time-mode="{{TIME_MODE}}">
     <!-- Skip Links for Accessibility -->
     <a href="#topActionsContainer" class="skip-link">Skip to Top Priority Actions</a>
     <a href="#cardViewContainer" class="skip-link">Skip to Findings</a>
@@ -95530,11 +95755,11 @@ function Get-HTMLTemplate {
                     <div class="value">{{USER}}</div>
                 </div>
                 <div class="info-item">
-                    <div class="label">Generated</div>
+                    <div class="label">Scan Date</div>
                     <div class="value">{{GENERATED}}</div>
-                </div>
+                </div>{{CONVERTED_ITEM}}
                 <div class="info-item">
-                    <div class="label">Time Zone</div>
+                    <div class="label">Times</div>
                     <div class="value">{{TIMEZONE}}</div>
                 </div>
                 <div class="info-item">
@@ -95654,6 +95879,26 @@ function Get-HTMLTemplate {
             safeSetItem('adpeas-theme', newTheme);
             updateThemeUI(newTheme);
             announceToScreenReader('Theme changed to ' + newTheme + ' mode');
+        }
+
+        // Every time in the report is a .adp-time element that carries both spellings - the
+        // local time of the host that ran the scan and UTC - worked out when the report was
+        // written. The switch only swaps the text: "local" is the scan host's zone, which the
+        // browser does not know, so it computes nothing. Not stored: a report always opens
+        // in the zone it was written in, as its screenshots show it.
+        function toggleTimeDisplay() {
+            const body = document.body;
+            const mode = body.getAttribute('data-time-mode') === 'utc' ? 'local' : 'utc';
+            document.querySelectorAll('.adp-time').forEach(function(el) {
+                const text = el.getAttribute('data-' + mode);
+                if (text) el.textContent = text;
+            });
+            body.setAttribute('data-time-mode', mode);
+            const label = document.getElementById('timeModeLabel');
+            if (label && label.getAttribute('data-' + mode)) label.textContent = label.getAttribute('data-' + mode);
+            const button = document.getElementById('timeToggle');
+            if (button && button.getAttribute('data-' + mode + '-label')) button.textContent = button.getAttribute('data-' + mode + '-label');
+            announceToScreenReader(mode === 'utc' ? 'Times shown in UTC' : 'Times shown in the local time of the scan host');
         }
 
         function updateThemeUI(theme) {
@@ -96774,7 +97019,13 @@ function Get-HTMLTemplate {
                 const label = item.querySelector('.label')?.textContent?.trim();
                 const value = item.querySelector('.value')?.textContent?.trim();
                 if (label === 'Domain') domain = value || 'unknown';
-                if (label === 'Generated') generated = value || '';
+                // The scan date in UTC: the time switch changes the text, not the attribute,
+                // so the stored completed-state survives it. 'Generated' is the label of
+                // reports written before the switch existed.
+                if (label === 'Scan Date' || label === 'Generated') {
+                    const time = item.querySelector('.value .adp-time');
+                    generated = (time && time.getAttribute('data-utc')) || value || '';
+                }
             });
 
             // Include first 3 finding titles for additional uniqueness
@@ -99080,7 +99331,9 @@ function Convert-adPEASReport {
 	    [Parameter(Mandatory=$false)]
 	    [string]$License,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$NoColor
+	    [switch]$NoColor,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$UTC
 	)
 	process {
 	    if (-not (Test-Path $InputJson)) {
@@ -99092,6 +99345,10 @@ function Convert-adPEASReport {
 	    $previousOutputColor = $Script:adPEAS_OutputColor
 	    $previousFindingsEnabled = $Script:adPEAS_FindingsCollectionEnabled
 	    $previousDisclaimer = $Script:adPEASDisclaimer
+	    $previousTimeUtc = $Script:adPEASTimeUtc
+	    $previousTimeZone = $Script:adPEASTimeZone
+	    $previousScanStart = $Script:adPEASScanStart
+	    $previousConverted = $Script:adPEASReportConverted
 	    try {
 	        $rawJson = Get-Content -Path $InputJson -Raw -Encoding UTF8
 	        $cache = ConvertFrom-FindingsCacheJson -Json $rawJson
@@ -99106,8 +99363,21 @@ function Convert-adPEASReport {
 	        $sourceDomain = if ($cache.Domain -and $cache.Domain -ne 'Unknown') { $cache.Domain } else { 'Unknown' }
 	        $sourceServer = if ($cache.Server) { $cache.Server } else { 'Unknown' }
 	        $sourceVersion = if ($cache.adPEASVersion) { $cache.adPEASVersion } else { 'Unknown' }
-	        $sourceDate = if ($cache.ExportDate) { $cache.ExportDate } else { 'Unknown' }
 	        $findingCount = if ($cache.FindingCount) { $cache.FindingCount } else { 0 }
+	        $Script:adPEASTimeUtc = [bool]$UTC
+	        $Script:adPEASTimeZone = ConvertFrom-adPEASSerializedTimeZone $cache.TimeZone
+	        $Script:adPEASReportConverted = $true
+	        $Script:adPEASScanStart = $null
+	        foreach ($candidate in @($cache.ScanStart, $cache.ExportDate)) {
+	            if ($candidate -is [datetime]) { $Script:adPEASScanStart = $candidate; break }
+	            if ($candidate) {
+	                try {
+	                    $Script:adPEASScanStart = [datetime]::Parse([string]$candidate, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+	                    break
+	                } catch { }
+	            }
+	        }
+	        $sourceDate = if ($Script:adPEASScanStart) { Format-adPEASTime $Script:adPEASScanStart } else { 'Unknown' }
 	        Show-Line "Source: $InputJson" -Class Note -NoCollect
 	        Show-Line "Domain: $sourceDomain, Server: $sourceServer" -Class Note -NoCollect
 	        Show-Line "Original scan: $sourceDate (adPEAS $sourceVersion)" -Class Note -NoCollect
@@ -99194,6 +99464,8 @@ function Convert-adPEASReport {
 	            $Script:adPEAS_OutputColor = if ($NoColor) { $false } else { $null }
 	            $utf8Encoding = [System.Text.Encoding]::UTF8
 	            [System.IO.File]::WriteAllText($textPath, "", $utf8Encoding)
+	            Show-Line "Scan started: $sourceDate (adPEAS $sourceVersion)" -NoCollect
+	            Show-Line "Rebuilt from the JSON export: $(Format-adPEASTime (Get-Date))" -NoCollect
 	            Invoke-FindingsReplay -Findings $findings
 	            $Script:adPEAS_Outputfile = $null
 	            Show-Line "Text report saved to: $textPath" -Class Hint -NoCollect
@@ -99207,6 +99479,11 @@ function Convert-adPEASReport {
 	        $Script:adPEAS_OutputColor = $previousOutputColor
 	        $Script:adPEAS_FindingsCollectionEnabled = $previousFindingsEnabled
 	        $Script:adPEASDisclaimer = $previousDisclaimer
+	        $Script:adPEASTimeUtc = $previousTimeUtc
+	        $Script:adPEASTimeZone = $previousTimeZone
+	        $Script:adPEASScanStart = $previousScanStart
+	        $Script:adPEASReportConverted = $previousConverted
+	        $Script:adPEASReferenceTime = $null
 	        Clear-FindingsCollection
 	    }
 	}
@@ -99218,6 +99495,7 @@ function Invoke-FindingsReplay {
 	    [array]$Findings
 	)
 	foreach ($finding in $Findings) {
+	    $Script:adPEASReferenceTime = if ($finding.Timestamp -is [datetime]) { $finding.Timestamp } else { $null }
 	    switch ($finding.Type) {
 	        'Header' {
 	            Show-Output -Class Info -Value $finding.Text -NoCollect
@@ -99251,6 +99529,7 @@ function Invoke-FindingsReplay {
 	        }
 	    }
 	}
+	$Script:adPEASReferenceTime = $null
 }
 function Compare-adPEASReport {
 	[CmdletBinding()]
@@ -99275,6 +99554,8 @@ function Compare-adPEASReport {
 	    }
 	    $previousOutputfile = $Script:adPEAS_Outputfile
 	    $previousOutputColor = $Script:adPEAS_OutputColor
+	    $previousTimeUtc = $Script:adPEASTimeUtc
+	    $previousTimeZone = $Script:adPEASTimeZone
 	    try {
 	        if ($OutputPath) {
 	            $resolvedBase = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
@@ -99300,15 +99581,31 @@ function Compare-adPEASReport {
 	                return
 	            }
 	        }
+	        $Script:adPEASTimeUtc = ([string]$currentCache.TimeDisplay -eq 'UTC')
+	        $Script:adPEASTimeZone = ConvertFrom-adPEASSerializedTimeZone $currentCache.TimeZone
+	        $scanDateText = {
+	            param($cache)
+	            foreach ($candidate in @($cache.ScanStart, $cache.ExportDate)) {
+	                if ($candidate -is [datetime]) { return (Format-adPEASTime $candidate -Precision Minutes) }
+	                if ($candidate) {
+	                    try {
+	                        return (Format-adPEASTime ([datetime]::Parse([string]$candidate, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)) -Precision Minutes)
+	                    } catch {
+	                        return [string]$candidate
+	                    }
+	                }
+	            }
+	            return 'Unknown'
+	        }
 	        $baselineMeta = @{
 	            Domain  = if ($baselineCache.Domain) { $baselineCache.Domain } else { 'Unknown' }
-	            Date    = if ($baselineCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($baselineCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $baselineCache.ExportDate } } else { 'Unknown' }
+	            Date    = (& $scanDateText $baselineCache)
 	            Version = if ($baselineCache.adPEASVersion) { $baselineCache.adPEASVersion } else { 'Unknown' }
 	            Count   = if ($baselineCache.FindingCount) { $baselineCache.FindingCount } else { 0 }
 	        }
 	        $currentMeta = @{
 	            Domain  = if ($currentCache.Domain) { $currentCache.Domain } else { 'Unknown' }
-	            Date    = if ($currentCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($currentCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $currentCache.ExportDate } } else { 'Unknown' }
+	            Date    = (& $scanDateText $currentCache)
 	            Version = if ($currentCache.adPEASVersion) { $currentCache.adPEASVersion } else { 'Unknown' }
 	            Count   = if ($currentCache.FindingCount) { $currentCache.FindingCount } else { 0 }
 	        }
@@ -99437,6 +99734,8 @@ function Compare-adPEASReport {
 	    } finally {
 	        $Script:adPEAS_Outputfile = $previousOutputfile
 	        $Script:adPEAS_OutputColor = $previousOutputColor
+	        $Script:adPEASTimeUtc = $previousTimeUtc
+	        $Script:adPEASTimeZone = $previousTimeZone
 	    }
 	}
 }
@@ -99679,8 +99978,8 @@ function Export-DiffHtmlReport {
 	$comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
 	$version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
 	$generatedAt = Get-Date
-	$generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
-	$timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
+	$generatedDate = ConvertTo-HtmlEncode (Format-adPEASTime $generatedAt)
+	$timeZoneLabel = Get-adPEASTimeZoneDescription -Utc:([bool]$Script:adPEASTimeUtc)
 	$domain = $BaselineMeta.Domain
 	$html = $html.Replace('{{DOMAIN}}', [string](ConvertTo-HtmlEncode $domain))
 	$html = $html.Replace('{{NEW_COUNT}}', [string]$Added.Count)
@@ -100112,7 +100411,7 @@ function Get-DiffHTMLTemplate {
                 <div class="value">{{GENERATED}}</div>
             </div>
             <div class="info-item">
-                <div class="label">Time Zone</div>
+                <div class="label">Times</div>
                 <div class="value">{{TIMEZONE}}</div>
             </div>
             <div class="info-item">
@@ -102334,7 +102633,7 @@ function Collect-BHIssuancePolicies {
 	}
 	return $bhPolicies
 }
-$Script:adPEASVersion = "2.11.0+20261121-1632"
+$Script:adPEASVersion = "2.11.0+20261121-2104"
 if ($MyInvocation.MyCommand.Path) {
 	$Script:ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
@@ -102397,7 +102696,9 @@ function Invoke-adPEAS {
 	    [Parameter(Mandatory=$false)]
 	    [string]$License,
 	    [Parameter(Mandatory=$false)]
-	    [switch]$Statistics
+	    [switch]$Statistics,
+	    [Parameter(Mandatory=$false)]
+	    [switch]$UTC
 	)
 	$StartTime = Get-Date
 	$Script:adPEAS_OutputColor = -not $NoColor
@@ -102474,6 +102775,11 @@ function Invoke-adPEAS {
 	if ($VerboseLogging -and -not $Script:adPEAS_Outputfile) {
 	    Write-Warning "[adPEAS] -VerboseLogging: File logging requires -Outputfile with Text format. Verbose messages will be shown in console only."
 	}
+$Script:adPEASTimeUtc = [bool]$UTC
+$Script:adPEASTimeZone = $null
+$Script:adPEASReferenceTime = $null
+$Script:adPEASScanStart = $StartTime
+$Script:adPEASReportConverted = $false
 try {
 	$_licJson = $null
 	if ($PSBoundParameters.ContainsKey('License') -and $License -and (Test-Path $License -ErrorAction SilentlyContinue)) {
@@ -102482,6 +102788,7 @@ try {
 	$_disclaimer = Get-adPEASDisclaimer -LicenseJson $_licJson
 	$Script:adPEASDisclaimer = $_disclaimer.Text
 	Show-ScanLogo -Version $Script:adPEASVersion -Disclaimer $_disclaimer
+	Show-Line "Scan started: $(Format-adPEASTime $StartTime)" -NoCollect
 	if ($OPSEC) {
 	}
 	$HasConnectionParams = $PSBoundParameters.ContainsKey('Domain') -or
@@ -102989,6 +103296,8 @@ try {
 }
 finally {
 	Clear-FindingsCollection
+	$Script:adPEASTimeUtc = $false
+	$Script:adPEASScanStart = $null
 }
 }
 function Get-adPEASDisclaimer {

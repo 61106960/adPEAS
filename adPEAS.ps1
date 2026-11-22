@@ -3,8 +3,8 @@
     adPEAS v2 - Active Directory Privilege Escalation Awesome Scripts
 
 .DESCRIPTION
-    Build: 2026-11-21 16:32:44
-    Version: 2.11.0+20261121-1632
+    Build: 2026-11-21 21:04:27
+    Version: 2.11.0+20261121-2104
 
     AUTHORIZED SECURITY TESTING ONLY!
 
@@ -6659,6 +6659,10 @@ function Write-adPEASOutput {
     }
 
     process {
+        # Every labelled time in the display mode of the run - a line written in another
+        # mode (replayed by Convert-adPEASReport from a UTC export) follows it.
+        $Text = ConvertTo-adPEASTimeText $Text
+
         # Build prefix
         $prefix = if (-not $NoPrefix) { Get-ClassPrefix -Class $Class } else { "" }
 
@@ -6749,6 +6753,9 @@ function Write-adPEASAttribute {
 
     $ANSI = $Script:ANSI
     $ANSI_esc = $Script:ANSI_esc
+
+    # Labelled times in the display mode of the run (see Write-adPEASOutput)
+    $Value = ConvertTo-adPEASTimeText $Value
 
     # Determine if this is a continuation line (no name)
     $IsContinuationLine = [string]::IsNullOrEmpty($Name)
@@ -6941,6 +6948,8 @@ function Write-adPEASHeader {
 
     $ANSI = $Script:ANSI
     $ANSI_esc = $Script:ANSI_esc
+
+    $Value = ConvertTo-adPEASTimeText $Value
 
     $SeparatorLine = "=" * 70
     $HeaderLine = "+++++ $Value +++++"
@@ -8591,9 +8600,9 @@ function Convert-DefaultToRenderValues {
         if ($Value.Count -eq 0) { return $null }
         $renderValues = @()
         foreach ($item in $Value) {
-            # A DateTime through Format-adPEASDate, as for a single value below.
+            # A DateTime through Format-adPEASTime, as for a single value below.
             $itemIsDate = $item -is [datetime]
-            $itemStr = if ($itemIsDate) { Format-adPEASDate -Date $item } else { [string]$item }
+            $itemStr = if ($itemIsDate) { Format-adPEASTime -Date $item } else { [string]$item }
             if ([string]::IsNullOrEmpty($itemStr)) { continue }
             $itemMatch = Get-TriggerMatch -Name $Name -Value $(if ($itemIsDate) { $item } else { $itemStr }) -IsComputer $Context.IsComputer -SourceObject $Context.SourceObject
             $renderValues += New-RenderValue -Display $itemStr -Severity $itemMatch.Severity -FindingId $itemMatch.FindingId -RawValue $item
@@ -8608,11 +8617,12 @@ function Convert-DefaultToRenderValues {
         }
     }
 
-    # Simple scalar value. A DateTime goes through Format-adPEASDate: cast to [string] it
+    # Simple scalar value. A DateTime goes through Format-adPEASTime: cast to [string] it
     # takes the invariant culture's MM/dd/yyyy, and "07/04/2025" reads as the 7th of April
     # to most readers of a report that means the 4th of July - pwdLastSet and
-    # lastLogonTimestamp of every object came out that way.
-    $displayValue = if ($Value -is [datetime]) { Format-adPEASDate -Date $Value } else { [string]$Value }
+    # lastLogonTimestamp of every object came out that way. Format-adPEASTime also names
+    # the zone beside the value.
+    $displayValue = if ($Value -is [datetime]) { Format-adPEASTime -Date $Value } else { [string]$Value }
     # Skip empty scalar values that slipped through the filter
     if ([string]::IsNullOrEmpty($displayValue)) { return $null }
     # Pass original $Value (not $displayValue) so typed objects (DateTime, Int64) are preserved
@@ -8840,12 +8850,15 @@ function Add-ActivityStatus {
         90  # Fallback if global not set
     }
 
-    $cutoffDate = (Get-Date).AddDays(-$effectiveInactiveDays)
+    # Measured from the time the object was collected (Get-adPEASReferenceTime), not from
+    # the time it is drawn: a report rebuilt months later from an export must not call an
+    # account inactive that was active at the scan. Compared in UTC on both sides.
+    $cutoffDate = (Get-adPEASReferenceTime).ToUniversalTime().AddDays(-$effectiveInactiveDays)
     $lastLogonDate = ConvertTo-ActivityDate -Value $Object.lastLogonTimestamp
 
     if ($lastLogonDate) {
         # Primary signal: a replicated logon timestamp exists
-        if ($lastLogonDate -lt $cutoffDate) {
+        if ($lastLogonDate.ToUniversalTime() -lt $cutoffDate) {
             $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no login for >$effectiveInactiveDays days)" -Force
         }
         return
@@ -8856,7 +8869,7 @@ function Add-ActivityStatus {
     $pwdLastSetDate = ConvertTo-ActivityDate -Value $Object.pwdLastSet
 
     if ($pwdLastSetDate) {
-        if ($pwdLastSetDate -lt $cutoffDate) {
+        if ($pwdLastSetDate.ToUniversalTime() -lt $cutoffDate) {
             $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (no logon recorded, password not changed for >$effectiveInactiveDays days)" -Force
         }
         # Recent password change -> live host whose lastLogonTimestamp simply
@@ -8868,7 +8881,7 @@ function Add-ActivityStatus {
     # whenCreated proves the account is older than the threshold; otherwise it
     # may be a brand-new / not-yet-replicated account.
     $createdDate = ConvertTo-ActivityDate -Value $Object.whenCreated
-    if ($createdDate -and $createdDate -lt $cutoffDate) {
+    if ($createdDate -and $createdDate.ToUniversalTime() -lt $cutoffDate) {
         $Object | Add-Member -NotePropertyName 'activityStatus' -NotePropertyValue "INACTIVE (never logged on, account created >$effectiveInactiveDays days ago)" -Force
     }
 }
@@ -27445,7 +27458,7 @@ function Test-CustomTrigger {
             # Password age > 5 years (1825 days)
             $pwdDate = Get-DateFromValue -Value $Value
             if ($pwdDate) {
-                $pwdAge = ((Get-Date) - $pwdDate).Days
+                $pwdAge = ((Get-adPEASReferenceTime).ToUniversalTime() - $pwdDate.ToUniversalTime()).Days
                 return ($pwdAge -gt 1825)
             }
             return $false
@@ -27454,7 +27467,7 @@ function Test-CustomTrigger {
             # Password age between 1-5 years
             $pwdDate = Get-DateFromValue -Value $Value
             if ($pwdDate) {
-                $pwdAge = ((Get-Date) - $pwdDate).Days
+                $pwdAge = ((Get-adPEASReferenceTime).ToUniversalTime() - $pwdDate.ToUniversalTime()).Days
                 return ($pwdAge -gt 365 -and $pwdAge -le 1825)
             }
             return $false
@@ -28918,27 +28931,34 @@ function Convert-KeyCredentialLinkToRenderValues {
     # whenCreated of the host object, if the render context carries it. The delta is built
     # here, not in ConvertFrom-KeyCredentialLink, because only the context knows the sibling
     # whenCreated - the converter sees one attribute at a time. The helper's display string
-    # carries "created <yyyy-MM-dd HH:mm>"; we read that back, diff it against whenCreated,
-    # and splice the gap in right after it. Member access is case-insensitive and a JSON
-    # round-trip hands whenCreated back as a string, so [datetime] coerces either form.
+    # carries "created <time>" - a labelled time, "2026-07-15 14:00 UTC+02:00", in whatever
+    # zone it was written in; an export from before the labels has "created 2026-07-15 14:00"
+    # in local time. We read that back, diff it against whenCreated in UTC, and splice the
+    # gap in right after it. Member access is case-insensitive and a JSON round-trip hands
+    # whenCreated back as a string, so [datetime] coerces either form.
     $acctCreated = $null
     if ($Context -and $Context.SourceObject -and $Context.SourceObject.whenCreated) {
-        try { $acctCreated = [datetime]$Context.SourceObject.whenCreated } catch { $acctCreated = $null }
+        try { $acctCreated = ([datetime]$Context.SourceObject.whenCreated).ToUniversalTime() } catch { $acctCreated = $null }
     }
 
     $entries = @($Value)
     $renderValues = @()
     foreach ($entry in $entries) {
         $display = [string]$entry
-        if ($acctCreated -and $display -match 'created (\d{4}-\d{2}-\d{2} \d{2}:\d{2})') {
+        $createdMatch = [regex]::Match($display, 'created (?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?<zone> UTC(?:[+-]\d{2}:\d{2})?)?')
+        if ($acctCreated -and $createdMatch.Success) {
             $keyCreated = $null
-            try {
-                $keyCreated = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm',
-                    [System.Globalization.CultureInfo]::InvariantCulture)
-            } catch { $keyCreated = $null }
+            if ($createdMatch.Groups['zone'].Success) {
+                $keyCreated = ConvertFrom-adPEASTimeText ($createdMatch.Groups['time'].Value + $createdMatch.Groups['zone'].Value)
+            } else {
+                try {
+                    $keyCreated = [datetime]::ParseExact($createdMatch.Groups['time'].Value, 'yyyy-MM-dd HH:mm',
+                        [System.Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
+                } catch { $keyCreated = $null }
+            }
             if ($keyCreated) {
                 $gap = Get-KeyCredentialAgeText -KeyCreated $keyCreated -AccountCreated $acctCreated
-                $display = $display -replace '(created \d{4}-\d{2}-\d{2} \d{2}:\d{2})', "`$1 ($gap after computer)"
+                $display = $display.Insert($createdMatch.Index + $createdMatch.Length, " ($gap after computer)")
             }
         }
         # Note: a key credential is information - Windows Hello for Business, FIDO2 and
@@ -29336,7 +29356,9 @@ function Render-ConsoleRow {
             # Build classified values for inline multi-value rendering
             $classifiedValues = @()
             foreach ($val in $Row.Values) {
-                $classifiedValues += [PSCustomObject]@{ Value = $val.Display; Class = $val.Severity }
+                # Written to the console directly, not through Write-adPEASOutput, so the
+                # labelled times are put into the display mode here.
+                $classifiedValues += [PSCustomObject]@{ Value = (ConvertTo-adPEASTimeText $val.Display); Class = $val.Severity }
             }
 
             if ($classifiedValues.Count -eq 0) { return }
@@ -29570,7 +29592,8 @@ function Render-HtmlRow {
     switch ($Row.RowType) {
         'SingleValue' {
             $val = $Row.Values[0]
-            $displayHtml = ConvertTo-HtmlEncode $val.Display
+            # Labelled times become the elements the report's time switch turns
+            $displayHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display)
             $valueHtml = Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
             $classAttr = Get-HtmlValueClassAttr -Severity $Row.OverallSeverity
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
@@ -29580,7 +29603,7 @@ function Render-HtmlRow {
         'MultiValue' {
             $valuesHtml = @()
             foreach ($val in $Row.Values) {
-                $displayHtml = ConvertTo-HtmlEncode $val.Display
+                $displayHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display)
                 $valuesHtml += Format-HtmlValueSpan -DisplayHtml $displayHtml -Severity $val.Severity -FindingId $val.FindingId
             }
             $displayValue = $valuesHtml -join '<br>'
@@ -29639,7 +29662,7 @@ function Render-HtmlRow {
         default {
             # Fallback
             $val = if ($Row.Values.Count -gt 0) { $Row.Values[0] } else { $null }
-            $displayHtml = if ($val) { ConvertTo-HtmlEncode $val.Display } else { '' }
+            $displayHtml = if ($val) { ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $val.Display) } else { '' }
             $attrNameEncoded = ConvertTo-HtmlEncode $Row.Name
             return "                        <div class=`"attr-row`" data-attr-name=`"$attrNameEncoded`"><span class=`"attr-drag-handle`" draggable=`"true`" title=`"Drag to reorder`" aria-hidden=`"true`">&#10303;</span><div class=`"attr-name`">$nameHtml</div><div class=`"attr-value`">$displayHtml</div></div>"
         }
@@ -33672,8 +33695,13 @@ function ConvertTo-FindingsCacheValue {
     )
 
     if ($null -eq $Value) { return $null }
-    if ($Value -is [datetime]) { return $Value.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
-    if ($Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    # Every time in the export is UTC: a DateTime as its round-trip string with Z, a time in
+    # a text (a certificate's display text, a check's own line) in its UTC spelling. The
+    # export records the scan host's zone beside them, so a report rebuilt from it can show
+    # that host's local time again (Convert-adPEASReport).
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [string]) { return (ConvertTo-adPEASTimeText $Value -Mode Utc) }
+    if ($Value -is [ValueType]) { return $Value }
     if ($Depth -ge 6) { return [string]$Value }
 
     if ($Value -is [System.Collections.IDictionary]) {
@@ -33874,17 +33902,23 @@ function Export-FindingsCache {
             }
         }
 
+        # A finding imported without a readable timestamp keeps none (Import-FindingsFromCache);
+        # $null.ToString() here used to fail every later checkpoint of an -OutputAppend run.
+        $timestampText = if ($f.Timestamp -is [datetime]) {
+            $f.Timestamp.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        } else { $null }
+
         @{
-            Timestamp           = $f.Timestamp.ToString('o')
+            Timestamp           = $timestampText
             Category            = $f.Category
             CheckName           = $f.CheckName
             CheckTitle          = $f.CheckTitle
             Severity            = $f.Severity
             Class               = $f.Class
             Type                = $f.Type
-            Text                = $f.Text
-            Key                 = $f.Key
-            Value               = $f.Value
+            Text                = (ConvertTo-adPEASTimeText $f.Text -Mode Utc)
+            Key                 = (ConvertTo-adPEASTimeText $f.Key -Mode Utc)
+            Value               = (ConvertTo-adPEASTimeText $f.Value -Mode Utc)
             FindingId           = $f.FindingId
             ObjectType          = $f.ObjectType
             AttributeSeverities = $f.AttributeSeverities
@@ -33892,9 +33926,22 @@ function Export-FindingsCache {
         }
     }
 
+    # ExportDate is when this file was written - every checkpoint, an -OutputAppend run and
+    # Convert-adPEASReport write it anew. ScanStart is when the scan began and survives all
+    # of them: Convert hands it on through $Script:adPEASScanStart. TimeZone is the zone of
+    # the host the scan ran on, with its daylight saving rules, so "local time of the scan
+    # host" can be shown again from an export whose times are all UTC; TimeDisplay is the
+    # zone the scan showed (UTC with Invoke-adPEAS -UTC).
+    $scanStartText = if ($Script:adPEASScanStart -is [datetime]) {
+        $Script:adPEASScanStart.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+    } else { $null }
+
     $cache = @{
         CacheVersion  = 1
-        ExportDate    = (Get-Date).ToString('o')
+        ExportDate    = (Get-Date).ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        ScanStart     = $scanStartText
+        TimeZone      = (Get-adPEASSerializedTimeZone)
+        TimeDisplay   = $(if ($Script:adPEASTimeUtc) { 'UTC' } else { 'Local' })
         Domain        = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { 'Unknown' }
         Server        = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { 'Unknown' }
         adPEASVersion = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { 'Unknown' }
@@ -34024,14 +34071,19 @@ function Import-FindingsFromCache {
         # same reason: this file was written by some other run of adPEAS, possibly an
         # older version, possibly edited by hand. [datetime]::Parse throws on a missing
         # value, and an unguarded throw here ends the whole import - one finding without a
-        # timestamp would cost the reader the entire report. The timestamp is
-        # informational; the scan date the report shows comes from the cache metadata, not
-        # from here. InvariantCulture because Export-FindingsCache writes the round-trip
-        # format, which must not be read through the reader's local culture.
+        # timestamp would cost the reader the entire report. The scan date the report shows
+        # comes from the cache metadata (ScanStart); this one is the moment the finding was
+        # collected, from which a rebuilt report measures ages (Get-adPEASReferenceTime).
+        # InvariantCulture because Export-FindingsCache writes the round-trip format, which
+        # must not be read through the reader's local culture. pwsh 7's ConvertFrom-Json
+        # hands it over as a DateTime already; parsing that again went through a string
+        # without zone or fraction.
         $timestamp = $null
-        if ($f.Timestamp) {
+        if ($f.Timestamp -is [datetime]) {
+            $timestamp = $f.Timestamp
+        } elseif ($f.Timestamp) {
             try {
-                $timestamp = [datetime]::Parse($f.Timestamp, [System.Globalization.CultureInfo]::InvariantCulture)
+                $timestamp = [datetime]::Parse($f.Timestamp, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
             } catch {
                 Write-Log "[Import-FindingsFromCache] Unreadable timestamp, finding kept without one: $($f.Timestamp)"
             }
@@ -36309,7 +36361,7 @@ function ConvertFrom-KeyCredentialLink {
             }
 
             if ($Result.KeyCreationTime) {
-                $Parts += "created $(Format-adPEASDate $Result.KeyCreationTime 'yyyy-MM-dd HH:mm')"
+                $Parts += "created $(Format-adPEASTime $Result.KeyCreationTime -Precision Minutes)"
             }
 
             # Nothing identifying and no creation time - the blob is too sparse to name a
@@ -40644,6 +40696,15 @@ function Clear-SessionState {
         $Script:adPEAS_VerboseLogging = $false
         $Script:ModuleCategoryHeaders = $null
 
+        # Time display of a run (Format-adPEASDate.ps1): Invoke-adPEAS -UTC, the scan's
+        # start, and what Convert-adPEASReport sets for a rebuilt report. Both lower them in
+        # their own finally; cleared here too, so no zone outlives a session.
+        $Script:adPEASTimeUtc = $false
+        $Script:adPEASTimeZone = $null
+        $Script:adPEASReferenceTime = $null
+        $Script:adPEASScanStart = $null
+        $Script:adPEASReportConverted = $false
+
         # Output file (set by Invoke-adPEAS -Outputfile)
         $Script:adPEAS_Outputfile = $null
         $Script:HTMLOutputPath = $null
@@ -40944,7 +41005,7 @@ function Convert-CertificateToInfo {
             # The line a report shows for this certificate. Without it the HTML card printed
             # the whole object - "@{Subject=...; CRLDistributionPoints=System.Object[]; ...}"
             # - under userCertificate; the fields above stay for whoever needs them.
-            DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASDate $Cert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $Cert.NotAfter 'yyyy-MM-dd') ($Status)"
+            DisplayText             = "$SubjectCN - issued by $IssuerCN, valid $(Format-adPEASTime $Cert.NotBefore -Precision Minutes) to $(Format-adPEASTime $Cert.NotAfter -Precision Minutes) ($Status)"
         }
 
         $Cert.Dispose()
@@ -41237,7 +41298,7 @@ function ConvertFrom-LDAPAttribute {
                         $historyInfo = ConvertFrom-LAPSEncryptedPassword -Blob $historyBlob
                         $historyDecryptor = Get-LAPSDecryptorName -Info $historyInfo
                         if ($historyInfo -and $historyInfo.UpdateTimestamp) {
-                            $historyEntry = "[$entryIndex] $(Format-adPEASDate $historyInfo.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')"
+                            $historyEntry = "[$entryIndex] $(Format-adPEASTime $historyInfo.UpdateTimestamp)"
                             if ($historyDecryptor) { $historyEntry += " (for $historyDecryptor)" }
                             $historyEntries += $historyEntry
                         } else {
@@ -41438,7 +41499,7 @@ function ConvertFrom-LDAPAttribute {
                         $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$bytes)
                         $subject = $cert.Subject
                         $thumbprint = $cert.Thumbprint
-                        $notAfter = (Format-adPEASDate $cert.NotAfter 'yyyy-MM-dd')
+                        $notAfter = (Format-adPEASTime $cert.NotAfter -Precision Minutes)
                         $certValues += "$subject (Thumbprint: $thumbprint, Expires: $notAfter)"
                         $cert.Dispose()
                     } catch {
@@ -60437,8 +60498,13 @@ function Get-CertificateAuthority {
 
     adPEAS writes dates into reports a consultant hands to a customer, next to data whose
     own timestamps are stored as round-trip ISO strings, so the two have to agree. This
-    formats through InvariantCulture, whose calendar is Gregorian, and is the only way a
-    date should be turned into a string anywhere in adPEAS.
+    formats through InvariantCulture, whose calendar is Gregorian.
+
+    A point in time that a person reads - in the console, a report, a card - goes through
+    Format-adPEASTime instead, which builds on this and names the zone beside the value.
+    Format-adPEASDate itself is for what a machine reads (file names, GPP and XML fields,
+    backups) and for calendar dates that are no instant, such as the end-of-support days
+    of the lifecycle tables.
 
     The standard specifiers 'o' and 's' already force the Gregorian calendar and need no
     help; every custom pattern ('yyyy-MM-dd', 'yyyyMMddHHmmss', ...) needs this.
@@ -60486,10 +60552,10 @@ function Format-adPEASDate {
 
 .DESCRIPTION
     The rule for every point in time adPEAS reads from the directory: it is handed on as a
-    DateTime of Kind Local - the local time of the host that runs adPEAS - and the report
-    names that host's offset once instead of beside every value. A FILETIME attribute gets
-    there through [DateTime]::FromFileTime; a Generalized Time value through this function,
-    which is the only place that parses one.
+    DateTime of Kind Local - the local time of the host that runs adPEAS - and shown with
+    its zone beside it (Format-adPEASTime). A FILETIME attribute gets there through
+    [DateTime]::FromFileTime; a Generalized Time value through this function, which is the
+    only place that parses one.
 
     Before this rule the two classes came out differently: whenCreated, whenChanged and a
     handful of FILETIME values read with FromFileTimeUtc were UTC, pwdLastSet and every other
@@ -60535,32 +60601,367 @@ function ConvertFrom-adPEASGeneralizedTime {
 
 <#
 .SYNOPSIS
-    Names the offset every time adPEAS shows is in, once per report.
-
+    Writes a UTC offset the way adPEAS labels a time: "UTC+01:00", "UTC-05:00".
 .DESCRIPTION
-    The other half of the rule in ConvertFrom-adPEASGeneralizedTime: directory times are
-    local times of the host that runs adPEAS, so the report states that host's offset in
-    its header rather than beside each value. Taken at -At, so a report written in summer
-    says +02:00 and one written in winter +01:00 - the offset its times were converted with.
-
-.PARAMETER At
-    The moment whose offset is named. Defaults to now.
-
-.OUTPUTS
-    [string] such as "UTC+01:00".
+    The offset of one value, beside that value. It replaced Get-adPEASTimeZoneLabel, which
+    named one offset for a whole report in its header - taken at the moment the report was
+    written, and so wrong for every value from the other half of the year.
 #>
-function Get-adPEASTimeZoneLabel {
+function Format-adPEASUtcOffset {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory = $false, Position = 0)]
-        [datetime]$At = (Get-Date)
+        [Parameter(Mandatory = $true, Position = 0)]
+        [TimeSpan]$Offset
     )
 
-    $offset = [TimeZoneInfo]::Local.GetUtcOffset($At)
-    $sign = if ($offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
-    $abs = $offset.Duration()
-    return ('UTC' + $sign + $abs.Hours.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture) + ':' + $abs.Minutes.ToString('00', [System.Globalization.CultureInfo]::InvariantCulture))
+    $sign = if ($Offset -lt [TimeSpan]::Zero) { '-' } else { '+' }
+    $abs = $Offset.Duration()
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    return ('UTC' + $sign + $abs.Hours.ToString('00', $inv) + ':' + $abs.Minutes.ToString('00', $inv))
+}
+
+# ============================================================================
+# Times a person reads: every value names its zone
+# ============================================================================
+#
+# A time adPEAS shows carries its zone beside it: "2026-07-15 14:00:00 UTC+02:00" in local
+# time, "2026-07-15 12:00:00 UTC" in UTC. A single offset in a report header was wrong for
+# every value from the other half of the year - a July value converted with +02:00 under a
+# winter header saying +01:00 - and a screenshot of one card lost even that.
+#
+# The labelled text is also the placeholder. It names one instant, so any text that carries
+# one can be rewritten into another zone later: the HTML switch between scan-host time and
+# UTC, Convert-adPEASReport -UTC, the JSON export (always UTC) and Compare-adPEASReport
+# (which compares the instants, not their spelling) all find the times by
+# $Script:adPEASTimeTextRegex. A time without a zone - a calendar date, a GPO task bound
+# that is the client's own wall clock - is never written this way and never rewritten.
+#
+# Run state, raised by Invoke-adPEAS -UTC and Convert-adPEASReport for the length of their
+# call and lowered in their finally (Clear-SessionState clears it as well):
+#   $Script:adPEASTimeUtc        show times in UTC instead of local time
+#   $Script:adPEASTimeZone       the zone "local" means; $null is this host. Convert sets the
+#                                zone of the host that ran the scan, read from the export.
+#   $Script:adPEASReferenceTime  the "now" an age is measured from; $null is now. The HTML
+#                                export and Convert set the time a finding was collected, so
+#                                a report rebuilt in June rates a January scan as January saw it.
+#   $Script:adPEASScanStart      when the scan began - the date a report names. Invoke-adPEAS
+#                                sets it; Convert-adPEASReport sets the original one.
+#   $Script:adPEASReportConverted  the report is rebuilt from an export (Convert-adPEASReport);
+#                                its header names when, beside the scan date.
+$Script:adPEASTimeUtc = $false
+$Script:adPEASTimeZone = $null
+$Script:adPEASReferenceTime = $null
+$Script:adPEASScanStart = $null
+$Script:adPEASReportConverted = $false
+
+# A time as Format-adPEASTime writes it, seconds optional: "yyyy-MM-dd HH:mm[:ss] UTC[+hh:mm]".
+# The guards on both sides keep it from matching inside a longer number or an ISO string.
+$Script:adPEASTimeTextRegex = [regex]::new(
+    '(?<![\d:.-])(?<y>\d{4})-(?<mo>\d{2})-(?<d>\d{2}) (?<h>\d{2}):(?<mi>\d{2})(?::(?<s>\d{2}))? UTC(?:(?<sign>[+-])(?<oh>\d{2}):(?<om>\d{2}))?(?![\w:+-])')
+
+<#
+.SYNOPSIS
+    Writes an instant in the zone of the current display mode, with that zone beside it.
+.DESCRIPTION
+    The internal half of Format-adPEASTime and the rewriting functions below. Takes the
+    instant as UTC and returns "yyyy-MM-dd HH:mm:ss UTC+hh:mm" in local time of
+    $Script:adPEASTimeZone (this host when unset) or "yyyy-MM-dd HH:mm:ss UTC".
+.PARAMETER UtcTime
+    The instant, Kind Utc.
+.PARAMETER Minutes
+    Leave out the seconds.
+.PARAMETER AsUtc
+    Write it in UTC.
+#>
+function Get-adPEASTimeText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [datetime]$UtcTime,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$Minutes = $false,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$AsUtc = $false
+    )
+
+    $pattern = if ($Minutes) { 'yyyy-MM-dd HH:mm' } else { 'yyyy-MM-dd HH:mm:ss' }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    if ($AsUtc) {
+        return ($UtcTime.ToString($pattern, $inv) + ' UTC')
+    }
+    $zone = if ($Script:adPEASTimeZone) { $Script:adPEASTimeZone } else { [TimeZoneInfo]::Local }
+    $wallClock = [TimeZoneInfo]::ConvertTimeFromUtc($UtcTime, $zone)
+    return ($wallClock.ToString($pattern, $inv) + ' ' + (Format-adPEASUtcOffset $zone.GetUtcOffset($UtcTime)))
+}
+
+<#
+.SYNOPSIS
+    Formats a point in time for a person to read, with its zone beside it.
+.DESCRIPTION
+    The way every instant adPEAS shows becomes text: "2026-07-15 14:00:00 UTC+02:00" in local
+    time, "2026-07-15 12:00:00 UTC" while a run shows UTC (Invoke-adPEAS -UTC). The offset
+    is the one of that instant, so a summer value says +02:00 in a winter report.
+
+    -Precision Minutes is for the places that used to show a bare date - a certificate's
+    validity, the day a password was set. Their zone is named too, because the date itself
+    can differ between zones (a password set at 00:30 local time was set the day before in
+    UTC), and the minutes are what lets the text be rewritten into the other zone later.
+
+    Not for calendar dates that are no instant (an end-of-support day) and not for what a
+    machine reads - those stay with Format-adPEASDate.
+.PARAMETER Date
+    The instant. Kind Local or Utc; an Unspecified value is read as local time, as
+    .ToUniversalTime() reads it, so a UTC value has to carry Kind Utc.
+.PARAMETER Precision
+    Seconds (default) or Minutes.
+.EXAMPLE
+    Format-adPEASTime $user.pwdLastSet
+    Returns "2026-07-15 14:00:00 UTC+02:00" on a host in Central Europe.
+.OUTPUTS
+    [string]
+#>
+function Format-adPEASTime {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [datetime]$Date,
+
+        [Parameter(Mandatory = $false, Position = 1)]
+        [ValidateSet('Seconds', 'Minutes')]
+        [string]$Precision = 'Seconds'
+    )
+
+    try {
+        return (Get-adPEASTimeText -UtcTime $Date.ToUniversalTime() -Minutes ($Precision -eq 'Minutes') -AsUtc ([bool]$Script:adPEASTimeUtc))
+    } catch {
+        # A value at the edge of the calendar (MinValue/MaxValue) that no zone can hold.
+        return (Format-adPEASDate $Date $(if ($Precision -eq 'Minutes') { 'yyyy-MM-dd HH:mm' } else { 'yyyy-MM-dd HH:mm:ss' }))
+    }
+}
+
+<#
+.SYNOPSIS
+    Reads the instant out of a labelled time, as Format-adPEASTime writes it.
+.PARAMETER Text
+    "2026-07-15 14:00:00 UTC+02:00", "2026-07-15 12:00 UTC", or a text containing one; the
+    first labelled time in it is read.
+.OUTPUTS
+    [datetime] of Kind Utc, or $null when the text carries no labelled time.
+#>
+function ConvertFrom-adPEASTimeText {
+    [CmdletBinding()]
+    [OutputType([datetime])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    $match = $Script:adPEASTimeTextRegex.Match($Text)
+    if (-not $match.Success) { return $null }
+    return (ConvertFrom-adPEASTimeMatch $match)
+}
+
+# The instant of one regex match, or $null for a value no calendar holds (2026-13-45).
+function ConvertFrom-adPEASTimeMatch {
+    param([System.Text.RegularExpressions.Match]$Match)
+
+    $g = $Match.Groups
+    try {
+        $offset = [TimeSpan]::Zero
+        if ($g['sign'].Success) {
+            $offset = New-Object TimeSpan ([int]$g['oh'].Value), ([int]$g['om'].Value), 0
+            if ($g['sign'].Value -eq '-') { $offset = $offset.Negate() }
+        }
+        $seconds = if ($g['s'].Success) { [int]$g['s'].Value } else { 0 }
+        $instant = New-Object DateTimeOffset ([int]$g['y'].Value), ([int]$g['mo'].Value), ([int]$g['d'].Value), ([int]$g['h'].Value), ([int]$g['mi'].Value), $seconds, $offset
+        return $instant.UtcDateTime
+    } catch {
+        return $null
+    }
+}
+
+<#
+.SYNOPSIS
+    Rewrites every labelled time in a text into one display mode.
+.DESCRIPTION
+    What lets a text that was written once - a card line, a key-value row, a certificate's
+    display text - follow the display mode: the console and text report (in the current
+    mode), the JSON export (always UTC), Compare-adPEASReport (UTC, so two scans written in
+    different zones compare by instant). A text without a labelled time comes back as it
+    went in, after one ordinal search.
+.PARAMETER Text
+    The text.
+.PARAMETER Mode
+    Current (the run's mode, default), Utc, or Local (the zone of $Script:adPEASTimeZone).
+#>
+function ConvertTo-adPEASTimeText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        # Untyped, so $null comes back as $null: a [string] parameter would turn it into ''
+        # and the export would write "" where a finding has no text.
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        $Text,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Current', 'Utc', 'Local')]
+        [string]$Mode = 'Current'
+    )
+
+    if ($null -eq $Text) { return $null }
+    $Text = [string]$Text
+    if ($Text.Length -eq 0 -or $Text.IndexOf(' UTC', [System.StringComparison]::Ordinal) -lt 0) {
+        return $Text
+    }
+    $toUtc = switch ($Mode) {
+        'Utc'   { $true }
+        'Local' { $false }
+        default { [bool]$Script:adPEASTimeUtc }
+    }
+    return $Script:adPEASTimeTextRegex.Replace($Text, {
+        param($match)
+        $instant = ConvertFrom-adPEASTimeMatch $match
+        if ($null -eq $instant) { return $match.Value }
+        try {
+            return (Get-adPEASTimeText -UtcTime $instant -Minutes (-not $match.Groups['s'].Success) -AsUtc $toUtc)
+        } catch {
+            return $match.Value
+        }
+    })
+}
+
+<#
+.SYNOPSIS
+    Wraps every labelled time in an HTML text in an element the report's time switch turns.
+.DESCRIPTION
+    For text that is already HTML-encoded and holds no markup - an attribute value, a card
+    line. Each time becomes <span class="adp-time" data-local="..." data-utc="...">, the two
+    spellings worked out here, so the switch in the report only swaps text and never does
+    arithmetic: "local" is the zone of the host that ran the scan, which a browser does not
+    know. The span shows the spelling of the current mode.
+
+    Never applied to a whole document: a time inside a tag's attribute would be broken
+    open by the element.
+.PARAMETER Html
+    Encoded text.
+#>
+function ConvertTo-HtmlTimeSpans {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Html
+    )
+
+    if ([string]::IsNullOrEmpty($Html) -or $Html.IndexOf(' UTC', [System.StringComparison]::Ordinal) -lt 0) {
+        return $Html
+    }
+    return $Script:adPEASTimeTextRegex.Replace($Html, {
+        param($match)
+        $instant = ConvertFrom-adPEASTimeMatch $match
+        if ($null -eq $instant) { return $match.Value }
+        try {
+            $minutes = -not $match.Groups['s'].Success
+            $localText = Get-adPEASTimeText -UtcTime $instant -Minutes $minutes -AsUtc $false
+            $utcText = Get-adPEASTimeText -UtcTime $instant -Minutes $minutes -AsUtc $true
+            $shown = if ($Script:adPEASTimeUtc) { $utcText } else { $localText }
+            return ('<span class="adp-time" data-local="' + $localText + '" data-utc="' + $utcText + '">' + $shown + '</span>')
+        } catch {
+            return $match.Value
+        }
+    })
+}
+
+<#
+.SYNOPSIS
+    The moment an age is measured from: now in a scan, the time a finding was collected
+    when a report is rebuilt from it.
+.DESCRIPTION
+    A password age, an inactivity threshold, a scoring age were measured against the moment
+    the report was drawn. A report rebuilt in June from a January export moved a password of
+    2021-03-01 from 4.8 to 5.25 years and from Hint to Finding, and an account that was
+    active at the scan read "INACTIVE". Export-HTMLReport and Convert-adPEASReport set
+    $Script:adPEASReferenceTime to the finding's own time while they render it.
+.OUTPUTS
+    [datetime]
+#>
+function Get-adPEASReferenceTime {
+    [CmdletBinding()]
+    [OutputType([datetime])]
+    param()
+
+    if ($Script:adPEASReferenceTime -is [datetime]) { return $Script:adPEASReferenceTime }
+    return (Get-Date)
+}
+
+<#
+.SYNOPSIS
+    Says in words which zone the times of a report are in, for its header.
+.DESCRIPTION
+    "UTC", or "Local time of the scan host (W. Europe Standard Time)". The zone is named by
+    its identifier, which Windows does not translate; the offset is beside every value.
+.PARAMETER Utc
+    The report shows UTC.
+#>
+function Get-adPEASTimeZoneDescription {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$Utc
+    )
+
+    if ($Utc) { return 'UTC' }
+    $zone = if ($Script:adPEASTimeZone) { $Script:adPEASTimeZone } else { [TimeZoneInfo]::Local }
+    return "Local time of the scan host ($($zone.Id))"
+}
+
+<#
+.SYNOPSIS
+    The zone of this host (or of $Script:adPEASTimeZone) as a string the export can carry.
+.DESCRIPTION
+    The JSON export writes every instant in UTC; to show "local time of the scan host" when a
+    report is rebuilt elsewhere, it also records the zone with its daylight saving rules
+    (TimeZoneInfo.ToSerializedString), and Convert-adPEASReport rebuilds it from there.
+#>
+function Get-adPEASSerializedTimeZone {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $zone = if ($Script:adPEASTimeZone) { $Script:adPEASTimeZone } else { [TimeZoneInfo]::Local }
+    try { return $zone.ToSerializedString() } catch { return $null }
+}
+
+<#
+.SYNOPSIS
+    Rebuilds a zone the JSON export recorded, or returns $null.
+.PARAMETER Serialized
+    The TimeZone field of an export.
+#>
+function ConvertFrom-adPEASSerializedTimeZone {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Serialized
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Serialized)) { return $null }
+    try { return [TimeZoneInfo]::FromSerializedString($Serialized) } catch { return $null }
 }
 
 <#
@@ -60901,7 +61302,8 @@ function Write-Log {
     $fileWorthy = $Script:adPEAS_VerboseLogging -or ($Level -eq 'Warning') -or ($Level -eq 'Error')
     if ($Script:adPEAS_Outputfile -and $fileWorthy) {
         try {
-            $timestamp = (Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss')
+            # With its zone, as every time in the text report (Format-adPEASTime)
+            $timestamp = (Format-adPEASTime (Get-Date))
             "$timestamp [$Level] $Message" | Add-Content -Path $Script:adPEAS_Outputfile -ErrorAction SilentlyContinue
         }
         catch {
@@ -66399,10 +66801,10 @@ function Resolve-CredentialAccount {
         # ConvertFrom-LDAPAttribute passes 0 through unconverted.
         $pwdLastSet = $account.pwdLastSet
         if ($pwdLastSet -is [datetime]) {
-            $setText = Format-adPEASDate $pwdLastSet 'yyyy-MM-dd'
+            $setText = Format-adPEASTime $pwdLastSet -Precision Minutes
             if ($FileTime -is [datetime]) {
-                $fileText = Format-adPEASDate $FileTime 'yyyy-MM-dd'
-                if ($pwdLastSet -gt $FileTime) {
+                $fileText = Format-adPEASTime $FileTime -Precision Minutes
+                if ($pwdLastSet.ToUniversalTime() -gt $FileTime.ToUniversalTime()) {
                     $text += "; password changed $setText, after the file was last written ($fileText) - the password found is probably outdated"
                 } else {
                     $text += "; password unchanged since $setText, before the file was last written ($fileText) - the password found may still be valid"
@@ -67544,7 +67946,7 @@ function Format-LAPSEncryptedValue {
     $decryptor = Get-LAPSDecryptorName -Info $Info
     $for = if ($decryptor) { " for $decryptor" } else { '' }
     if ($Info -and $Info.UpdateTimestamp) {
-        return "[Encrypted$for - Updated: $(Format-adPEASDate $Info.UpdateTimestamp 'yyyy-MM-dd HH:mm:ss')]"
+        return "[Encrypted$for - Updated: $(Format-adPEASTime $Info.UpdateTimestamp)]"
     }
     return "[Encrypted$for - $Length bytes]"
 }
@@ -68643,9 +69045,9 @@ function ConvertFrom-TSClientLicense {
 
     $lines = @()
     $lines += ("Version = 0x{0:X8}" -f $version)
-    # Format-adPEASDate rather than -f: a custom pattern through -f renders in the host
-    # culture's calendar, the Buddhist year on a Thai host.
-    $lines += ("Issued = " + (Format-adPEASDate $issued 'yyyy-MM-dd HH:mm:ss'))
+    # Format-adPEASTime rather than -f: a custom pattern through -f renders in the host
+    # culture's calendar, the Buddhist year on a Thai host - and it names the zone.
+    $lines += ("Issued = " + (Format-adPEASTime $issued))
     if ($productId) { $lines += "ProductID = '$productId'" }
 
     # Comma on purpose - see the note in ConvertFrom-TSProperties. This function always
@@ -69246,10 +69648,10 @@ function Get-adPEASSession {
 
                     if ($timeRemaining.TotalSeconds -gt 0) {
                         $remainingDisplay = Format-adPEASDuration $timeRemaining
-                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss') (in $remainingDisplay)"
+                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASTime $endTimeLocal) (in $remainingDisplay)"
                     }
                     else {
-                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASDate $endTimeLocal 'yyyy-MM-dd HH:mm:ss')" -Class Finding
+                        Show-KeyValue "TGT Valid Until:" "$(Format-adPEASTime $endTimeLocal)" -Class Finding
                         Write-Warning "[!] TGT EXPIRED - Re-authentication required!"
                     }
 
@@ -69265,7 +69667,7 @@ function Get-adPEASSession {
                 elseif ($LiveTicketStatus.Expired) {
                     # TGT exists but is expired
                     $expiredTime = if ($LiveTicketStatus.EndTime) {
-                        (Format-adPEASDate $LiveTicketStatus.EndTime.ToLocalTime() 'yyyy-MM-dd HH:mm:ss')
+                        (Format-adPEASTime $LiveTicketStatus.EndTime.ToLocalTime())
                     } else { "unknown" }
                     Show-KeyValue "TGT Status:" "EXPIRED at $expiredTime - Re-authenticate with Connect-adPEAS" -Class Finding
                 }
@@ -69286,14 +69688,13 @@ function Get-adPEASSession {
             Show-Line "Session:" -Class Hint
             if ($Script:LDAPContext.SessionStartTime) {
                 $sessionDuration = [DateTime]::UtcNow - $Script:LDAPContext.SessionStartTime.ToUniversalTime()
-                # Through Format-adPEASDate like every other date: handed over as a DateTime,
+                # Through Format-adPEASTime like every other time: handed over as a DateTime,
                 # the start read "10/18/2026 14:55:10" - the invariant culture's month first.
+                # It names its zone, as every time does; a "Time Zone" row naming one offset
+                # for all of them was wrong for any value from the other half of the year.
                 # And the hours in full (Format-adPEASDuration): 'hh' is the hour of the
                 # day, so a session of 26 hours read "02:00:00".
-                Show-KeyValue "Session Started:" (Format-adPEASDate $Script:LDAPContext.SessionStartTime 'yyyy-MM-dd HH:mm:ss')
-                # Every directory time adPEAS prints is local time of this host
-                # (ConvertFrom-adPEASGeneralizedTime); this names the offset once.
-                Show-KeyValue "Time Zone:" (Get-adPEASTimeZoneLabel $Script:LDAPContext.SessionStartTime)
+                Show-KeyValue "Session Started:" (Format-adPEASTime $Script:LDAPContext.SessionStartTime)
                 Show-KeyValue "Session Duration:" (Format-adPEASDuration $sessionDuration)
             }
 
@@ -70028,7 +70429,7 @@ function Ensure-LDAPConnection {
                 if ($ticketCheck.TicketCount -eq 0) {
                     $errorDetails = "No Kerberos tickets in cache (purged or never obtained)"
                 } elseif ($ticketCheck.Expired) {
-                    $expiredTime = if ($ticketCheck.EndTime) { (Format-adPEASDate $ticketCheck.EndTime 'yyyy-MM-dd HH:mm:ss') } else { "unknown" }
+                    $expiredTime = if ($ticketCheck.EndTime) { (Format-adPEASTime $ticketCheck.EndTime) } else { "unknown" }
                     $errorDetails = "Kerberos TGT expired at $expiredTime"
                 } elseif ($ticketCheck.ClientMatch -eq $false) {
                     $errorDetails = "Kerberos TGT client mismatch (TGT=$($ticketCheck.ClientName), Expected=$($Script:LDAPContext.TGTInfo.UserName))"
@@ -86173,11 +86574,11 @@ public class LSATicketImport
                     $endUtc = $returnObj.EndTime.ToUniversalTime()
                     if ($endUtc -lt $now) {
                         $expiredAgo = $now - $endUtc
-                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $($endUtc.ToString('u')))"
-                        $returnObj.Message = "Ticket imported but is EXPIRED since $($endUtc.ToString('u'))"
+                        Write-Warning "[Import-KerberosTicket] Ticket is EXPIRED (ended $($expiredAgo.TotalHours.ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)) hours ago at $(Format-adPEASTime $endUtc))"
+                        $returnObj.Message = "Ticket imported but is EXPIRED since $(Format-adPEASTime $endUtc)"
                     }
                     elseif (($endUtc - $now).TotalMinutes -lt 5) {
-                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $($endUtc.ToString('u')))"
+                        Write-Warning "[Import-KerberosTicket] Ticket expires in less than 5 minutes (at $(Format-adPEASTime $endUtc))"
                     }
                 }
 
@@ -105651,7 +106052,7 @@ function Invoke-ShadowCredentialOperation {
                             Show-KeyValue "DeviceID:" $cred.DeviceID
                             Show-KeyValue "KeyID:" $cred.KeyID
                             if ($cred.CreationTime) {
-                                Show-KeyValue "Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
+                                Show-KeyValue "Created:" (Format-adPEASTime $cred.CreationTime)
                             }
                             Show-EmptyLine
                         }
@@ -105773,7 +106174,7 @@ function Invoke-ShadowCredentialOperation {
                         Show-KeyValue "[$index] DeviceID:" $cred.DeviceID
                         Show-KeyValue "    KeyID:" $cred.KeyID
                         if ($cred.CreationTime) {
-                            Show-KeyValue "    Created:" "$(Format-adPEASDate $cred.CreationTime 'yyyy-MM-dd HH:mm:ss') ($(Get-adPEASTimeZoneLabel $cred.CreationTime))"
+                            Show-KeyValue "    Created:" (Format-adPEASTime $cred.CreationTime)
                         }
                         Show-EmptyLine
                         $index++
@@ -112624,7 +113025,7 @@ function Invoke-PasswordSpray {
                     if ($result.Success) { $successCount++ } else { $rc4RefusedValidCount++ }
                     $finishedAccounts[$username] = $true
 
-                    $timestamp = Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss'
+                    $timestamp = Format-adPEASTime (Get-Date)
                     $credInfo = if ($secretKind -eq 'NTHash') {
                         [PSCustomObject]@{
                             Username   = $cleanUsername
@@ -113082,8 +113483,8 @@ function Get-CertificateInfo {
 
             # --- Validity ---
             Show-Line "Validity:" -Class Hint
-            Show-KeyValue "Not Before:" (Format-adPEASDate $cert.NotBefore 'yyyy-MM-dd HH:mm:ss')
-            Show-KeyValue "Not After:" (Format-adPEASDate $cert.NotAfter 'yyyy-MM-dd HH:mm:ss')
+            Show-KeyValue "Not Before:" (Format-adPEASTime $cert.NotBefore)
+            Show-KeyValue "Not After:" (Format-adPEASTime $cert.NotAfter)
             Show-KeyValue "Status:" $validityStatus -Class $validityClass
             Show-EmptyLine
 
@@ -114574,7 +114975,7 @@ function Save-IssuedCertificatePFX {
     Show-KeyValue "Thumbprint:" $IssuedCert.Thumbprint
     Show-KeyValue "Subject:" $IssuedCert.Subject
     Show-KeyValue "Issuer:" $IssuedCert.Issuer
-    Show-KeyValue "Valid Until:" (Format-adPEASDate $IssuedCert.NotAfter 'yyyy-MM-dd')
+    Show-KeyValue "Valid Until:" (Format-adPEASTime $IssuedCert.NotAfter -Precision Minutes)
     if ($TemplateName) {
         Show-KeyValue "Template:" $TemplateName
     }
@@ -116651,10 +117052,10 @@ function Get-DomainInformation {
                 $rootDSEResp = $Script:LdapConnection.SendRequest($rootDSEReq)
                 if ($rootDSEResp -and $rootDSEResp.Entries.Count -gt 0 -and $rootDSEResp.Entries[0].Attributes.Contains("currenttime")) {
                     $dcTimeStr = $rootDSEResp.Entries[0].Attributes["currenttime"].GetValues([string])[0]
-                    # currentTime format: yyyyMMddHHmmss.0Z (Generalized Time)
-                    $dcTimeUTC = [DateTime]::ParseExact($dcTimeStr.Substring(0, 14), "yyyyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture)
-                    $localTimeUTC = [DateTime]::UtcNow
-                    $clockSkew = $dcTimeUTC - $localTimeUTC
+                    # currentTime is a Generalized Time (yyyyMMddHHmmss.0Z), read by the one
+                    # parser adPEAS has for it; the skew is taken in UTC on both sides.
+                    $dcTime = ConvertFrom-adPEASGeneralizedTime $dcTimeStr
+                    $clockSkew = $dcTime.ToUniversalTime() - [DateTime]::UtcNow
                     $skewSeconds = [Math]::Round($clockSkew.TotalSeconds)
                     $skewAbs = [Math]::Abs($skewSeconds)
                     $skewSign = if ($skewSeconds -ge 0) { "+" } else { "-" }
@@ -116665,7 +117066,7 @@ function Get-DomainInformation {
                     } else {
                         $skewDisplay = "${skewSign}${skewAbs}s"
                     }
-                    $dcTimeText = "$(Format-adPEASDate $dcTimeUTC 'yyyy-MM-dd HH:mm:ss') UTC (skew: $skewDisplay)"
+                    $dcTimeText = "$(Format-adPEASTime $dcTime) (skew: $skewDisplay)"
                 }
             }
             catch {
@@ -116699,7 +117100,7 @@ function Get-DomainInformation {
             $kerberosSeverity = "Note"
 
             if ($KrbtgtInfo) {
-                $LastChanged = (Format-adPEASDate $KrbtgtInfo.PasswordLastSet 'yyyy-MM-dd')
+                $LastChanged = (Format-adPEASTime $KrbtgtInfo.PasswordLastSet -Precision Minutes)
                 $AgeText = "$KrbtgtPasswordAge days (last changed: $LastChanged)"
                 $kerberosObj | Add-Member -NotePropertyName 'krbtgtPasswordAge' -NotePropertyValue $AgeText -Force
 
@@ -118302,7 +118703,7 @@ function Get-DomainTrusts {
                             $pwdLastSet = $trustAccounts[$accountName].pwdLastSet
                             if ($pwdLastSet -is [DateTime]) {
                                 $ageDays = [int][Math]::Floor(((Get-Date) - $pwdLastSet).TotalDays)
-                                $lastSetText = "$(Format-adPEASDate $pwdLastSet 'yyyy-MM-dd') ($ageDays days ago, on $accountName)"
+                                $lastSetText = "$(Format-adPEASTime $pwdLastSet -Precision Minutes) ($ageDays days ago, on $accountName)"
                                 if ($ageDays -ge $staleTrustPasswordDays) { $passwordStale = $true }
                             } else {
                                 $lastSetText = "Never - $accountName has no password change recorded"
@@ -125108,7 +125509,7 @@ function Get-ManagedServiceAccountSecurity {
                     $expiresRaw = @($gmsa.accountExpires)[0]
                     $expiryText = $null
                     if ($expiresRaw -is [DateTime]) {
-                        $expiryText = Format-adPEASDate $expiresRaw 'yyyy-MM-dd'
+                        $expiryText = Format-adPEASTime $expiresRaw -Precision Minutes
                     } else {
                         $expiresValue = [long]0
                         if ([long]::TryParse([string]$expiresRaw, [ref]$expiresValue) -and
@@ -125116,7 +125517,7 @@ function Get-ManagedServiceAccountSecurity {
                             $expiryText = 'unreadable'
                             # Local, as the branch above formats it when the value arrived as a
                             # DateTime - the same attribute came out in two zones by its path.
-                            try { $expiryText = Format-adPEASDate ([DateTime]::FromFileTime($expiresValue)) 'yyyy-MM-dd' } catch {
+                            try { $expiryText = Format-adPEASTime ([DateTime]::FromFileTime($expiresValue)) -Precision Minutes } catch {
                                 Write-Log "[Get-ManagedServiceAccountSecurity] Could not read accountExpires of $($gmsa.sAMAccountName): $_"
                             }
                         }
@@ -133406,7 +133807,7 @@ function Get-LAPSConfiguration {
                     Name              = ($computer.sAMAccountName -replace '\$$', '')
                     distinguishedName = $computer.distinguishedName
                     lapsGeneration    = $generation
-                    passwordExpiredOn = (Format-adPEASDate $expiry 'yyyy-MM-dd')
+                    passwordExpiredOn = (Format-adPEASTime $expiry -Precision Minutes)
                     daysOverdue       = $daysOverdue
                     lapsPasswordStale = "The LAPS password was due for rotation $daysOverdue days ago and has not been changed since. The local administrator password on this machine is at least that old."
                 }
@@ -139785,7 +140186,10 @@ function Split-GPOTaskBoundary {
 
     $result = [PSCustomObject]@{ Date = ''; Time = ''; Text = $Value; IsVariable = ($Value -match '^%[^%]+%$') }
     if ($Value -match '^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$') {
-        $zone = ''
+        # A bound with a zone is an instant, written the way adPEAS labels one, so the
+        # report shows it in its own zone. One without is the wall clock of each client
+        # that runs the task - no instant, and said so rather than read as the scan host's.
+        $zone = ' (client local time)'
         if ($Matches[5] -eq 'Z') { $zone = ' UTC' } elseif ($Matches[5]) { $zone = " UTC$($Matches[5])" }
         $result.Date = $Matches[1]
         $result.Time = "$($Matches[2])$zone"
@@ -143153,7 +143557,7 @@ function Get-ADCSVulnerabilities {
                             Issuer                 = if ($rootCert.IssuerFull) { $rootCert.IssuerFull } elseif ($rootCert.Issuer) { $rootCert.Issuer } else { $null }
                             SerialNumber           = if ($rootCert.SerialNumber) { $rootCert.SerialNumber } else { $null }
                             Thumbprint             = if ($rootCert.Thumbprint) { $rootCert.Thumbprint } else { "Unknown" }
-                            Validity               = if ($rootCert.NotAfter) { "$(Format-adPEASDate $rootCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $rootCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+                            Validity               = if ($rootCert.NotAfter) { "$(Format-adPEASTime $rootCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $rootCert.NotAfter -Precision Minutes)" } else { "Unknown" }
                             Status                 = if ($rootCert.Status) { $rootCert.Status } else { "Unknown" }
                             SignatureAlgorithm     = if ($rootCert.SignatureAlgorithm) { $rootCert.SignatureAlgorithm } else { "Unknown" }
                             KeySize                = if ($rootCert.PublicKeyLength -and $rootCert.PublicKeyLength -gt 0) { "$($rootCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -143220,7 +143624,7 @@ function Get-ADCSVulnerabilities {
                                     Issuer                 = if ($ntCert.IssuerFull) { $ntCert.IssuerFull } elseif ($ntCert.Issuer) { $ntCert.Issuer } else { "Unknown" }
                                     SerialNumber           = if ($ntCert.SerialNumber) { $ntCert.SerialNumber } else { $null }
                                     Thumbprint             = if ($ntCert.Thumbprint) { $ntCert.Thumbprint } else { "Unknown" }
-                                    Validity               = if ($ntCert.NotAfter) { "$(Format-adPEASDate $ntCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $ntCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+                                    Validity               = if ($ntCert.NotAfter) { "$(Format-adPEASTime $ntCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $ntCert.NotAfter -Precision Minutes)" } else { "Unknown" }
                                     Status                 = if ($ntCert.Status) { $ntCert.Status } else { "Unknown" }
                                     SignatureAlgorithm     = if ($ntCert.SignatureAlgorithm) { $ntCert.SignatureAlgorithm } else { "Unknown" }
                                     KeySize                = if ($ntCert.PublicKeyLength -and $ntCert.PublicKeyLength -gt 0) { "$($ntCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -143296,7 +143700,7 @@ function Get-ADCSVulnerabilities {
                             Issuer                 = if ($aiaCert -and $aiaCert.IssuerFull) { $aiaCert.IssuerFull } elseif ($aiaCert -and $aiaCert.Issuer) { $aiaCert.Issuer } else { "Unknown" }
                             SerialNumber           = if ($aiaCert -and $aiaCert.SerialNumber) { $aiaCert.SerialNumber } else { $null }
                             Thumbprint             = if ($aiaCert.Thumbprint) { $aiaCert.Thumbprint } else { "Unknown" }
-                            Validity               = if ($aiaCert.NotAfter) { "$(Format-adPEASDate $aiaCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $aiaCert.NotAfter 'yyyy-MM-dd')" } else { "Unknown" }
+                            Validity               = if ($aiaCert.NotAfter) { "$(Format-adPEASTime $aiaCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $aiaCert.NotAfter -Precision Minutes)" } else { "Unknown" }
                             Status                 = if ($aiaCert.Status) { $aiaCert.Status } else { "Unknown" }
                             SignatureAlgorithm     = if ($aiaCert.SignatureAlgorithm) { $aiaCert.SignatureAlgorithm } else { "Unknown" }
                             KeySize                = if ($aiaCert.PublicKeyLength -and $aiaCert.PublicKeyLength -gt 0) { "$($aiaCert.PublicKeyLength) bit" } else { "Unknown" }
@@ -143677,7 +144081,7 @@ function Get-ADCSVulnerabilities {
                                 $caComputer | Add-Member -NotePropertyName 'CACertThumbprint' -NotePropertyValue $caCert.Thumbprint -Force
                             }
                             if ($caCert.NotBefore -and $caCert.NotAfter) {
-                                $caComputer | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASDate $caCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd') ($($caCert.Status))" -Force
+                                $caComputer | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASTime $caCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $caCert.NotAfter -Precision Minutes) ($($caCert.Status))" -Force
                             }
                             if ($caCert.SignatureAlgorithm) {
                                 $caComputer | Add-Member -NotePropertyName 'CACertSignatureAlgorithm' -NotePropertyValue $caCert.SignatureAlgorithm -Force
@@ -143702,7 +144106,7 @@ function Get-ADCSVulnerabilities {
 
                             # Flag expired certificates
                             if ($caCert.Status -eq 'EXPIRED') {
-                                $caComputer | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd')" -Force
+                                $caComputer | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASTime $caCert.NotAfter -Precision Minutes)" -Force
                                 $caVulnerabilityCount++
                                 Write-Log "[Get-ADCSVulnerabilities] CA '$($ca.Name)' certificate is EXPIRED"
                             }
@@ -143721,7 +144125,7 @@ function Get-ADCSVulnerabilities {
                             $caComputer | Add-Member -NotePropertyName 'certificateTemplates' -NotePropertyValue @($ca.CertificateTemplates) -Force
                         }
                         if ($ca.Modified) {
-                            $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') -Force
+                            $caComputer | Add-Member -NotePropertyName 'CALastModified' -NotePropertyValue (Format-adPEASTime $ca.Modified) -Force
                         }
 
                         # Add type marker for HTML report
@@ -143745,7 +144149,7 @@ function Get-ADCSVulnerabilities {
                             caName               = $ca.Name
                             caNote               = "CA server is not in the current domain partition - showing data from Configuration Partition only"
                             certificateTemplates = $syntheticTemplates
-                            CALastModified       = if ($ca.Modified) { (Format-adPEASDate $ca.Modified 'yyyy-MM-dd HH:mm:ss') } else { $null }
+                            CALastModified       = if ($ca.Modified) { (Format-adPEASTime $ca.Modified) } else { $null }
                         }
 
                         # Add dangerous AD object permissions
@@ -143815,7 +144219,7 @@ function Get-ADCSVulnerabilities {
                                 $syntheticCA | Add-Member -NotePropertyName 'CACertThumbprint' -NotePropertyValue $caCert.Thumbprint -Force
                             }
                             if ($caCert.NotBefore -and $caCert.NotAfter) {
-                                $syntheticCA | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASDate $caCert.NotBefore 'yyyy-MM-dd') to $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd') ($($caCert.Status))" -Force
+                                $syntheticCA | Add-Member -NotePropertyName 'CACertValidity' -NotePropertyValue "$(Format-adPEASTime $caCert.NotBefore -Precision Minutes) to $(Format-adPEASTime $caCert.NotAfter -Precision Minutes) ($($caCert.Status))" -Force
                             }
                             if ($caCert.SignatureAlgorithm) {
                                 $syntheticCA | Add-Member -NotePropertyName 'CACertSignatureAlgorithm' -NotePropertyValue $caCert.SignatureAlgorithm -Force
@@ -143832,7 +144236,7 @@ function Get-ADCSVulnerabilities {
                                 $caVulnerabilityCount++
                             }
                             if ($caCert.Status -eq 'EXPIRED') {
-                                $syntheticCA | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASDate $caCert.NotAfter 'yyyy-MM-dd')" -Force
+                                $syntheticCA | Add-Member -NotePropertyName 'CACertExpired' -NotePropertyValue "CA certificate expired on $(Format-adPEASTime $caCert.NotAfter -Precision Minutes)" -Force
                                 $caVulnerabilityCount++
                             }
                         }
@@ -153359,10 +153763,14 @@ function Show-DeletedObjectsReaders {
     Author: Alexander Sturz (@_61106960_)
 #>
 
-# Helper function for HTML encoding (works in PowerShell Core without System.Web)
+# Helper function for HTML encoding (works in PowerShell Core without System.Web).
+# Labelled times are put into the display mode on the way (ConvertTo-adPEASTimeText): the
+# texts of an export are UTC, and a report shows them in the zone it is written in - every
+# text a report shows passes through here, tooltips and the diff report included.
 function ConvertTo-HtmlEncode {
     param([string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return "" }
+    $Text = ConvertTo-adPEASTimeText $Text
     return $Text.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;').Replace("'", '&#39;')
 }
 
@@ -153425,11 +153833,28 @@ function Export-HTMLReport {
         $domain = if ($Script:LDAPContext) { $Script:LDAPContext.Domain } else { "Unknown" }
         $server = if ($Script:LDAPContext) { $Script:LDAPContext.Server } else { "Unknown" }
         $user = if ($Script:LDAPContext -and $Script:LDAPContext.Username) { $Script:LDAPContext.Username } else { "$env:USERDOMAIN\$env:USERNAME" }
+        # The date of the scan, not of this export. Convert-adPEASReport rebuilds a report
+        # long after the scan and hands the original start in $Script:adPEASScanStart; the
+        # header then names both. Every time carries its own zone (Format-adPEASTime): one
+        # offset in the header was wrong for every value from the other half of the year.
         $generatedAt = Get-Date
-        $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
-        # Every time in the report is a local time of this host (ConvertFrom-adPEASGeneralizedTime);
-        # the header names the offset once.
-        $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
+        $scanAt = if ($Script:adPEASScanStart -is [datetime]) { $Script:adPEASScanStart } else { $generatedAt }
+        $generatedDate = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode (Format-adPEASTime $scanAt))
+        $convertedItem = ''
+        if ($Script:adPEASReportConverted) {
+            $builtHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode (Format-adPEASTime $generatedAt))
+            $convertedItem = "`r`n                <div class=`"info-item`">`r`n                    <div class=`"label`">Report Built</div>`r`n                    <div class=`"value`">$builtHtml</div>`r`n                </div>"
+        }
+
+        # Which zone the times are in, and the switch to the other one. "Local" is the zone
+        # of the host that ran the scan; each time carries both spellings (ConvertTo-HtmlTimeSpans).
+        $timeModeUtc = [bool]$Script:adPEASTimeUtc
+        $localDescription = Get-adPEASTimeZoneDescription
+        $shownDescription = if ($timeModeUtc) { 'UTC' } else { $localDescription }
+        $toggleText = if ($timeModeUtc) { 'Show scan host time' } else { 'Show UTC' }
+        $timeZoneHtml = "<span id=`"timeModeLabel`" data-local=`"$(ConvertTo-HtmlEncode $localDescription)`" data-utc=`"UTC`">$(ConvertTo-HtmlEncode $shownDescription)</span>" +
+            "<button type=`"button`" class=`"card-control-btn time-toggle-btn`" id=`"timeToggle`" onclick=`"toggleTimeDisplay()`" data-local-label=`"Show UTC`" data-utc-label=`"Show scan host time`" title=`"Switch every time in this report between the local time of the scan host and UTC`">$toggleText</button>"
+        $timeMode = if ($timeModeUtc) { 'utc' } else { 'local' }
         $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
 
         # Use disclaimer from main script (decoded at startup)
@@ -153494,7 +153919,9 @@ function Export-HTMLReport {
         $html = $html.Replace('{{SERVER}}', [string](ConvertTo-HtmlEncode $server))
         $html = $html.Replace('{{USER}}', [string](ConvertTo-HtmlEncode $user))
         $html = $html.Replace('{{GENERATED}}', [string]$generatedDate)
-        $html = $html.Replace('{{TIMEZONE}}', [string](ConvertTo-HtmlEncode $timeZoneLabel))
+        $html = $html.Replace('{{CONVERTED_ITEM}}', [string]$convertedItem)
+        $html = $html.Replace('{{TIMEZONE}}', [string]$timeZoneHtml)
+        $html = $html.Replace('{{TIME_MODE}}', [string]$timeMode)
         $html = $html.Replace('{{VERSION}}', [string]$version)
         $html = $html.Replace('{{DEFAULT_THEME}}', [string]$DefaultTheme.ToLower())
         $html = $html.Replace('{{FINDING_COUNT}}', [string]$findingCount)
@@ -153905,18 +154332,21 @@ function Build-ScoringContext {
         }
 
         # Extract pwdLastSet and calculate age
+        # From the time the finding was collected, not from now (Get-adPEASReferenceTime): a
+        # report rebuilt later must score the password age the scan saw.
+        $scoringNow = if ($finding.Timestamp -is [datetime]) { $finding.Timestamp.ToUniversalTime() } else { (Get-adPEASReferenceTime).ToUniversalTime() }
         if ($obj.pwdLastSet -and -not $acctInfo.pwdLastSet) {
             $acctInfo.pwdLastSet = $obj.pwdLastSet
             # Calculate password age in days
             try {
                 if ($obj.pwdLastSet -is [datetime]) {
-                    $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $obj.pwdLastSet).TotalDays)
+                    $acctInfo.pwdAgeDays = [math]::Floor(($scoringNow - $obj.pwdLastSet.ToUniversalTime()).TotalDays)
                 } elseif ($obj.pwdLastSet -is [string] -and $obj.pwdLastSet -match '\d{4}') {
                     # InvariantCulture: the string was written by adPEAS, not typed by the
                     # reader, and the local calendar would read its Gregorian year as a
                     # Buddhist or Hijri one - a password age off by centuries, or a throw.
                     $pwdDate = [datetime]::Parse($obj.pwdLastSet, [System.Globalization.CultureInfo]::InvariantCulture)
-                    $acctInfo.pwdAgeDays = [math]::Floor(((Get-Date) - $pwdDate).TotalDays)
+                    $acctInfo.pwdAgeDays = [math]::Floor(($scoringNow - $pwdDate.ToUniversalTime()).TotalDays)
                 }
             } catch {
                 # Ignore parsing errors
@@ -154524,15 +154954,23 @@ function Build-FindingCardHtml {
         if ($finding.Type -eq 'Object' -and $finding.Object) {
             # AD Object - full detail card using RenderModel
             # Use cached RenderModel from finding (built during console output) or create new
+            # A rebuilt model (an imported finding) measures ages from the time the finding
+            # was collected, not from now - see Get-adPEASReferenceTime.
             $renderModel = if ($finding.RenderModel) { $finding.RenderModel }
-                           else { Get-RenderModel -Object $finding.Object }
+                           else {
+                               $previousReference = $Script:adPEASReferenceTime
+                               if ($finding.Timestamp -is [datetime]) { $Script:adPEASReferenceTime = $finding.Timestamp }
+                               try { Get-RenderModel -Object $finding.Object }
+                               finally { $Script:adPEASReferenceTime = $previousReference }
+                           }
             $objectHtml = Build-ObjectDetailHtml -Object $finding.Object -Severity $finding.Severity -RenderModel $renderModel
             [void]$card.AppendLine($objectHtml)
         }
         elseif ($finding.Type -eq 'KeyValue' -and $finding.Key) {
             # Key-Value pair with optional tooltip for findings
+            # Labelled times become the elements the report's time switch turns
             $keyHtml = ConvertTo-HtmlEncode $finding.Key
-            $valueHtml = ConvertTo-HtmlEncode $finding.Value
+            $valueHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $finding.Value)
 
             # Check for finding tooltip if this is a Finding or Hint severity
             $findingId = if ($severityClass -eq 'finding' -or $severityClass -eq 'hint') {
@@ -154553,7 +154991,7 @@ function Build-FindingCardHtml {
         }
         elseif ($finding.Type -eq 'Line' -and $finding.Text) {
             # Single line text with optional tooltip via FindingId
-            $textHtml = ConvertTo-HtmlEncode $finding.Text
+            $textHtml = ConvertTo-HtmlTimeSpans (ConvertTo-HtmlEncode $finding.Text)
             $dataAttr = if ($finding.FindingId) { " data-finding-id=`"$($finding.FindingId)`"" } else { "" }
             [void]$card.AppendLine("                <div class=`"finding-item finding-line $severityClass`"$dataAttr>$textHtml</div>")
         }
@@ -155577,6 +156015,17 @@ function Get-HTMLTemplate {
             background: var(--bg-hover);
             color: var(--text);
             border-color: var(--accent);
+        }
+
+        /* The switch between scan-host time and UTC, beside the "Times" value */
+        .time-toggle-btn {
+            margin-left: 8px;
+            padding: 2px 8px;
+            vertical-align: middle;
+        }
+
+        .adp-time {
+            white-space: nowrap;
         }
 
         /* Copy Button for Remediation */
@@ -156660,6 +157109,7 @@ function Get-HTMLTemplate {
             .header,
             .sidebar,
             .theme-toggle,
+            .time-toggle-btn,
             .progress-bar-container,
             .finding-checkbox,
             .toolbar,
@@ -157629,7 +158079,7 @@ function Get-HTMLTemplate {
         })();
     </script>
 </head>
-<body>
+<body data-time-mode="{{TIME_MODE}}">
     <!-- Skip Links for Accessibility -->
     <a href="#topActionsContainer" class="skip-link">Skip to Top Priority Actions</a>
     <a href="#cardViewContainer" class="skip-link">Skip to Findings</a>
@@ -157745,11 +158195,11 @@ function Get-HTMLTemplate {
                     <div class="value">{{USER}}</div>
                 </div>
                 <div class="info-item">
-                    <div class="label">Generated</div>
+                    <div class="label">Scan Date</div>
                     <div class="value">{{GENERATED}}</div>
-                </div>
+                </div>{{CONVERTED_ITEM}}
                 <div class="info-item">
-                    <div class="label">Time Zone</div>
+                    <div class="label">Times</div>
                     <div class="value">{{TIMEZONE}}</div>
                 </div>
                 <div class="info-item">
@@ -157869,6 +158319,26 @@ function Get-HTMLTemplate {
             safeSetItem('adpeas-theme', newTheme);
             updateThemeUI(newTheme);
             announceToScreenReader('Theme changed to ' + newTheme + ' mode');
+        }
+
+        // Every time in the report is a .adp-time element that carries both spellings - the
+        // local time of the host that ran the scan and UTC - worked out when the report was
+        // written. The switch only swaps the text: "local" is the scan host's zone, which the
+        // browser does not know, so it computes nothing. Not stored: a report always opens
+        // in the zone it was written in, as its screenshots show it.
+        function toggleTimeDisplay() {
+            const body = document.body;
+            const mode = body.getAttribute('data-time-mode') === 'utc' ? 'local' : 'utc';
+            document.querySelectorAll('.adp-time').forEach(function(el) {
+                const text = el.getAttribute('data-' + mode);
+                if (text) el.textContent = text;
+            });
+            body.setAttribute('data-time-mode', mode);
+            const label = document.getElementById('timeModeLabel');
+            if (label && label.getAttribute('data-' + mode)) label.textContent = label.getAttribute('data-' + mode);
+            const button = document.getElementById('timeToggle');
+            if (button && button.getAttribute('data-' + mode + '-label')) button.textContent = button.getAttribute('data-' + mode + '-label');
+            announceToScreenReader(mode === 'utc' ? 'Times shown in UTC' : 'Times shown in the local time of the scan host');
         }
 
         function updateThemeUI(theme) {
@@ -158989,7 +159459,13 @@ function Get-HTMLTemplate {
                 const label = item.querySelector('.label')?.textContent?.trim();
                 const value = item.querySelector('.value')?.textContent?.trim();
                 if (label === 'Domain') domain = value || 'unknown';
-                if (label === 'Generated') generated = value || '';
+                // The scan date in UTC: the time switch changes the text, not the attribute,
+                // so the stored completed-state survives it. 'Generated' is the label of
+                // reports written before the switch existed.
+                if (label === 'Scan Date' || label === 'Generated') {
+                    const time = item.querySelector('.value .adp-time');
+                    generated = (time && time.getAttribute('data-utc')) || value || '';
+                }
             });
 
             // Include first 3 finding titles for additional uniqueness
@@ -161321,6 +161797,11 @@ function Convert-adPEASReport {
     .PARAMETER NoColor
     Write plain text output without ANSI color codes.
 
+    .PARAMETER UTC
+    Show every time in UTC. Without it the report shows the local time of the host that ran
+    the scan - its zone is recorded in the export - whatever zone this host is in. Every
+    time names its zone either way, and the HTML report switches between the two.
+
     .EXAMPLE
     Convert-adPEASReport -InputJson ".\report.json" -OutputPath ".\new_report"
 
@@ -161350,7 +161831,10 @@ function Convert-adPEASReport {
         [string]$License,
 
         [Parameter(Mandatory=$false)]
-        [switch]$NoColor
+        [switch]$NoColor,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$UTC
     )
 
     begin {
@@ -161370,6 +161854,10 @@ function Convert-adPEASReport {
         $previousOutputColor = $Script:adPEAS_OutputColor
         $previousFindingsEnabled = $Script:adPEAS_FindingsCollectionEnabled
         $previousDisclaimer = $Script:adPEASDisclaimer
+        $previousTimeUtc = $Script:adPEASTimeUtc
+        $previousTimeZone = $Script:adPEASTimeZone
+        $previousScanStart = $Script:adPEASScanStart
+        $previousConverted = $Script:adPEASReportConverted
 
         try {
             # 1. Read and validate JSON (single read, reused for metadata and import)
@@ -161388,8 +161876,27 @@ function Convert-adPEASReport {
             $sourceDomain = if ($cache.Domain -and $cache.Domain -ne 'Unknown') { $cache.Domain } else { 'Unknown' }
             $sourceServer = if ($cache.Server) { $cache.Server } else { 'Unknown' }
             $sourceVersion = if ($cache.adPEASVersion) { $cache.adPEASVersion } else { 'Unknown' }
-            $sourceDate = if ($cache.ExportDate) { $cache.ExportDate } else { 'Unknown' }
             $findingCount = if ($cache.FindingCount) { $cache.FindingCount } else { 0 }
+
+            # The times of the report: the zone of the host that ran the scan, recorded in
+            # the export (this host's for an export from before that), UTC with -UTC. The
+            # scan date is the scan's start, or for an older export the time it was written -
+            # never the time of this conversion, which the report names separately, and the
+            # JSON written below keeps it.
+            $Script:adPEASTimeUtc = [bool]$UTC
+            $Script:adPEASTimeZone = ConvertFrom-adPEASSerializedTimeZone $cache.TimeZone
+            $Script:adPEASReportConverted = $true
+            $Script:adPEASScanStart = $null
+            foreach ($candidate in @($cache.ScanStart, $cache.ExportDate)) {
+                if ($candidate -is [datetime]) { $Script:adPEASScanStart = $candidate; break }
+                if ($candidate) {
+                    try {
+                        $Script:adPEASScanStart = [datetime]::Parse([string]$candidate, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                        break
+                    } catch { }
+                }
+            }
+            $sourceDate = if ($Script:adPEASScanStart) { Format-adPEASTime $Script:adPEASScanStart } else { 'Unknown' }
 
             # Display source info
             Show-Line "Source: $InputJson" -Class Note -NoCollect
@@ -161519,6 +162026,11 @@ function Convert-adPEASReport {
                 $utf8Encoding = [System.Text.Encoding]::UTF8
                 [System.IO.File]::WriteAllText($textPath, "", $utf8Encoding)
 
+                # The scan the text report shows, and that it was rebuilt - the lines above
+                # went to the console before the file was open.
+                Show-Line "Scan started: $sourceDate (adPEAS $sourceVersion)" -NoCollect
+                Show-Line "Rebuilt from the JSON export: $(Format-adPEASTime (Get-Date))" -NoCollect
+
                 # Replay findings through Show-* functions (writes to console + file)
                 Invoke-FindingsReplay -Findings $findings
 
@@ -161542,6 +162054,11 @@ function Convert-adPEASReport {
             $Script:adPEAS_OutputColor = $previousOutputColor
             $Script:adPEAS_FindingsCollectionEnabled = $previousFindingsEnabled
             $Script:adPEASDisclaimer = $previousDisclaimer
+            $Script:adPEASTimeUtc = $previousTimeUtc
+            $Script:adPEASTimeZone = $previousTimeZone
+            $Script:adPEASScanStart = $previousScanStart
+            $Script:adPEASReportConverted = $previousConverted
+            $Script:adPEASReferenceTime = $null
             Clear-FindingsCollection
         }
     }
@@ -161567,6 +162084,8 @@ function Invoke-FindingsReplay {
     )
 
     foreach ($finding in $Findings) {
+        # Ages of an object measured from when it was collected (Get-adPEASReferenceTime)
+        $Script:adPEASReferenceTime = if ($finding.Timestamp -is [datetime]) { $finding.Timestamp } else { $null }
         switch ($finding.Type) {
             'Header' {
                 # Show-Header delegates to Show-Output -Class Info which calls Write-adPEASHeader
@@ -161601,6 +162120,7 @@ function Invoke-FindingsReplay {
             }
         }
     }
+    $Script:adPEASReferenceTime = $null
 }
 
 
@@ -161680,6 +162200,8 @@ function Compare-adPEASReport {
         # Save and configure output state
         $previousOutputfile = $Script:adPEAS_Outputfile
         $previousOutputColor = $Script:adPEAS_OutputColor
+        $previousTimeUtc = $Script:adPEASTimeUtc
+        $previousTimeZone = $Script:adPEASTimeZone
 
         try {
             # Configure file output if requested
@@ -161714,22 +162236,40 @@ function Compare-adPEASReport {
                 }
             }
 
-            # Extract metadata. Both sides of the date go through the invariant culture, for
-            # the two reasons Import-FindingsFromCache already spells out for the same field:
-            # Export-FindingsCache writes the round-trip format, which must not be read
-            # through the reader's local culture, and a custom format string renders through
-            # the local calendar - a host with a Thai or Saudi regional format put the
-            # Buddhist or Hijri year in the report header while the file it came from said
-            # something else.
+            # The times of the comparison are shown the way the current scan showed them: in
+            # UTC after Invoke-adPEAS -UTC, otherwise in the local time of the host it ran on.
+            # Both exports hold their texts in UTC (Export-FindingsCache), so a scan in one
+            # zone compares with a scan in another by instant, not by spelling.
+            $Script:adPEASTimeUtc = ([string]$currentCache.TimeDisplay -eq 'UTC')
+            $Script:adPEASTimeZone = ConvertFrom-adPEASSerializedTimeZone $currentCache.TimeZone
+
+            # Extract metadata. The date is the scan's start, or for an export from before
+            # that field the time it was written. Read through the invariant culture, for
+            # the reason Import-FindingsFromCache spells out for the same field: the
+            # round-trip format must not be read through the reader's local culture.
+            $scanDateText = {
+                param($cache)
+                foreach ($candidate in @($cache.ScanStart, $cache.ExportDate)) {
+                    if ($candidate -is [datetime]) { return (Format-adPEASTime $candidate -Precision Minutes) }
+                    if ($candidate) {
+                        try {
+                            return (Format-adPEASTime ([datetime]::Parse([string]$candidate, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)) -Precision Minutes)
+                        } catch {
+                            return [string]$candidate
+                        }
+                    }
+                }
+                return 'Unknown'
+            }
             $baselineMeta = @{
                 Domain  = if ($baselineCache.Domain) { $baselineCache.Domain } else { 'Unknown' }
-                Date    = if ($baselineCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($baselineCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $baselineCache.ExportDate } } else { 'Unknown' }
+                Date    = (& $scanDateText $baselineCache)
                 Version = if ($baselineCache.adPEASVersion) { $baselineCache.adPEASVersion } else { 'Unknown' }
                 Count   = if ($baselineCache.FindingCount) { $baselineCache.FindingCount } else { 0 }
             }
             $currentMeta = @{
                 Domain  = if ($currentCache.Domain) { $currentCache.Domain } else { 'Unknown' }
-                Date    = if ($currentCache.ExportDate) { try { Format-adPEASDate ([datetime]::Parse($currentCache.ExportDate, [System.Globalization.CultureInfo]::InvariantCulture)) 'yyyy-MM-dd HH:mm' } catch { $currentCache.ExportDate } } else { 'Unknown' }
+                Date    = (& $scanDateText $currentCache)
                 Version = if ($currentCache.adPEASVersion) { $currentCache.adPEASVersion } else { 'Unknown' }
                 Count   = if ($currentCache.FindingCount) { $currentCache.FindingCount } else { 0 }
             }
@@ -161909,6 +162449,8 @@ function Compare-adPEASReport {
         } finally {
             $Script:adPEAS_Outputfile = $previousOutputfile
             $Script:adPEAS_OutputColor = $previousOutputColor
+            $Script:adPEASTimeUtc = $previousTimeUtc
+            $Script:adPEASTimeZone = $previousTimeZone
         }
     }
 
@@ -162276,9 +162818,10 @@ function Export-DiffHtmlReport {
     $comparedCats = if ($SharedCategories.Count -gt 0) { "$($SharedCategories.Count) ($($SharedCategories -join ', '))" } else { "None" }
     $version = if ($Script:adPEASVersion) { $Script:adPEASVersion } else { "2.0.0" }
     $generatedAt = Get-Date
-    $generatedDate = (Format-adPEASDate $generatedAt 'yyyy-MM-dd HH:mm:ss')
-    # Both exports are read back as local times of this host (ConvertFrom-FindingsCacheValue).
-    $timeZoneLabel = (Get-adPEASTimeZoneLabel $generatedAt) + ' (all times in this report)'
+    $generatedDate = ConvertTo-HtmlEncode (Format-adPEASTime $generatedAt)
+    # Every time names its own zone; this says which one they are in - the zone the current
+    # scan was shown in (Compare-adPEASReport sets it from that export).
+    $timeZoneLabel = Get-adPEASTimeZoneDescription -Utc:([bool]$Script:adPEASTimeUtc)
     $domain = $BaselineMeta.Domain
 
     # Replace placeholders
@@ -162754,7 +163297,7 @@ function Get-DiffHTMLTemplate {
                 <div class="value">{{GENERATED}}</div>
             </div>
             <div class="info-item">
-                <div class="label">Time Zone</div>
+                <div class="label">Times</div>
                 <div class="value">{{TIMEZONE}}</div>
             </div>
             <div class="info-item">
@@ -166007,7 +166550,7 @@ function Collect-BHIssuancePolicies {
 #Requires -Version 5.1
 
 # ===== Script Variables =====
-$Script:adPEASVersion = "2.11.0+20261121-1632"
+$Script:adPEASVersion = "2.11.0+20261121-2104"
 
 # Handle ScriptPath for different execution contexts:
 # - Normal: $MyInvocation.MyCommand.Path is set
@@ -166158,6 +166701,14 @@ function Invoke-adPEAS {
       Invoke-adPEAS -Module Domain -Outputfile report -OutputAppend
       Invoke-adPEAS -Module Accounts -Outputfile report -OutputAppend
 
+.PARAMETER UTC
+    Shows every time of this scan in UTC instead of the local time of this host: on the
+    console, in the text report and in the HTML report, which opens in UTC. Every time names
+    its zone either way ("2026-07-15 14:00:00 UTC+02:00", "2026-07-15 12:00:00 UTC"), and the
+    HTML report switches between the two. The JSON export is always UTC.
+    For this scan only: Get-DomainUser and the other queries afterwards show local time.
+    Convert-adPEASReport -UTC rebuilds an earlier scan's report in UTC.
+
 .EXAMPLE
     # v1 Style: Direct execution with connection parameters
     Import-Module .\adPEAS.ps1
@@ -166283,7 +166834,11 @@ function Invoke-adPEAS {
 
         # ===== Statistics Parameter =====
         [Parameter(Mandatory=$false)]
-        [switch]$Statistics
+        [switch]$Statistics,
+
+        # ===== Time Display =====
+        [Parameter(Mandatory=$false)]
+        [switch]$UTC
     )
 
     # Reset script variables for each invocation
@@ -166416,6 +166971,14 @@ function Invoke-adPEAS {
     }
 
 # ===== Main Logic =====
+# The time display of this scan (Format-adPEASDate.ps1): -UTC, the scan's start - the date
+# the reports name - and the zone of this host. Raised here, after the early returns above,
+# and lowered in the finally below, so the queries after the scan show local time again.
+$Script:adPEASTimeUtc = [bool]$UTC
+$Script:adPEASTimeZone = $null
+$Script:adPEASReferenceTime = $null
+$Script:adPEASScanStart = $StartTime
+$Script:adPEASReportConverted = $false
 try {
     # ===== License Validation and Banner =====
     # Priority: runtime -License param > Connect-adPEAS stored license > embedded license
@@ -166430,7 +166993,11 @@ try {
     # what it last showed; the text report always starts with them.
     Show-ScanLogo -Version $Script:adPEASVersion -Disclaimer $_disclaimer
 
-    Write-Log "[adPEAS] Script started: $StartTime"
+    # When the scan ran, with its zone - in the text report the mark that tells one run of
+    # -OutputAppend from the next. The HTML and JSON carry it in their header.
+    Show-Line "Scan started: $(Format-adPEASTime $StartTime)" -NoCollect
+
+    Write-Log "[adPEAS] Script started: $(Format-adPEASDate $StartTime 'o')"
     Write-Log "[adPEAS] Version: $Script:adPEASVersion"
 
     if ($OPSEC) {
@@ -167169,6 +167736,10 @@ try {
 finally {
     # Clean up findings collection (even on early returns, to prevent stale state)
     Clear-FindingsCollection
+
+    # -UTC is for this scan only; what follows shows local time again
+    $Script:adPEASTimeUtc = $false
+    $Script:adPEASScanStart = $null
 
     # Session is always kept alive after Invoke-adPEAS completes.
     # This allows users to run Get-adPEASSession, Get-Domain* queries, or additional scans.

@@ -1384,7 +1384,7 @@ function Save-IssuedCertificatePFX {
     Show-KeyValue "Thumbprint:" $IssuedCert.Thumbprint
     Show-KeyValue "Subject:" $IssuedCert.Subject
     Show-KeyValue "Issuer:" $IssuedCert.Issuer
-    Show-KeyValue "Valid Until:" (Format-adPEASDate $IssuedCert.NotAfter 'yyyy-MM-dd')
+    Show-KeyValue "Valid Until:" (Format-adPEASTime $IssuedCert.NotAfter -Precision Minutes)
     if ($TemplateName) {
         Show-KeyValue "Template:" $TemplateName
     }

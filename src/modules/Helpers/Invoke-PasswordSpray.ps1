@@ -805,7 +805,7 @@ function Invoke-PasswordSpray {
                     if ($result.Success) { $successCount++ } else { $rc4RefusedValidCount++ }
                     $finishedAccounts[$username] = $true
 
-                    $timestamp = Format-adPEASDate (Get-Date) 'yyyy-MM-dd HH:mm:ss'
+                    $timestamp = Format-adPEASTime (Get-Date)
                     $credInfo = if ($secretKind -eq 'NTHash') {
                         [PSCustomObject]@{
                             Username   = $cleanUsername

@@ -85,7 +85,9 @@ function Render-ConsoleRow {
             # Build classified values for inline multi-value rendering
             $classifiedValues = @()
             foreach ($val in $Row.Values) {
-                $classifiedValues += [PSCustomObject]@{ Value = $val.Display; Class = $val.Severity }
+                # Written to the console directly, not through Write-adPEASOutput, so the
+                # labelled times are put into the display mode here.
+                $classifiedValues += [PSCustomObject]@{ Value = (ConvertTo-adPEASTimeText $val.Display); Class = $val.Severity }
             }
 
             if ($classifiedValues.Count -eq 0) { return }
